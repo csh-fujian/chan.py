@@ -250,7 +250,7 @@ class CKLine_List:
             # 第一根K线，直接创建合并K线
             self.lst.append(CKLine(klu, idx=0))
         else:
-            _dir = self.lst[-1].try_add(klu)  # 尝试与上一根合并K线合并
+            _dir = self.lst[-1].try_add(klu)  # 尝试与上一根合并K线合并 TODO 改逻辑是标准笔的判断，还可以增加macd等逻辑判断 
             if _dir != KLINE_DIR.COMBINE:  # 不需要合并K线 → 创建新的合并K线
                 self.lst.append(CKLine(klu, idx=len(self.lst), _dir=_dir))
                 if len(self.lst) >= 3:

@@ -212,18 +212,19 @@ class CBiList:
         if klc.fx == FX_TYPE.UNKNOWN:
             return _tmp_end != self.get_last_klu_of_last_bi()  # 虚笔是否有变
 
-        if self.last_end is None or len(self.bi_list) == 0:
+        if self.last_end is None or len(self.bi_list) == 0: # 还没有任何笔 → 尝试创建第一笔
             return self.try_create_first_bi(klc)
 
         if klc.fx == self.last_end.fx:
-            # 同向分型：尝试更新当前笔的结束点
+            # 同向分型：尝试延伸当前笔的结束点
             return self.try_update_end(klc)
         elif self.can_make_bi(klc, self.last_end):
-            # 反向分型且满足笔的条件：创建新笔
+            # 反向分型 + 满足笔的条件（满足 ≥4（严格模式）） → 创建新笔！
             self.add_new_bi(self.last_end, klc)
             self.last_end = klc
             return True
         elif self.update_peak(klc):
+            # 反向分型但不满足条件 → 尝试次高点/次低点替换
             return True
         return _tmp_end != self.get_last_klu_of_last_bi()
 
