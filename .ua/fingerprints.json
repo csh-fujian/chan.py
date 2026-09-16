@@ -1,7 +1,7 @@
 {
   "version": "1.0.0",
-  "gitCommitHash": "4c53175ab1bec1805d599f6f63e9627fdc27eb0b",
-  "generatedAt": "2026-09-03T13:29:59.075Z",
+  "gitCommitHash": "0b502ecff876ba35c73e55e80f03d91feacdb8e6",
+  "generatedAt": "2026-09-06T08:01:34.421Z",
   "files": {
     "__init__.py": {
       "filePath": "__init__.py",
@@ -41,7 +41,7 @@
       "imports": [],
       "exports": [],
       "totalLines": 801,
-      "hasStructuralAnalysis": true
+      "hasStructuralAnalysis": false
     },
     "阅读文档.md": {
       "filePath": "阅读文档.md",
@@ -3701,7 +3701,7 @@
     },
     "prompt.txt": {
       "filePath": "prompt.txt",
-      "contentHash": "323d904601a923afec3ecebf55f07779b826f9ea9d7fc8b726a015a7091569fd",
+      "contentHash": "9c028bc0bd635d8152c20e3f7c15cc77ac64c20fa9c6d607f2e1dff41905ef50",
       "functions": [],
       "classes": [],
       "imports": [],
@@ -4551,6 +4551,108 @@
       ],
       "totalLines": 294,
       "hasStructuralAnalysis": true
+    },
+    "Debug/bi_test.py": {
+      "filePath": "Debug/bi_test.py",
+      "contentHash": "f23297874764670cbf3e960b809fff0c37ff952692cb034c7557b33065bf2c57",
+      "functions": [
+        {
+          "name": "make_klu",
+          "params": [
+            "year",
+            "month",
+            "day",
+            "o",
+            "h",
+            "l",
+            "c"
+          ],
+          "exported": true,
+          "lineCount": 11
+        },
+        {
+          "name": "build_sawtooth_close",
+          "params": [],
+          "exported": true,
+          "lineCount": 9
+        },
+        {
+          "name": "main",
+          "params": [],
+          "exported": true,
+          "lineCount": 43
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "datetime",
+          "specifiers": [
+            "datetime"
+          ]
+        },
+        {
+          "source": "os",
+          "specifiers": [
+            "os"
+          ]
+        },
+        {
+          "source": "sys",
+          "specifiers": [
+            "sys"
+          ]
+        },
+        {
+          "source": "ChanConfig",
+          "specifiers": [
+            "CChanConfig"
+          ]
+        },
+        {
+          "source": "Common.CEnum",
+          "specifiers": [
+            "BI_DIR",
+            "DATA_FIELD",
+            "KL_TYPE"
+          ]
+        },
+        {
+          "source": "Common.CTime",
+          "specifiers": [
+            "CTime"
+          ]
+        },
+        {
+          "source": "KLine.KLine_List",
+          "specifiers": [
+            "CKLine_List"
+          ]
+        },
+        {
+          "source": "KLine.KLine_Unit",
+          "specifiers": [
+            "CKLine_Unit"
+          ]
+        }
+      ],
+      "exports": [
+        "make_klu",
+        "build_sawtooth_close",
+        "main"
+      ],
+      "totalLines": 101,
+      "hasStructuralAnalysis": true
+    },
+    "docs/ONBOARDING.md": {
+      "filePath": "docs/ONBOARDING.md",
+      "contentHash": "c61958281a19ce887e07557eaaa24ecfe755f04dd9f5fa325075bb2636036b6f",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 387,
+      "hasStructuralAnalysis": false
     }
   }
 }
