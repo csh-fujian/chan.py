@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>买卖点绩效 · chan.py 缠论量化</title>
+<link rel="stylesheet" href="css/design.css">
+<style>
+  .perf-page { display: flex; flex-direction: column; gap: var(--sp-lg); flex: 1; }
+  .cell-stock { display: flex; flex-direction: column; line-height: 1.3; }
+  .cell-stock .nm { color: var(--text-primary); font-size: 13px; }
+  .cell-stock .cd { color: var(--text-disabled); font-size: 11px; font-family: var(--font-mono); }
+  .winrate-chart { height: 220px; }
+  .sample-item {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 0; border-bottom: 1px solid var(--border-base);
+  }
+  .sample-item:last-child { border-bottom: none; }
+</style>
+</head>
+<body>
+
+  <!-- AppShell 顶栏 -->
+  <header class="topnav">
+    <div class="topnav__brand">
+      <span class="brand-mark"></span>
+      <span class="brand-name">chan<span class="accent">.py</span><span class="brand-cursor"></span></span>
+      <span class="brand-sub">缠论量化</span>
+    </div>
+    <nav class="topnav__menu">
+      <a class="menu-item">自选</a>
+      <a class="menu-item">买卖点</a>
+      <a class="menu-item">监控</a>
+      <a class="menu-item is-active">绩效</a>
+      <a class="menu-item">选股</a>
+      <a class="menu-item">预警</a>
+      <a class="menu-item menu-item--admin">权限管理<span class="admin-dot"></span></a>
+    </nav>
+    <div class="topnav__user">
+      <span class="user-avatar">陈</span>
+      <span class="user-name">admin</span>
+      <svg class="user-chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+    </div>
+  </header>
+
+  <div class="content">
+    <div class="perf-page">
+
+      <!-- 筛选区 -->
+      <div class="toolbar reveal reveal--1">
+        <div class="select">
+          <button class="select__trigger" type="button">
+            <span class="select__value">全部周期</span>
+            <svg class="chev" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+          </button>
+          <div class="select__menu">
+            <div class="select__option is-selected" data-label="全部周期">全部周期</div>
+            <div class="select__option" data-label="日线">日线</div>
+            <div class="select__option" data-label="60分钟">60分钟</div>
+            <div class="select__option" data-label="30分钟">30分钟</div>
+          </div>
+        </div>
+        <div class="select">
+          <button class="select__trigger" type="button">
+            <span class="select__value">全部类型</span>
+            <svg class="chev" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+          </button>
+          <div class="select__menu">
+            <div class="select__option is-selected" data-label="全部类型">全部类型</div>
+            <div class="select__option" data-label="1B">1B</div>
+            <div class="select__option" data-label="2B">2B</div>
+            <div class="select__option" data-label="3B">3B</div>
+            <div class="select__option" data-label="1S">1S</div>
+          </div>
+        </div>
+        <div class="select">
+          <button class="select__trigger" type="button">
+            <span class="select__value">全部方向</span>
+            <svg class="chev" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+          </button>
+          <div class="select__menu">
+            <div class="select__option is-selected" data-label="全部方向">全部方向</div>
+            <div class="select__option" data-label="买">买</div>
+            <div class="select__option" data-label="卖">卖</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 绩效统计表 -->
+      <div class="panel reveal reveal--2">
+        <div class="panel__head">绩效统计 <span class="panel__sub">按周期 / 类型 / 方向聚合</span></div>
+        <div class="tbl-wrap">
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th>周期</th>
+                <th>类型</th>
+                <th>方向</th>
+                <th class="col-num">样本数</th>
+                <th class="col-num">胜率%</th>
+                <th class="col-num">平均盈亏%</th>
+                <th class="col-num">盈亏比</th>
+                <th class="col-actions">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="num">日线</td>
+                <td><span class="badge badge--rise">1B</span></td>
+                <td><span class="badge badge--rise">买</span></td>
+                <td class="col-num">128</td>
+                <td class="col-num text-rise">62.5%</td>
+                <td class="col-num text-rise">+3.42%</td>
+                <td class="col-num">1.85</td>
+                <td class="col-actions"><button class="row-action" data-open-drawer="#sample-drawer">下钻</button></td>
+              </tr>
+              <tr>
+                <td class="num">日线</td>
+                <td><span class="badge badge--rise">2B</span></td>
+                <td><span class="badge badge--rise">买</span></td>
+                <td class="col-num">96</td>
+                <td class="col-num text-rise">58.3%</td>
+                <td class="col-num text-rise">+2.15%</td>
+                <td class="col-num">1.42</td>
+                <td class="col-actions"><button class="row-action" data-open-drawer="#sample-drawer">下钻</button></td>
+              </tr>
+              <tr>
+                <td class="num">日线</td>
+                <td><span class="badge badge--rise">3B</span></td>
+                <td><span class="badge badge--rise">买</span></td>
+                <td class="col-num">74</td>
+                <td class="col-num text-rise">54.1%</td>
+                <td class="col-num text-rise">+1.68%</td>
+                <td class="col-num">1.21</td>
+                <td class="col-actions"><button class="row-action" data-open-drawer="#sample-drawer">下钻</button></td>
+              </tr>
+              <tr>
+                <td class="num">日线</td>
+                <td><span class="badge badge--fall">1S</span></td>
+                <td><span class="badge badge--fall">卖</span></td>
+                <td class="col-num">105</td>
+                <td class="col-num text-rise">60.9%</td>
+                <td class="col-num text-fall">-2.84%</td>
+                <td class="col-num">1.55</td>
+                <td class="col-actions"><button class="row-action" data-open-drawer="#sample-drawer">下钻</button></td>
+              </tr>
+              <tr>
+                <td class="num">60分钟</td>
+                <td><span class="badge badge--rise">1B</span></td>
+                <td><span class="badge badge--rise">买</span></td>
+                <td class="col-num">210</td>
+                <td class="col-num text-rise">57.6%</td>
+                <td class="col-num text-rise">+1.92%</td>
+                <td class="col-num">1.38</td>
+                <td class="col-actions"><button class="row-action" data-open-drawer="#sample-drawer">下钻</button></td>
+              </tr>
+              <tr>
+                <td class="num">60分钟</td>
+                <td><span class="badge badge--fall">2S</span></td>
+                <td><span class="badge badge--fall">卖</span></td>
+                <td class="col-num">188</td>
+                <td class="col-num text-fall">48.4%</td>
+                <td class="col-num text-fall">-1.41%</td>
+                <td class="col-num">1.12</td>
+                <td class="col-actions"><button class="row-action" data-open-drawer="#sample-drawer">下钻</button></td>
+              </tr>
+              <tr>
+                <td class="num">30分钟</td>
+                <td><span class="badge badge--rise">3B</span></td>
+                <td><span class="badge badge--rise">买</span></td>
+                <td class="col-num">156</td>
+                <td class="col-num text-rise">51.3%</td>
+                <td class="col-num text-rise">+0.95%</td>
+                <td class="col-num">0.98</td>
+                <td class="col-actions"><button class="row-action" data-open-drawer="#sample-drawer">下钻</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 胜率对比图 -->
+      <div class="panel reveal reveal--3">
+        <div class="panel__head">胜率对比 <span class="panel__sub">按买卖点类型 · 横线为 50% 分界</span></div>
+        <div class="chart chart--grid winrate-chart">
+          <div class="chart__watermark">示意</div>
+          <svg viewBox="0 0 1140 220" preserveAspectRatio="none">
+            <line class="grid-line" x1="0" y1="56" x2="1140" y2="56"/>
+            <line class="grid-line" x1="0" y1="110" x2="1140" y2="110"/>
+            <line class="grid-line" x1="0" y1="164" x2="1140" y2="164" stroke="#F6465D" stroke-dasharray="6 5"/>
+            <line class="grid-line" x1="0" y1="200" x2="1140" y2="200"/>
+            <text class="axis-text" x="8" y="60">70%</text>
+            <text class="axis-text" x="8" y="114">60%</text>
+            <text class="axis-text" x="8" y="168" fill="#F6465D">50%</text>
+
+            <rect x="45"  y="50" width="70" height="150" fill="#F6465D" opacity="0.85"/>
+            <rect x="187" y="68" width="70" height="132" fill="#F6465D" opacity="0.85"/>
+            <rect x="329" y="90" width="70" height="110" fill="#F6465D" opacity="0.85"/>
+            <rect x="471" y="59" width="70" height="141" fill="#2EBD85" opacity="0.85"/>
+            <rect x="613" y="98" width="70" height="102" fill="#2EBD85" opacity="0.85"/>
+            <rect x="755" y="72" width="70" height="128" fill="#F6465D" opacity="0.85"/>
+            <rect x="897" y="85" width="70" height="115" fill="#2EBD85" opacity="0.85"/>
+            <rect x="1039" y="108" width="70" height="92" fill="#2EBD85" opacity="0.85"/>
+
+            <text class="axis-text" x="80"  y="215" text-anchor="middle">1B</text>
+            <text class="axis-text" x="222" y="215" text-anchor="middle">2B</text>
+            <text class="axis-text" x="364" y="215" text-anchor="middle">3B</text>
+            <text class="axis-text" x="506" y="215" text-anchor="middle">1S</text>
+            <text class="axis-text" x="648" y="215" text-anchor="middle">2S</text>
+            <text class="axis-text" x="790" y="215" text-anchor="middle">L2B</text>
+            <text class="axis-text" x="932" y="215" text-anchor="middle">L2S</text>
+            <text class="axis-text" x="1074" y="215" text-anchor="middle">3S</text>
+          </svg>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- 遮罩 -->
+  <div class="overlay"></div>
+
+  <!-- 样本明细抽屉 -->
+  <aside class="drawer" id="sample-drawer">
+    <div class="drawer__head">
+      样本明细
+      <span class="spacer"></span>
+      <button class="close-btn" data-close-drawer>✕</button>
+    </div>
+    <div class="drawer__body">
+      <div class="cell-stock" style="margin-bottom:16px">
+        <span class="nm" style="font-size:16px;font-weight:600">日线 · 1B 买点</span>
+        <span class="cd">样本数 128 · 胜率 62.5% · 平均盈亏 +3.42%</span>
+      </div>
+
+      <div class="sample-item">
+        <div class="cell-stock" style="flex:1"><span class="nm">平安银行</span><span class="cd">sz.000001</span></div>
+        <span class="num">2026-08-14</span>
+        <span class="num text-rise">+4.20%</span>
+      </div>
+      <div class="sample-item">
+        <div class="cell-stock" style="flex:1"><span class="nm">招商银行</span><span class="cd">sh.600036</span></div>
+        <span class="num">2026-08-11</span>
+        <span class="num text-rise">+3.55%</span>
+      </div>
+      <div class="sample-item">
+        <div class="cell-stock" style="flex:1"><span class="nm">五粮液</span><span class="cd">sz.000858</span></div>
+        <span class="num">2026-08-05</span>
+        <span class="num text-fall">-1.02%</span>
+      </div>
+      <div class="sample-item">
+        <div class="cell-stock" style="flex:1"><span class="nm">东方财富</span><span class="cd">sz.300059</span></div>
+        <span class="num">2026-07-30</span>
+        <span class="num text-rise">+6.18%</span>
+      </div>
+      <div class="sample-item">
+        <div class="cell-stock" style="flex:1"><span class="nm">宁德时代</span><span class="cd">sz.300750</span></div>
+        <span class="num">2026-07-22</span>
+        <span class="num text-rise">+2.75%</span>
+      </div>
+    </div>
+    <div class="drawer__foot">
+      <button class="btn btn--default" data-close-drawer>关闭</button>
+    </div>
+  </aside>
+
+<script src="js/app.js"></script>
+</body>
+</html>

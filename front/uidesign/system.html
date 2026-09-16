@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>权限管理 · chan.py 缠论量化</title>
+<link rel="stylesheet" href="css/design.css">
+<style>
+  .system-page { display: flex; flex-direction: column; gap: var(--sp-lg); flex: 1; }
+
+  /* 权限树 */
+  .perm-tree { display: flex; flex-direction: column; gap: 4px; max-width: 560px; }
+  .perm-node {
+    display: flex; align-items: center; gap: 10px;
+    height: 36px; padding: 0 10px;
+    border-radius: var(--r-sm);
+    font-size: 13px; color: var(--text-primary);
+  }
+  .perm-node:hover { background: var(--bg-surface-hover); }
+  .perm-node .perm-code { font-family: var(--font-mono); font-size: 11px; color: var(--text-disabled); margin-left: 2px; }
+  .perm-group { display: flex; flex-direction: column; }
+  .perm-group > .perm-node { font-weight: 600; }
+  .perm-children { margin-left: 26px; border-left: 1px solid var(--border-base); padding-left: 8px; display: flex; flex-direction: column; }
+  .perm-children .perm-node { font-weight: 400; }
+</style>
+</head>
+<body>
+
+  <!-- AppShell 顶栏 -->
+  <header class="topnav">
+    <div class="topnav__brand">
+      <span class="brand-mark"></span>
+      <span class="brand-name">chan<span class="accent">.py</span><span class="brand-cursor"></span></span>
+      <span class="brand-sub">缠论量化</span>
+    </div>
+    <nav class="topnav__menu">
+      <a class="menu-item">自选</a>
+      <a class="menu-item">买卖点</a>
+      <a class="menu-item">监控</a>
+      <a class="menu-item">绩效</a>
+      <a class="menu-item">选股</a>
+      <a class="menu-item">预警</a>
+      <a class="menu-item is-active">权限管理<span class="admin-dot"></span></a>
+    </nav>
+    <div class="topnav__user">
+      <span class="user-avatar">陈</span>
+      <span class="user-name">admin</span>
+      <svg class="user-chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+    </div>
+  </header>
+
+  <div class="content">
+    <div class="system-page">
+
+      <div class="panel reveal reveal--1">
+        <div class="tabs" data-scope="#system-scope" style="margin:0;padding:0 12px">
+          <button class="tab is-active" data-tab="users">用户管理</button>
+          <button class="tab" data-tab="roles">角色管理</button>
+          <button class="tab" data-tab="perm">角色-权限配置</button>
+        </div>
+
+        <div id="system-scope">
+          <!-- 用户管理 -->
+          <div data-pane="users">
+            <div class="toolbar" style="padding:12px var(--sp-lg) 0">
+              <span class="spacer"></span>
+              <button class="btn btn--primary btn--sm" data-open-dialog="#user-dialog"><span class="icon-plus"></span> 新建用户</button>
+            </div>
+            <div class="tbl-wrap">
+              <table class="tbl">
+                <thead>
+                  <tr>
+                    <th>用户名</th>
+                    <th>显示名</th>
+                    <th>角色</th>
+                    <th>状态</th>
+                    <th>创建时间</th>
+                    <th class="col-actions" style="width:200px">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="num">admin</td>
+                    <td>陈晨</td>
+                    <td><span class="badge badge--accent">管理员</span></td>
+                    <td><span class="switch is-on"></span></td>
+                    <td class="num">2026-01-01</td>
+                    <td class="col-actions"><button class="row-action" data-open-dialog="#user-dialog">编辑</button><button class="row-action">重置密码</button><button class="row-action row-action--danger" disabled>删除</button></td>
+                  </tr>
+                  <tr>
+                    <td class="num">zhangsan</td>
+                    <td>张三</td>
+                    <td><span class="badge badge--default">交易员</span></td>
+                    <td><span class="switch is-on"></span></td>
+                    <td class="num">2026-05-12</td>
+                    <td class="col-actions"><button class="row-action" data-open-dialog="#user-dialog">编辑</button><button class="row-action">重置密码</button><button class="row-action row-action--danger">删除</button></td>
+                  </tr>
+                  <tr>
+                    <td class="num">lisi</td>
+                    <td>李四</td>
+                    <td><span class="badge badge--default">访客</span></td>
+                    <td><span class="switch"></span></td>
+                    <td class="num">2026-07-20</td>
+                    <td class="col-actions"><button class="row-action" data-open-dialog="#user-dialog">编辑</button><button class="row-action">重置密码</button><button class="row-action row-action--danger">删除</button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- 角色管理 -->
+          <div data-pane="roles" class="hidden">
+            <div class="toolbar" style="padding:12px var(--sp-lg) 0">
+              <span class="spacer"></span>
+              <button class="btn btn--primary btn--sm" data-open-dialog="#role-dialog"><span class="icon-plus"></span> 新建角色</button>
+            </div>
+            <div class="tbl-wrap">
+              <table class="tbl">
+                <thead>
+                  <tr>
+                    <th>角色名</th>
+                    <th>code</th>
+                    <th>是否 admin</th>
+                    <th class="col-actions" style="width:120px">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>管理员</td>
+                    <td class="num">admin</td>
+                    <td><span class="badge badge--warning">是 · 内置</span></td>
+                    <td class="col-actions"><button class="row-action" data-open-dialog="#role-dialog">编辑</button><button class="row-action row-action--danger" disabled>删除</button></td>
+                  </tr>
+                  <tr>
+                    <td>交易员</td>
+                    <td class="num">trader</td>
+                    <td><span class="badge badge--default">否</span></td>
+                    <td class="col-actions"><button class="row-action" data-open-dialog="#role-dialog">编辑</button><button class="row-action row-action--danger">删除</button></td>
+                  </tr>
+                  <tr>
+                    <td>访客</td>
+                    <td class="num">viewer</td>
+                    <td><span class="badge badge--default">否</span></td>
+                    <td class="col-actions"><button class="row-action" data-open-dialog="#role-dialog">编辑</button><button class="row-action row-action--danger">删除</button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- 角色-权限配置 -->
+          <div data-pane="perm" class="hidden">
+            <div class="panel__body">
+              <div class="form-row" style="margin-bottom:16px">
+                <label>选择角色</label>
+                <div class="select" style="width:240px">
+                  <button class="select__trigger" type="button"><span class="select__value">交易员</span><svg class="chev" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg></button>
+                  <div class="select__menu">
+                    <div class="select__option" data-label="管理员">管理员</div>
+                    <div class="select__option is-selected" data-label="交易员">交易员</div>
+                    <div class="select__option" data-label="访客">访客</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="perm-tree">
+                <div class="perm-group">
+                  <div class="perm-node">
+                    <span class="checkbox"></span> 菜单权限 <span class="perm-code">menu:*</span>
+                  </div>
+                  <div class="perm-children">
+                    <div class="perm-node"><span class="checkbox is-checked"></span> 我的自选 <span class="perm-code">menu:watchlist</span></div>
+                    <div class="perm-node"><span class="checkbox is-checked"></span> 历史买卖点 <span class="perm-code">menu:bsp</span></div>
+                    <div class="perm-node"><span class="checkbox is-checked"></span> 股票监控 <span class="perm-code">menu:monitor</span></div>
+                    <div class="perm-node"><span class="checkbox is-checked"></span> 买卖点绩效 <span class="perm-code">menu:performance</span></div>
+                    <div class="perm-node"><span class="checkbox"></span> 条件选股 <span class="perm-code">menu:screener</span></div>
+                    <div class="perm-node"><span class="checkbox"></span> 预警提醒 <span class="perm-code">menu:alerts</span></div>
+                    <div class="perm-node"><span class="checkbox"></span> 权限管理 <span class="perm-code">menu:system</span></div>
+                  </div>
+                </div>
+                <div class="perm-node">
+                  <span class="checkbox"></span> 管理权限 <span class="perm-code">manage</span>
+                </div>
+              </div>
+
+              <div class="toolbar" style="margin-top:16px">
+                <button class="btn btn--primary">保存</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- 用户表单弹窗 -->
+  <div class="dialog" id="user-dialog">
+    <div class="dialog__head">新建用户<span class="spacer"></span><button class="close-btn" data-close-dialog>✕</button></div>
+    <div class="dialog__body">
+      <div class="form-row"><label>用户名</label><div class="field"><input placeholder="登录用户名"></div></div>
+      <div class="form-row"><label>显示名</label><div class="field"><input placeholder="显示名称"></div></div>
+      <div class="form-row">
+        <label>角色</label>
+        <div class="select" style="width:100%">
+          <button class="select__trigger" type="button"><span class="select__value">交易员</span><svg class="chev" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg></button>
+          <div class="select__menu">
+            <div class="select__option" data-label="管理员">管理员</div>
+            <div class="select__option is-selected" data-label="交易员">交易员</div>
+            <div class="select__option" data-label="访客">访客</div>
+          </div>
+        </div>
+      </div>
+      <div class="form-row"><label>状态</label><span class="switch is-on" style="margin-top:2px"></span></div>
+    </div>
+    <div class="dialog__foot"><button class="btn btn--default" data-close-dialog>取消</button><button class="btn btn--primary">保存</button></div>
+  </div>
+
+  <!-- 角色表单弹窗 -->
+  <div class="dialog" id="role-dialog">
+    <div class="dialog__head">新建角色<span class="spacer"></span><button class="close-btn" data-close-dialog>✕</button></div>
+    <div class="dialog__body">
+      <div class="form-row"><label>角色名</label><div class="field"><input placeholder="角色名称"></div></div>
+      <div class="form-row"><label>code</label><div class="field"><input placeholder="如 trader"></div></div>
+    </div>
+    <div class="dialog__foot"><button class="btn btn--default" data-close-dialog>取消</button><button class="btn btn--primary">保存</button></div>
+  </div>
+
+<script src="js/app.js"></script>
+</body>
+</html>

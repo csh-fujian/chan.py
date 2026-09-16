@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>前端设计稿 · chan.py 缠论量化</title>
+<link rel="stylesheet" href="css/design.css">
+<style>
+  .hero {
+    padding: 56px 0 40px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+  .hero__kicker {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.22em;
+    color: var(--accent-hover);
+    text-transform: uppercase;
+  }
+  .hero__title {
+    font-family: var(--font-mono);
+    font-size: 44px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+  }
+  .hero__title .accent { color: var(--accent-hover); }
+  .hero__sub {
+    max-width: 620px;
+    color: var(--text-secondary);
+    font-size: 15px;
+    line-height: 1.7;
+  }
+  .hero__meta {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 4px;
+  }
+
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--sp-lg);
+  }
+  .page-card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 24px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-base);
+    border-radius: var(--r-lg);
+    overflow: hidden;
+    cursor: pointer;
+    transition: transform 0.2s cubic-bezier(0.22,1,0.36,1), border-color 0.2s, box-shadow 0.2s;
+  }
+  .page-card::before {
+    content: "";
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 3px;
+    background: var(--card-accent, var(--accent-base));
+  }
+  .page-card:hover {
+    transform: translateY(-3px);
+    border-color: var(--border-strong);
+    box-shadow: 0 18px 40px rgba(0,0,0,0.35), 0 0 0 1px rgba(59,130,246,0.15);
+  }
+  .page-card__top { display: flex; align-items: center; gap: 12px; }
+  .page-card__num {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-disabled);
+    letter-spacing: 0.1em;
+  }
+  .page-card__route {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--accent-hover);
+    background: rgba(59,130,246,0.1);
+    padding: 2px 8px;
+    border-radius: var(--r-full);
+  }
+  .page-card__title { font-size: 22px; font-weight: 600; }
+  .page-card__desc { color: var(--text-secondary); font-size: 13px; line-height: 1.65; }
+  .page-card__preview {
+    height: 90px;
+    background: var(--bg-chart);
+    border: 1px solid var(--border-base);
+    border-radius: var(--r-md);
+    overflow: hidden;
+    position: relative;
+  }
+  .page-card__preview svg { width: 100%; height: 100%; display: block; }
+  .page-card__arrow {
+    position: absolute;
+    right: 16px; top: 16px;
+    color: var(--text-disabled);
+    transition: all 0.2s ease;
+  }
+  .page-card:hover .page-card__arrow { color: var(--accent-hover); transform: translateX(3px); }
+
+  /* 预览图示意 */
+  .preview-mini-candles line { stroke-width: 2; }
+  .preview-rows rect { rx: 2; }
+
+  .token-strip {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 10px;
+    margin-top: 8px;
+  }
+  .token-chip {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-base);
+    border-radius: var(--r-md);
+  }
+  .token-chip .swatch {
+    width: 26px; height: 26px;
+    border-radius: 6px;
+    border: 1px solid var(--border-strong);
+    flex-shrink: 0;
+  }
+  .token-chip .tname { font-size: 12px; color: var(--text-primary); font-family: var(--font-mono); }
+  .token-chip .thex { font-size: 11px; color: var(--text-disabled); font-family: var(--font-mono); margin-left: auto; }
+
+  .foot {
+    margin-top: 8px;
+    padding: 24px 0;
+    border-top: 1px solid var(--border-base);
+    display: flex;
+    gap: 20px;
+    color: var(--text-disabled);
+    font-size: 12px;
+    font-family: var(--font-mono);
+  }
+</style>
+</head>
+<body>
+
+  <div class="content" style="max-width:1080px">
+
+    <!-- Hero -->
+    <header class="hero reveal">
+      <span class="hero__kicker">UI Design Mockups · 静态设计稿</span>
+      <h1 class="hero__title">chan<span class="accent">.py</span> 缠论量化<span class="brand-cursor" style="width:10px;height:34px;vertical-align:-5px"></span></h1>
+      <p class="hero__sub">
+        暗色专业终端风格，对标同花顺 / 富途 / TradingView。金融语义遵循 A 股「红涨绿跌」——
+        涨 / 阳线 / 买点 / 盈利为正 = 红，跌 / 阴线 / 卖点 / 盈利为负 = 绿。
+      </p>
+      <div class="hero__meta">
+        <span class="badge badge--default">暗色主题</span>
+        <span class="badge badge--rise">红涨</span>
+        <span class="badge badge--fall">绿跌</span>
+        <span class="badge badge--info">1440 × 900</span>
+        <span class="badge badge--default">共 10 页</span>
+      </div>
+    </header>
+
+    <!-- 页面卡片 -->
+    <div class="card-grid">
+
+      <a class="page-card reveal reveal--1" href="kline.html" style="--card-accent:var(--accent-base)">
+        <svg class="page-card__arrow" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        <div class="page-card__top">
+          <span class="page-card__num">01</span>
+          <span class="page-card__route">独立单页</span>
+        </div>
+        <div class="page-card__title">K 线图表页</div>
+        <p class="page-card__desc">交互式浏览单只股票 K 线与缠论结构——笔 / 线段 / 笔中枢 / 线段中枢 / 买卖点，叠加成交量与 MACD 副图。</p>
+        <div class="page-card__preview preview-mini-candles">
+          <svg viewBox="0 0 400 90" preserveAspectRatio="none">
+            <line x1="30" y1="50" x2="30" y2="70" stroke="#F6465D"/><rect x="26" y="52" width="8" height="14" fill="#F6465D"/>
+            <line x1="60" y1="30" x2="60" y2="50" stroke="#F6465D"/><rect x="56" y="34" width="8" height="12" fill="#F6465D"/>
+            <line x1="90" y1="40" x2="90" y2="60" stroke="#2EBD85"/><rect x="86" y="42" width="8" height="14" fill="#2EBD85"/>
+            <line x1="120" y1="20" x2="120" y2="38" stroke="#F6465D"/><rect x="116" y="24" width="8" height="12" fill="#F6465D"/>
+            <line x1="150" y1="34" x2="150" y2="54" stroke="#2EBD85"/><rect x="146" y="36" width="8" height="14" fill="#2EBD85"/>
+            <line x1="180" y1="14" x2="180" y2="30" stroke="#F6465D"/><rect x="176" y="18" width="8" height="10" fill="#F6465D"/>
+            <line x1="210" y1="24" x2="210" y2="40" stroke="#F6465D"/><rect x="206" y="28" width="8" height="10" fill="#F6465D"/>
+            <line x1="240" y1="8" x2="240" y2="22" stroke="#F6465D"/><rect x="236" y="12" width="8" height="8" fill="#F6465D"/>
+            <line x1="270" y1="18" x2="270" y2="34" stroke="#2EBD85"/><rect x="266" y="20" width="8" height="12" fill="#2EBD85"/>
+            <line x1="300" y1="6" x2="300" y2="20" stroke="#F6465D"/><rect x="296" y="10" width="8" height="8" fill="#F6465D"/>
+            <line x1="330" y1="14" x2="330" y2="28" stroke="#F6465D"/><rect x="326" y="18" width="8" height="8" fill="#F6465D"/>
+            <line x1="360" y1="4" x2="360" y2="16" stroke="#F6465D"/><rect x="356" y="8" width="8" height="6" fill="#F6465D"/>
+            <polyline points="30,52 120,20 240,10 360,6" fill="none" stroke="#3B82F6" stroke-width="1.5"/>
+          </svg>
+        </div>
+      </a>
+
+      <a class="page-card reveal reveal--2" href="watchlist.html" style="--card-accent:var(--rise)">
+        <svg class="page-card__arrow" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        <div class="page-card__top">
+          <span class="page-card__num">02</span>
+          <span class="page-card__route">/watchlist</span>
+        </div>
+        <div class="page-card__title">我的自选</div>
+        <p class="page-card__desc">文件夹分类管理自选股票，查看名称 / 编码 / 股价 / 行业，支持搜索、批量移出与加入自选弹窗。</p>
+        <div class="page-card__preview preview-rows">
+          <svg viewBox="0 0 400 90" preserveAspectRatio="none">
+            <rect x="10" y="6" width="90" height="16" fill="#1C2128"/>
+            <rect x="10" y="28" width="90" height="16" fill="#1C2128"/>
+            <rect x="10" y="50" width="90" height="16" fill="#1C2128"/>
+            <rect x="10" y="72" width="90" height="16" fill="#1C2128"/>
+            <rect x="112" y="6" width="278" height="16" fill="#161B22"/>
+            <rect x="112" y="28" width="278" height="16" fill="#161B22"/>
+            <rect x="112" y="50" width="278" height="16" fill="#161B22"/>
+            <rect x="112" y="72" width="278" height="16" fill="#161B22"/>
+            <rect x="250" y="10" width="40" height="8" fill="#F6465D" rx="4"/>
+            <rect x="250" y="32" width="40" height="8" fill="#2EBD85" rx="4"/>
+            <rect x="250" y="54" width="40" height="8" fill="#F6465D" rx="4"/>
+            <rect x="250" y="76" width="40" height="8" fill="#F6465D" rx="4"/>
+          </svg>
+        </div>
+      </a>
+
+      <a class="page-card reveal reveal--3" href="bsp.html" style="--card-accent:var(--warning)">
+        <svg class="page-card__arrow" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        <div class="page-card__top">
+          <span class="page-card__num">03</span>
+          <span class="page-card__route">/bsp</span>
+        </div>
+        <div class="page-card__title">历史买卖点</div>
+        <p class="page-card__desc">按周期 / 日期 / 类型查询全市场买卖点股票，板块聚合，批量加入自选 / 监控，支持区间套下钻。</p>
+        <div class="page-card__preview">
+          <svg viewBox="0 0 400 90" preserveAspectRatio="none">
+            <rect x="14" y="18" width="52" height="18" rx="9" fill="rgba(246,70,93,0.14)"/><text x="40" y="31" text-anchor="middle" font-size="10" fill="#F6465D" font-family="monospace">1B</text>
+            <rect x="78" y="18" width="52" height="18" rx="9" fill="rgba(246,70,93,0.14)"/><text x="104" y="31" text-anchor="middle" font-size="10" fill="#F6465D" font-family="monospace">2B</text>
+            <rect x="142" y="18" width="52" height="18" rx="9" fill="rgba(46,189,133,0.14)"/><text x="168" y="31" text-anchor="middle" font-size="10" fill="#2EBD85" font-family="monospace">1S</text>
+            <rect x="206" y="18" width="52" height="18" rx="9" fill="rgba(246,70,93,0.14)"/><text x="232" y="31" text-anchor="middle" font-size="10" fill="#F6465D" font-family="monospace">3B</text>
+            <rect x="270" y="18" width="52" height="18" rx="9" fill="rgba(46,189,133,0.14)"/><text x="296" y="31" text-anchor="middle" font-size="10" fill="#2EBD85" font-family="monospace">2S</text>
+            <rect x="334" y="18" width="52" height="18" rx="9" fill="rgba(246,70,93,0.14)"/><text x="360" y="31" text-anchor="middle" font-size="10" fill="#F6465D" font-family="monospace">L2B</text>
+            <rect x="14" y="52" width="372" height="22" rx="3" fill="#161B22"/>
+            <rect x="14" y="52" width="130" height="22" rx="3" fill="rgba(59,130,246,0.14)"/>
+          </svg>
+        </div>
+      </a>
+
+      <a class="page-card reveal reveal--4" href="monitor.html" style="--card-accent:var(--fall)">
+        <svg class="page-card__arrow" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        <div class="page-card__top">
+          <span class="page-card__num">04</span>
+          <span class="page-card__route">/monitor</span>
+        </div>
+        <div class="page-card__title">股票监控</div>
+        <p class="page-card__desc">监控列表 + 每只盈利走势折线 + 总体盈利汇总，支持手动结束监控与状态流转。</p>
+        <div class="page-card__preview">
+          <svg viewBox="0 0 400 90" preserveAspectRatio="none">
+            <polyline points="20,70 60,66 100,72 140,60 180,64 220,52 260,56 300,40 340,32 380,22" fill="none" stroke="#F6465D" stroke-width="2"/>
+            <circle cx="380" cy="22" r="3" fill="#F6465D"/>
+            <rect x="20" y="14" width="70" height="10" rx="3" fill="#1C2128"/>
+            <text x="24" y="22" font-size="9" fill="#F6465D" font-family="monospace">+2.18%</text>
+          </svg>
+        </div>
+      </a>
+
+    </div>
+
+    <!-- 其余页面 -->
+    <h2 class="section-title reveal reveal--1" style="margin-top:24px">其余页面</h2>
+    <div class="card-grid">
+
+      <a class="page-card reveal reveal--1" href="completed.html" style="--card-accent:var(--warning)">
+        <svg class="page-card__arrow" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        <div class="page-card__top"><span class="page-card__num">05</span><span class="page-card__route">/monitor/completed</span></div>
+        <div class="page-card__title">监控完成</div>
+        <p class="page-card__desc">展示已结算卖出的监控股票，对盈利 &lt; 5% 的标的做大模型亏损归因（缠论失效 / 计算逻辑错误）。</p>
+        <div class="page-card__preview">
+          <svg viewBox="0 0 400 90" preserveAspectRatio="none">
+            <rect x="14" y="14" width="60" height="16" rx="8" fill="rgba(240,185,11,0.14)"/><text x="44" y="26" text-anchor="middle" font-size="9" fill="#F0B90B" font-family="monospace">归因</text>
+            <rect x="86" y="14" width="200" height="8" rx="4" fill="#1C2128"/>
+            <rect x="86" y="30" width="130" height="8" rx="4" fill="#1C2128"/>
+            <rect x="14" y="52" width="372" height="22" rx="3" fill="#161B22"/>
+            <rect x="14" y="52" width="240" height="4" rx="2" fill="#3B82F6"/>
+          </svg>
+        </div>
+      </a>
+
+      <a class="page-card reveal reveal--2" href="performance.html" style="--card-accent:var(--rise)">
+        <svg class="page-card__arrow" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        <div class="page-card__top"><span class="page-card__num">06</span><span class="page-card__route">/performance</span></div>
+        <div class="page-card__title">买卖点绩效</div>
+        <p class="page-card__desc">按买卖点类型与周期统计历史胜率、盈亏比、样本数，柱状图对比胜率，下钻样本明细。</p>
+        <div class="page-card__preview">
+          <svg viewBox="0 0 400 90" preserveAspectRatio="none">
+            <rect x="30" y="40" width="30" height="40" fill="#F6465D" opacity="0.85"/>
+            <rect x="80" y="30" width="30" height="50" fill="#F6465D" opacity="0.85"/>
+            <rect x="130" y="46" width="30" height="34" fill="#2EBD85" opacity="0.85"/>
+            <rect x="180" y="24" width="30" height="56" fill="#F6465D" opacity="0.85"/>
+            <rect x="230" y="38" width="30" height="42" fill="#2EBD85" opacity="0.85"/>
+            <rect x="280" y="18" width="30" height="62" fill="#F6465D" opacity="0.85"/>
+            <rect x="330" y="34" width="30" height="46" fill="#2EBD85" opacity="0.85"/>
+            <line x1="20" y1="52" x2="380" y2="52" stroke="#F6465D" stroke-dasharray="4 4"/>
+          </svg>
+        </div>
+      </a>
+
+      <a class="page-card reveal reveal--3" href="screener.html" style="--card-accent:var(--accent-base)">
+        <svg class="page-card__arrow" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        <div class="page-card__top"><span class="page-card__num">07</span><span class="page-card__route">/screener</span></div>
+        <div class="page-card__title">条件选股</div>
+        <p class="page-card__desc">把周期 / 日期 / 买卖点类型 / 行业 / 指标阈值组合成可复用选股策略并执行扫描。</p>
+        <div class="page-card__preview">
+          <svg viewBox="0 0 400 90" preserveAspectRatio="none">
+            <rect x="14" y="10" width="372" height="22" rx="3" fill="#161B22"/>
+            <rect x="14" y="38" width="372" height="22" rx="3" fill="#161B22"/>
+            <rect x="14" y="66" width="372" height="22" rx="3" fill="#161B22"/>
+            <rect x="24" y="17" width="120" height="8" rx="4" fill="#E6E8EB" opacity="0.7"/>
+            <rect x="24" y="45" width="90" height="8" rx="4" fill="#E6E8EB" opacity="0.7"/>
+            <rect x="24" y="73" width="140" height="8" rx="4" fill="#E6E8EB" opacity="0.7"/>
+            <rect x="300" y="14" width="60" height="14" rx="7" fill="rgba(59,130,246,0.14)"/>
+          </svg>
+        </div>
+      </a>
+
+      <a class="page-card reveal reveal--4" href="alerts.html" style="--card-accent:var(--info)">
+        <svg class="page-card__arrow" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        <div class="page-card__top"><span class="page-card__num">08</span><span class="page-card__route">/alerts</span></div>
+        <div class="page-card__title">预警提醒</div>
+        <p class="page-card__desc">管理预警规则（价格 / 买卖点 / 监控卖点）与查看站内通知，未读高亮 + 一键标记已读。</p>
+        <div class="page-card__preview">
+          <svg viewBox="0 0 400 90" preserveAspectRatio="none">
+            <circle cx="24" cy="18" r="4" fill="#3B82F6"/>
+            <rect x="40" y="12" width="200" height="10" rx="5" fill="#1C2128"/>
+            <circle cx="24" cy="46" r="4" fill="#3B82F6"/>
+            <rect x="40" y="40" width="160" height="10" rx="5" fill="#1C2128"/>
+            <circle cx="24" cy="74" r="4" fill="#3B82F6"/>
+            <rect x="40" y="68" width="240" height="10" rx="5" fill="#1C2128"/>
+            <rect x="260" y="12" width="60" height="16" rx="8" fill="rgba(59,130,246,0.14)"/>
+          </svg>
+        </div>
+      </a>
+
+      <a class="page-card reveal reveal--5" href="login.html" style="--card-accent:var(--accent-base)">
+        <svg class="page-card__arrow" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        <div class="page-card__top"><span class="page-card__num">09</span><span class="page-card__route">/login · 不套壳</span></div>
+        <div class="page-card__title">登录</div>
+        <p class="page-card__desc">用户认证入口，独立居中页面（不套 AppShell），终端提示行点缀 + 登录失败提示。</p>
+        <div class="page-card__preview">
+          <svg viewBox="0 0 400 90" preserveAspectRatio="none">
+            <rect x="150" y="6" width="100" height="78" rx="8" fill="#161B22" stroke="#2A303A"/>
+            <rect x="165" y="18" width="70" height="8" rx="4" fill="#E6E8EB" opacity="0.8"/>
+            <rect x="165" y="34" width="70" height="14" rx="4" fill="#0A0D12" stroke="#2A303A"/>
+            <rect x="165" y="54" width="70" height="14" rx="4" fill="#0A0D12" stroke="#2A303A"/>
+            <rect x="165" y="70" width="70" height="10" rx="5" fill="#3B82F6"/>
+          </svg>
+        </div>
+      </a>
+
+      <a class="page-card reveal reveal--4" href="system.html" style="--card-accent:var(--warning)">
+        <svg class="page-card__arrow" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        <div class="page-card__top"><span class="page-card__num">10</span><span class="page-card__route">/system</span></div>
+        <div class="page-card__title">权限管理</div>
+        <p class="page-card__desc">admin 专属，管理用户、角色与角色-权限配置（权限树勾选 menu:* + manage）。</p>
+        <div class="page-card__preview">
+          <svg viewBox="0 0 400 90" preserveAspectRatio="none">
+            <rect x="20" y="8" width="14" height="14" rx="4" fill="#3B82F6"/>
+            <rect x="42" y="10" width="100" height="10" rx="5" fill="#E6E8EB" opacity="0.7"/>
+            <rect x="48" y="28" width="14" height="14" rx="4" fill="none" stroke="#3A424E"/>
+            <rect x="70" y="30" width="120" height="10" rx="5" fill="#1C2128"/>
+            <rect x="48" y="46" width="14" height="14" rx="4" fill="#3B82F6"/>
+            <rect x="70" y="48" width="140" height="10" rx="5" fill="#1C2128"/>
+            <rect x="48" y="64" width="14" height="14" rx="4" fill="none" stroke="#3A424E"/>
+            <rect x="70" y="66" width="110" height="10" rx="5" fill="#1C2128"/>
+            <line x1="41" y1="22" x2="41" y2="72" stroke="#2A303A"/>
+          </svg>
+        </div>
+      </a>
+
+    </div>
+
+    <!-- 设计令牌 -->
+    <section class="reveal reveal--5" style="margin-top:12px">
+      <h2 class="section-title" style="margin-bottom:14px">Design Tokens</h2>
+      <div class="token-strip">
+        <div class="token-chip"><span class="swatch" style="background:#0E1117"></span><div><div class="tname">bg/base</div><div class="thex">#0E1117</div></div></div>
+        <div class="token-chip"><span class="swatch" style="background:#161B22"></span><div><div class="tname">bg/surface</div><div class="thex">#161B22</div></div></div>
+        <div class="token-chip"><span class="swatch" style="background:#0A0D12"></span><div><div class="tname">bg/chart</div><div class="thex">#0A0D12</div></div></div>
+        <div class="token-chip"><span class="swatch" style="background:#3B82F6"></span><div><div class="tname">accent</div><div class="thex">#3B82F6</div></div></div>
+        <div class="token-chip"><span class="swatch" style="background:#F6465D"></span><div><div class="tname">rise 涨</div><div class="thex">#F6465D</div></div></div>
+        <div class="token-chip"><span class="swatch" style="background:#2EBD85"></span><div><div class="tname">fall 跌</div><div class="thex">#2EBD85</div></div></div>
+        <div class="token-chip"><span class="swatch" style="background:#F0B90B"></span><div><div class="tname">warning</div><div class="thex">#F0B90B</div></div></div>
+        <div class="token-chip"><span class="swatch" style="background:#E6E8EB"></span><div><div class="tname">text/primary</div><div class="thex">#E6E8EB</div></div></div>
+      </div>
+    </section>
+
+    <footer class="foot">
+      <span>chan.py 缠论量化</span>
+      <span>字体：IBM Plex Sans / JetBrains Mono / PingFang SC</span>
+      <span>红涨绿跌 · 暗色终端</span>
+    </footer>
+
+  </div>
+
+<script src="js/app.js"></script>
+</body>
+</html>

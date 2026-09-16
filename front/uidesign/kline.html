@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>K线图表 · chan.py 缠论量化</title>
+<link rel="stylesheet" href="css/design.css">
+<style>
+  /* K线页独立单页，无 AppShell */
+  .kline-page {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    min-height: 720px;
+    background: var(--bg-base);
+  }
+
+  /* 顶栏工具栏 */
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-md);
+    height: var(--topbar-h);
+    padding: 0 var(--sp-lg);
+    border-bottom: 1px solid var(--border-base);
+    background: var(--bg-surface);
+    flex-shrink: 0;
+  }
+  .topbar .brand-mark { margin-right: 4px; }
+  .topbar .divider { width: 1px; height: 20px; background: var(--border-base); margin: 0 4px; }
+
+  /* 主图区 */
+  .main-chart {
+    flex: 1;
+    min-height: 320px;
+    margin: var(--sp-lg) var(--sp-lg) var(--sp-sm);
+  }
+  .subchart {
+    height: 130px;
+    margin: var(--sp-sm) var(--sp-lg) 0;
+  }
+  .subchart:last-of-type { margin-bottom: var(--sp-lg); }
+
+  .legend-trigger {
+    width: 32px; height: 32px;
+    display: grid; place-items: center;
+    border-radius: var(--r-md);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    margin-left: auto;
+  }
+  .legend-trigger:hover { background: var(--bg-surface-hover); color: var(--text-primary); }
+
+  /* 图例 */
+  .legend-row {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12px; color: var(--text-secondary);
+    padding: 3px 0;
+  }
+  .legend-row .sw { width: 16px; height: 0; border-top: 2px solid var(--text-secondary); }
+  .legend-row .sw--seg { border-color: var(--accent-base); border-top-width: 3px; }
+  .legend-row .sw--box { width: 16px; height: 9px; border: 1px dashed var(--text-secondary); border-top: none; border-radius: 1px; }
+  .legend-row .sw--box2 { border-color: var(--accent-base); border-style: solid; background: rgba(59,130,246,0.12); }
+  .legend-row .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .legend-row .dot--buy { background: var(--rise); }
+  .legend-row .dot--sell { background: var(--fall); }
+  .legend-title { font-size: 11px; color: var(--text-disabled); letter-spacing: 0.08em; margin-bottom: 4px; }
+
+  .last-quote {
+    position: absolute; top: 10px; left: 14px;
+    display: flex; align-items: baseline; gap: 8px;
+    z-index: 5;
+  }
+  .last-quote .px { font-family: var(--font-mono); font-size: 16px; font-weight: 700; color: var(--rise); }
+  .last-quote .chg { font-family: var(--font-mono); font-size: 12px; color: var(--rise); }
+</style>
+</head>
+<body>
+<div class="kline-page">
+
+  <!-- 顶栏工具栏 -->
+  <header class="topbar reveal">
+    <span class="brand-mark"></span>
+    <span class="brand-name" style="font-size:14px">chan<span class="accent">.py</span></span>
+    <span class="divider"></span>
+
+    <div class="field" style="width:200px">
+      <svg class="field-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      <input value="sz.000001" aria-label="股票代码">
+    </div>
+
+    <div class="select">
+      <button class="select__trigger" type="button">
+        <span class="select__value">日线</span>
+        <svg class="chev" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <div class="select__menu">
+        <div class="select__option" data-label="1分钟">1分钟</div>
+        <div class="select__option" data-label="5分钟">5分钟</div>
+        <div class="select__option" data-label="1小时">1小时</div>
+        <div class="select__option is-selected" data-label="日线">日线</div>
+      </div>
+    </div>
+
+    <div class="select select--multi">
+      <button class="select__trigger" type="button">
+        <span class="select__value">副图指标</span>
+        <svg class="chev" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <div class="select__menu">
+        <div class="select__option"><span class="check-dot is-on"></span>成交量</div>
+        <div class="select__option"><span class="check-dot is-on"></span>MACD</div>
+        <div class="select__option"><span class="check-dot"></span>BOLL</div>
+        <div class="select__option"><span class="check-dot"></span>RSI</div>
+        <div class="select__option"><span class="check-dot"></span>KDJ</div>
+      </div>
+    </div>
+
+    <div class="tip legend-trigger">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.01"/></svg>
+      <div class="tip__bubble">
+        <div class="legend-title">缠论图例</div>
+        <div class="legend-row"><span class="sw"></span>笔（灰线）</div>
+        <div class="legend-row"><span class="sw sw--seg"></span>线段（蓝线）</div>
+        <div class="legend-row"><span class="sw sw--box"></span>笔中枢（灰框）</div>
+        <div class="legend-row"><span class="sw sw--box sw--box2"></span>线段中枢（蓝框）</div>
+        <div class="legend-row"><span class="dot dot--buy"></span>买点（1B/2B/L2B/3B）</div>
+        <div class="legend-row"><span class="dot dot--sell"></span>卖点（1S/2S/L2S/3S）</div>
+      </div>
+    </div>
+  </header>
+
+  <!-- 主图：K线 + 缠论 overlay -->
+  <section class="chart chart--grid main-chart reveal reveal--1">
+    <div class="last-quote">
+      <span class="px">10.32</span>
+      <span class="chg">+2.18%</span>
+    </div>
+    <div class="chart__tag">SZ.000001 日线 · 前复权</div>
+
+    <svg viewBox="0 0 1140 480" preserveAspectRatio="none">
+      <!-- 网格线 + 价格轴 -->
+      <g>
+        <line class="grid-line" x1="0" y1="39"  x2="1140" y2="39"/>
+        <line class="grid-line" x1="0" y1="116" x2="1140" y2="116"/>
+        <line class="grid-line" x1="0" y1="192" x2="1140" y2="192"/>
+        <line class="grid-line" x1="0" y1="269" x2="1140" y2="269"/>
+        <line class="grid-line" x1="0" y1="345" x2="1140" y2="345"/>
+        <line class="grid-line" x1="0" y1="422" x2="1140" y2="422"/>
+        <text class="axis-text" x="1130" y="42" text-anchor="end">10.40</text>
+        <text class="axis-text" x="1130" y="119" text-anchor="end">10.20</text>
+        <text class="axis-text" x="1130" y="195" text-anchor="end">10.00</text>
+        <text class="axis-text" x="1130" y="272" text-anchor="end">9.80</text>
+        <text class="axis-text" x="1130" y="348" text-anchor="end">9.60</text>
+        <text class="axis-text" x="1130" y="425" text-anchor="end">9.40</text>
+      </g>
+
+      <!-- 笔中枢（灰框） -->
+      <rect class="zs-bi" x="285" y="245" width="185" height="92" rx="3"/>
+      <!-- 线段中枢（蓝框） -->
+      <rect class="zs-seg" x="560" y="175" width="240" height="118" rx="3"/>
+
+      <!-- K线蜡烛 -->
+      <g>
+        <line class="candle-wick-down" x1="40" y1="372" x2="40" y2="396"/><rect class="candle-down" x="32" y="378" width="16" height="14"/>
+        <line class="candle-wick-up" x1="82" y1="388" x2="82" y2="344"/><rect class="candle-up" x="74" y="352" width="16" height="14"/>
+        <line class="candle-wick-up" x1="124" y1="348" x2="124" y2="312"/><rect class="candle-up" x="116" y="318" width="16" height="4"/>
+        <line class="candle-wick-up" x1="166" y1="310" x2="166" y2="276"/><rect class="candle-up" x="158" y="282" width="16" height="6"/>
+        <line class="candle-wick-down" x1="208" y1="300" x2="208" y2="330"/><rect class="candle-down" x="200" y="284" width="16" height="40"/>
+        <line class="candle-wick-up" x1="250" y1="322" x2="250" y2="270"/><rect class="candle-up" x="242" y="276" width="16" height="20"/>
+        <line class="candle-wick-up" x1="292" y1="268" x2="292" y2="236"/><rect class="candle-up" x="284" y="240" width="16" height="6"/>
+        <line class="candle-wick-up" x1="334" y1="234" x2="334" y2="200"/><rect class="candle-up" x="326" y="206" width="16" height="8"/>
+        <line class="candle-wick-down" x1="376" y1="224" x2="376" y2="260"/><rect class="candle-down" x="368" y="208" width="16" height="46"/>
+        <line class="candle-wick-down" x1="418" y1="258" x2="418" y2="292"/><rect class="candle-down" x="410" y="254" width="16" height="32"/>
+        <line class="candle-wick-up" x1="460" y1="284" x2="460" y2="240"/><rect class="candle-up" x="452" y="246" width="16" height="16"/>
+        <line class="candle-wick-down" x1="502" y1="264" x2="502" y2="300"/><rect class="candle-down" x="494" y="246" width="16" height="48"/>
+        <line class="candle-wick-down" x1="544" y1="300" x2="544" y2="340"/><rect class="candle-down" x="536" y="292" width="16" height="42"/>
+        <line class="candle-wick-up" x1="586" y1="336" x2="586" y2="288"/><rect class="candle-up" x="578" y="296" width="16" height="16"/>
+        <line class="candle-wick-up" x1="628" y1="292" x2="628" y2="248"/><rect class="candle-up" x="620" y="254" width="16" height="14"/>
+        <line class="candle-wick-up" x1="670" y1="246" x2="670" y2="210"/><rect class="candle-up" x="662" y="216" width="16" height="10"/>
+        <line class="candle-wick-up" x1="712" y1="208" x2="712" y2="172"/><rect class="candle-up" x="704" y="178" width="16" height="10"/>
+        <line class="candle-wick-down" x1="754" y1="196" x2="754" y2="232"/><rect class="candle-down" x="746" y="178" width="16" height="48"/>
+        <line class="candle-wick-up" x1="796" y1="228" x2="796" y2="184"/><rect class="candle-up" x="788" y="192" width="16" height="14"/>
+        <line class="candle-wick-up" x1="838" y1="190" x2="838" y2="152"/><rect class="candle-up" x="830" y="158" width="16" height="12"/>
+        <line class="candle-wick-down" x1="880" y1="172" x2="880" y2="210"/><rect class="candle-down" x="872" y="158" width="16" height="46"/>
+        <line class="candle-wick-up" x1="922" y1="206" x2="922" y2="160"/><rect class="candle-up" x="914" y="168" width="16" height="16"/>
+        <line class="candle-wick-up" x1="964" y1="166" x2="964" y2="126"/><rect class="candle-up" x="956" y="132" width="16" height="14"/>
+        <line class="candle-wick-up" x1="1006" y1="128" x2="1006" y2="92"/><rect class="candle-up" x="998" y="98" width="16" height="10"/>
+        <line class="candle-wick-down" x1="1048" y1="112" x2="1048" y2="150"/><rect class="candle-down" x="1040" y="98" width="16" height="46"/>
+        <line class="candle-wick-up" x1="1090" y1="146" x2="1090" y2="96"/><rect class="candle-up" x="1082" y="104" width="16" height="22"/>
+      </g>
+
+      <!-- 笔（灰折线） -->
+      <polyline class="bi-line" points="40,374 124,314 208,304 334,202 376,262 544,338 712,208 880,210 1006,92"/>
+      <!-- 线段（蓝折线） -->
+      <polyline class="seg-line" points="40,374 334,202 544,338 1006,92"/>
+
+      <!-- 买卖点 marker -->
+      <g>
+        <g class="bs-marker"><path d="M334,216 l5,8 -10,0 z" fill="#F6465D"/><text class="bs-marker-label-buy" x="334" y="240" text-anchor="middle">1B</text></g>
+        <g class="bs-marker"><path d="M544,352 l5,8 -10,0 z" fill="#F6465D"/><text class="bs-marker-label-buy" x="544" y="376" text-anchor="middle">2B</text></g>
+        <g class="bs-marker"><path d="M964,142 l5,8 -10,0 z" fill="#F6465D"/><text class="bs-marker-label-buy" x="964" y="166" text-anchor="middle">3B</text></g>
+        <g class="bs-marker"><path d="M208,290 l5,-8 -10,0 z" fill="#2EBD85"/><text class="bs-marker-label-sell" x="208" y="276" text-anchor="middle">1S</text></g>
+        <g class="bs-marker"><path d="M712,194 l5,-8 -10,0 z" fill="#2EBD85"/><text class="bs-marker-label-sell" x="712" y="180" text-anchor="middle">2S</text></g>
+      </g>
+    </svg>
+  </section>
+
+  <!-- 副图：成交量 -->
+  <section class="chart subchart reveal reveal--2">
+    <div class="subchart-head">
+      <span>成交量 <span class="mono">VOL</span></span>
+      <span class="mono val">5,238,400</span>
+      <span class="spacer"></span>
+      <span class="mono up">MA5 4,820,100</span>
+      <span class="mono down">MA10 4,415,300</span>
+    </div>
+    <svg viewBox="0 0 1140 104" preserveAspectRatio="none">
+      <line class="grid-line" x1="0" y1="52" x2="1140" y2="52"/>
+      <g>
+        <rect class="vol-down" x="33" y="72" width="14" height="40"/>
+        <rect class="vol-up" x="75" y="44" width="14" height="68"/>
+        <rect class="vol-up" x="117" y="57" width="14" height="55"/>
+        <rect class="vol-up" x="159" y="40" width="14" height="72"/>
+        <rect class="vol-down" x="201" y="22" width="14" height="90"/>
+        <rect class="vol-up" x="243" y="32" width="14" height="80"/>
+        <rect class="vol-up" x="285" y="66" width="14" height="46"/>
+        <rect class="vol-up" x="327" y="74" width="14" height="38"/>
+        <rect class="vol-down" x="369" y="24" width="14" height="88"/>
+        <rect class="vol-down" x="411" y="36" width="14" height="76"/>
+        <rect class="vol-up" x="453" y="60" width="14" height="52"/>
+        <rect class="vol-down" x="495" y="28" width="14" height="84"/>
+        <rect class="vol-down" x="537" y="17" width="14" height="95"/>
+        <rect class="vol-up" x="579" y="46" width="14" height="66"/>
+        <rect class="vol-up" x="621" y="68" width="14" height="44"/>
+        <rect class="vol-up" x="663" y="82" width="14" height="30"/>
+        <rect class="vol-up" x="705" y="90" width="14" height="22"/>
+        <rect class="vol-down" x="747" y="54" width="14" height="58"/>
+        <rect class="vol-up" x="789" y="78" width="14" height="34"/>
+        <rect class="vol-up" x="831" y="92" width="14" height="20"/>
+        <rect class="vol-down" x="873" y="50" width="14" height="62"/>
+        <rect class="vol-up" x="915" y="84" width="14" height="28"/>
+        <rect class="vol-up" x="957" y="96" width="14" height="16"/>
+        <rect class="vol-up" x="999" y="100" width="14" height="12"/>
+        <rect class="vol-down" x="1041" y="64" width="14" height="48"/>
+        <rect class="vol-up" x="1083" y="98" width="14" height="14"/>
+      </g>
+    </svg>
+  </section>
+
+  <!-- 副图：MACD -->
+  <section class="chart subchart reveal reveal--3">
+    <div class="subchart-head">
+      <span>MACD <span class="mono">(12,26,9)</span></span>
+      <span class="spacer"></span>
+      <span class="mono up">DIF 0.041</span>
+      <span class="mono down">DEA 0.028</span>
+      <span class="mono" style="color:var(--text-secondary)">MACD 0.026</span>
+    </div>
+    <svg viewBox="0 0 1140 104" preserveAspectRatio="none">
+      <line class="grid-line" x1="0" y1="52" x2="1140" y2="52"/>
+      <g>
+        <rect class="macd-down" x="36" y="52" width="8" height="4"/>
+        <rect class="macd-down" x="78" y="52" width="8" height="8"/>
+        <rect class="macd-up" x="120" y="48" width="8" height="8"/>
+        <rect class="macd-up" x="162" y="42" width="8" height="12"/>
+        <rect class="macd-up" x="204" y="46" width="8" height="8"/>
+        <rect class="macd-down" x="246" y="52" width="8" height="6"/>
+        <rect class="macd-down" x="288" y="52" width="8" height="14"/>
+        <rect class="macd-down" x="330" y="52" width="8" height="10"/>
+        <rect class="macd-up" x="372" y="44" width="8" height="10"/>
+        <rect class="macd-up" x="414" y="38" width="8" height="16"/>
+        <rect class="macd-up" x="456" y="46" width="8" height="8"/>
+        <rect class="macd-down" x="498" y="52" width="8" height="4"/>
+        <rect class="macd-down" x="540" y="52" width="8" height="12"/>
+        <rect class="macd-up" x="582" y="44" width="8" height="12"/>
+        <rect class="macd-up" x="624" y="36" width="8" height="20"/>
+        <rect class="macd-up" x="666" y="46" width="8" height="8"/>
+        <rect class="macd-up" x="708" y="40" width="8" height="14"/>
+        <rect class="macd-up" x="750" y="34" width="8" height="22"/>
+        <rect class="macd-up" x="792" y="44" width="8" height="12"/>
+        <rect class="macd-up" x="834" y="40" width="8" height="16"/>
+        <rect class="macd-down" x="876" y="52" width="8" height="6"/>
+        <rect class="macd-up" x="918" y="44" width="8" height="10"/>
+        <rect class="macd-up" x="960" y="38" width="8" height="18"/>
+        <rect class="macd-up" x="1002" y="32" width="8" height="24"/>
+        <rect class="macd-down" x="1044" y="52" width="8" height="8"/>
+        <rect class="macd-up" x="1086" y="42" width="8" height="14"/>
+      </g>
+      <polyline class="signal-line" points="40,56 124,52 208,58 334,50 418,64 502,72 586,66 670,56 754,50 838,44 922,48 1006,38 1090,34"/>
+      <polyline class="macd-line" points="40,52 124,46 208,54 334,42 418,58 502,68 586,60 670,50 754,44 838,36 922,42 1006,30 1090,24"/>
+    </svg>
+  </section>
+
+</div>
+<script src="js/app.js"></script>
+</body>
+</html>
