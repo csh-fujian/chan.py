@@ -1,5 +1,5 @@
 import { http, HttpResponse, delay } from 'msw'
-import { watchFolders, addFolder, removeFolder, addStockToFolder, removeStockFromFolder, moveStock, getWatchStocks } from '../data/watchlist'
+import { watchFolders, addFolder, removeFolder, renameFolder, addStockToFolder, removeStockFromFolder, moveStock, getWatchStocks } from '../data/watchlist'
 
 export const watchlistHandlers = [
   http.get('/api/watchlist/folders', async () => {
@@ -17,6 +17,13 @@ export const watchlistHandlers = [
   http.delete('/api/watchlist/folders/:id', async ({ params }) => {
     await delay(200)
     removeFolder(Number(params.id))
+    return HttpResponse.json({ success: true })
+  }),
+
+  http.patch('/api/watchlist/folders/:id', async ({ params, request }) => {
+    await delay(150)
+    const body = await request.json() as { name: string }
+    renameFolder(Number(params.id), body.name)
     return HttpResponse.json({ success: true })
   }),
 

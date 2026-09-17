@@ -3,7 +3,6 @@
     <div class="topnav__brand">
       <span class="brand-mark"></span>
       <span class="brand-name">chan<span class="accent">.py</span></span>
-      <span class="brand-cursor"></span>
       <span class="brand-sub">缠论量化</span>
     </div>
 

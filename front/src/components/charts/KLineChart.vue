@@ -39,6 +39,7 @@ const empty = ref(false)
 
 // chart 实例非响应式（design.md D6）
 let chart: Chart | null = null
+let resizeObserver: ResizeObserver | null = null
 
 /** 副图指标 pane id 前缀 */
 const PANE_PREFIX = 'chan_sub_'
@@ -229,6 +230,11 @@ onMounted(() => {
   if (props.result) {
     applyResult(props.result)
   }
+  // 容器尺寸变化时自动重绘（折叠左侧面板 / 窗口缩放）
+  if (chartRef.value && typeof ResizeObserver !== 'undefined') {
+    resizeObserver = new ResizeObserver(() => chart?.resize())
+    resizeObserver.observe(chartRef.value)
+  }
 })
 
 watch(
@@ -247,6 +253,8 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
+  resizeObserver = null
   if (chart) {
     dispose(chart)
     chart = null

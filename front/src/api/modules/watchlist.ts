@@ -23,6 +23,11 @@ export function deleteFolder(id: number) {
   return client.delete<unknown, { success: boolean }>(`/watchlist/folders/${id}`)
 }
 
+/** 重命名文件夹 */
+export function renameFolder(id: number, name: string) {
+  return client.patch<unknown, { success: boolean }>(`/watchlist/folders/${id}`, { name })
+}
+
 /** 获取某文件夹下的股票（mock 返回全量数组；真实后端将服务端分页） */
 export function getFolderStocks(folderId: number) {
   return client.get<unknown, Stock[]>(`/watchlist/folders/${folderId}/stocks`)

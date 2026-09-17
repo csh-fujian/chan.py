@@ -24,9 +24,14 @@ export interface Stock {
   code: string
   name: string
   industries: string[]
+  region: string
+  concepts: string[]
   price: number
   change_pct: number
 }
+
+/** 标的详情（完整板块信息：行业/地区/概念全量展示） */
+export type StockProfile = Stock
 
 // ---------------------------------------------------------------------------
 // K 线（design.md D2 序列化契约）
@@ -237,4 +242,15 @@ export interface Permission {
   code: string
   name: string
   category: string
+}
+
+// ---------------------------------------------------------------------------
+// 大模型问答
+// ---------------------------------------------------------------------------
+export interface QaRecord {
+  id: number
+  question: string
+  answer: string
+  starred: boolean
+  created_at: number
 }

@@ -28,6 +28,11 @@ export function removeFolder(id: number) {
   if (idx >= 0) watchFolders.splice(idx, 1)
 }
 
+export function renameFolder(id: number, name: string) {
+  const f = watchFolders.find((f) => f.id === id)
+  if (f) f.name = name
+}
+
 export function addStockToFolder(folderId: number, code: string) {
   const f = watchFolders.find((f) => f.id === folderId)
   if (f && !f.codes.includes(code)) f.codes.push(code)

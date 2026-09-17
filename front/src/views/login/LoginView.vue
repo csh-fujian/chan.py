@@ -5,7 +5,6 @@
       <div class="login-brand">
         <span class="brand-mark"></span>
         <span class="brand-name">chan<span class="accent">.py</span></span>
-        <span class="brand-cursor"></span>
       </div>
       <div class="login-sub">缠论量化分析平台</div>
 
