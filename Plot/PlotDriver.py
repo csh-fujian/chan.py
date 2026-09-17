@@ -332,6 +332,7 @@ class CPlotDriver:
 
         # 创建图表
         self.figure, axes = create_figure(plot_macd, figure_config, self.lv_lst)
+        self.figure.patch.set_facecolor('black')
 
         # 多级别联动相关变量
         sseg_begin = 0
@@ -448,48 +449,15 @@ class CPlotDriver:
             ax_macd: MACD 坐标轴（可选）
             x_limits: X 轴范围
 
-        根据配置项逐一调用对应的绘制方法。
-        配置项以 "plot_" 开头，如 plot_bi, plot_seg, plot_zs 等。
+        当前为开发占位阶段：主图和副图均使用黑色背景占位显示。
+        后续根据开发再进行调整。
         """
-        if plot_config.get("plot_kline", False):
-            self.draw_klu(meta, ax, **plot_para.get('kl', {}))
-        if plot_config.get("plot_kline_combine", False):
-            self.draw_klc(meta, ax, **plot_para.get('klc', {}))
-        if plot_config.get("plot_bi", False):
-            self.draw_bi(meta, ax, lv, **plot_para.get('bi', {}))
-        if plot_config.get("plot_seg", False):
-            self.draw_seg(meta, ax, lv, **plot_para.get('seg', {}))
-        if plot_config.get("plot_segseg", False):
-            self.draw_segseg(meta, ax, **plot_para.get('segseg', {}))
-        if plot_config.get("plot_eigen", False):
-            self.draw_eigen(meta, ax, **plot_para.get('eigen', {}))
-        if plot_config.get("plot_segeigen", False):
-            self.draw_segeigen(meta, ax, **plot_para.get('segeigen', {}))
-        if plot_config.get("plot_zs", False):
-            self.draw_zs(meta, ax, **plot_para.get('zs', {}))
-        if plot_config.get("plot_segzs", False):
-            self.draw_segzs(meta, ax, **plot_para.get('segzs', {}))
-        if plot_config.get("plot_macd", False):
-            assert ax_macd is not None
-            self.draw_macd(meta, ax_macd, x_limits, **plot_para.get('macd', {}))
-        if plot_config.get("plot_mean", False):
-            self.draw_mean(meta, ax, **plot_para.get('mean', {}))
-        if plot_config.get("plot_channel", False):
-            self.draw_channel(meta, ax, **plot_para.get('channel', {}))
-        if plot_config.get("plot_boll", False):
-            self.draw_boll(meta, ax, **plot_para.get('boll', {}))
-        if plot_config.get("plot_bsp", False):
-            self.draw_bs_point(meta, ax, **plot_para.get('bsp', {}))
-        if plot_config.get("plot_segbsp", False):
-            self.draw_seg_bs_point(meta, ax, **plot_para.get('seg_bsp', {}))
-        if plot_config.get("plot_demark", False):
-            self.draw_demark(meta, ax, **plot_para.get('demark', {}))
-        if plot_config.get("plot_marker", False):
-            self.draw_marker(meta, ax, **plot_para.get('marker', {'markers': {}}))
-        if plot_config.get("plot_rsi", False):
-            self.draw_rsi(meta, ax.twinx(), **plot_para.get('rsi', {}))
-        if plot_config.get("plot_kdj", False):
-            self.draw_kdj(meta, ax.twinx(), **plot_para.get('kdj', {}))
+        # === 主图（K线图）黑色背景占位 ===
+        ax.set_facecolor('black')
+
+        # === 副图（MACD指标图）黑色背景占位 ===
+        if ax_macd is not None:
+            ax_macd.set_facecolor('black')
 
     def ShowDrawFuncHelper(self):
         """
