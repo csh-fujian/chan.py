@@ -46,8 +46,8 @@
       </div>
 
       <div class="sp-watch-actions">
-        <el-dropdown trigger="click" @command="onAddToFolder">
-          <button class="btn btn--primary btn--sm">
+        <el-dropdown trigger="click" @command="onAddToFolder" :disabled="!folders.length">
+          <button class="btn btn--primary btn--sm" :disabled="!folders.length">
             <el-icon><Star /></el-icon> 加入自选
           </button>
           <template #dropdown>
@@ -59,6 +59,9 @@
                 :disabled="f.codes.includes(code)"
               >
                 {{ f.name }}{{ f.codes.includes(code) ? '（已加入）' : '' }}
+              </el-dropdown-item>
+              <el-dropdown-item v-if="!folders.length" disabled>
+                暂无分组，请先点击「新建」
               </el-dropdown-item>
             </el-dropdown-menu>
           </template>

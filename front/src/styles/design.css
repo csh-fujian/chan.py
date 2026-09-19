@@ -253,7 +253,7 @@ input, select, button, textarea { font-family: inherit; font-size: inherit; colo
   display: flex;
   flex-direction: column;
   gap: var(--sp-lg);
-  min-width: 80%;
+  min-width: 90%;
   margin: 0 auto;
 }
 

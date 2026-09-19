@@ -54,7 +54,7 @@
 <script setup lang="ts">
 import { ref, reactive, watch, computed } from 'vue'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
-import { stocks as allStocks } from '@/mock/data/stocks'
+import { searchStocks } from '@/api/modules/stock'
 import type { AlertRule, Stock } from '@/api/types'
 import * as alertsApi from '@/api/modules/alerts'
 
@@ -75,7 +75,8 @@ const visible = computed({
 const isEdit = computed(() => !!props.rule)
 const formRef = ref<FormInstance>()
 const saving = ref(false)
-const options = ref<Stock[]>([...allStocks])
+const options = ref<Stock[]>([])
+const searchLoading = ref(false)
 
 const form = reactive({
   name: '',
@@ -93,25 +94,25 @@ const rules: FormRules = {
   kl_type: [{ required: true, message: '请选择级别', trigger: 'change' }],
 }
 
-function onSearch(query: string) {
-  if (!query) {
-    options.value = [...allStocks]
-    return
+async function onSearch(query: string) {
+  searchLoading.value = true
+  try {
+    options.value = await searchStocks(query)
+  } catch {
+    // fallback 保持现有选项
+  } finally {
+    searchLoading.value = false
   }
-  const q = query.toLowerCase()
-  options.value = allStocks.filter(
-    (s) => s.code.toLowerCase().includes(q) || s.name.toLowerCase().includes(q),
-  )
 }
 
 function onStockChange(code: string) {
-  const s = allStocks.find((x) => x.code === code)
+  const s = options.value.find((x) => x.code === code)
   if (s) form.stock_name = s.name
 }
 
 watch(
   () => props.modelValue,
-  (open) => {
+  async (open) => {
     if (!open) return
     if (props.rule) {
       Object.assign(form, {
@@ -132,7 +133,10 @@ watch(
         enabled: true,
       })
     }
-    options.value = [...allStocks]
+    // 初始化搜索选项
+    try {
+      options.value = await searchStocks('')
+    } catch { /* ignore */ }
   },
 )
 
@@ -145,7 +149,7 @@ async function onSave() {
       const payload = {
         name: form.name,
         code: form.code,
-        stock_name: form.stock_name || allStocks.find((s) => s.code === form.code)?.name || '',
+        stock_name: form.stock_name || options.value.find((s) => s.code === form.code)?.name || '',
         condition: form.condition,
         kl_type: form.kl_type,
         enabled: form.enabled,

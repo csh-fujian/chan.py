@@ -40,7 +40,7 @@
           placeholder="不限"
           style="width: 100%"
         >
-          <el-option v-for="ind in allIndustries" :key="ind" :label="ind" :value="ind" />
+          <el-option v-for="ind in industryOptions" :key="ind" :label="ind" :value="ind" />
         </el-select>
       </el-form-item>
       <el-form-item label="状态" prop="status">
@@ -64,8 +64,8 @@
 import { ref, reactive, computed, watch } from 'vue'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { createStrategy, updateStrategy } from '@/api/modules/screener'
+import { getIndustries } from '@/api/modules/stock'
 import { ALL_BSP_LABELS } from '@/utils/bsp'
-import { allIndustries } from '@/mock/data/stocks'
 import type { Strategy } from '@/api/types'
 
 const props = defineProps<{
@@ -92,6 +92,7 @@ const klOptions = [
 
 const formRef = ref<FormInstance>()
 const saving = ref(false)
+const industryOptions = ref<string[]>([])
 
 const form = reactive({
   name: '',
@@ -111,7 +112,7 @@ const rules: FormRules = {
 // 初始化表单
 watch(
   () => props.visible,
-  (v) => {
+  async (v) => {
     if (!v) return
     if (props.strategy) {
       Object.assign(form, {
@@ -132,6 +133,10 @@ watch(
         status: 'active',
       })
     }
+    // 加载行业列表
+    try {
+      industryOptions.value = await getIndustries()
+    } catch { /* ignore */ }
   },
   { immediate: true },
 )

@@ -67,6 +67,7 @@
             :data="pagedStocks"
             empty-text="该文件夹暂无股票"
             @selection-change="onSelectionChange"
+            @row-dblclick="onRowDblClick"
             row-key="code"
           >
             <el-table-column type="selection" width="44" reserve-selection />
@@ -186,6 +187,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Folder, Search, Close } from '@element-plus/icons-vue'
 import { useDebounceFn } from '@vueuse/core'
@@ -202,8 +204,13 @@ import {
   moveStock,
   type WatchFolder,
 } from '@/api/modules/watchlist'
-import { stocks as allStocks } from '@/mock/data/stocks'
+import { searchStocks } from '@/api/modules/stock'
 import type { Stock } from '@/api/types'
+
+const router = useRouter()
+
+// 股票搜索缓存
+const stockCache = ref<Stock[]>([])
 
 // ---- 文件夹 ----
 const folders = ref<WatchFolder[]>([])
@@ -300,6 +307,10 @@ function clearSelection() {
 }
 
 // ---- 操作：移出 ----
+function onRowDblClick(row: Stock) {
+  router.push({ name: 'kline', query: { code: row.code } })
+}
+
 async function onRemove(row: Stock) {
   if (!currentFolderId.value) {
     ElMessage.warning('「全部」视图下无法移出，请先选择具体文件夹')
@@ -409,17 +420,17 @@ const adding = ref(false)
 const stockOptions = ref<Stock[]>([])
 const stockSearching = ref(false)
 
-function searchStock(query: string) {
+async function searchStock(query: string) {
   stockSearching.value = true
-  const q = query.trim().toLowerCase()
-  if (!q) {
-    stockOptions.value = allStocks.slice(0, 20)
-  } else {
-    stockOptions.value = allStocks
-      .filter((s) => s.code.toLowerCase().includes(q) || s.name.toLowerCase().includes(q))
-      .slice(0, 30)
+  try {
+    stockOptions.value = await searchStocks(query)
+  } catch {
+    stockOptions.value = stockCache.value.filter(
+      (s) => !query || s.code.toLowerCase().includes(query.toLowerCase()) || s.name.toLowerCase().includes(query.toLowerCase()),
+    ).slice(0, 30)
+  } finally {
+    stockSearching.value = false
   }
-  stockSearching.value = false
 }
 
 async function onAddStock() {
@@ -531,5 +542,13 @@ onMounted(async () => {
   font-size: 12px;
   color: var(--text-disabled);
   margin: 0;
+}
+
+/* 表格行双击可点击提示 */
+:deep(.el-table__body tr) {
+  cursor: pointer;
+}
+:deep(.el-table__body tr:hover) {
+  background: var(--bg-surface-hover);
 }
 </style>

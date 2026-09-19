@@ -25,12 +25,16 @@ import {
   CandleType,
   TooltipShowRule,
   TooltipShowType,
+  LoadDataType,
 } from 'klinecharts'
 import type { ChanResult } from '@/api/types'
 import { registerAllChanOverlays } from '@/components/chan'
+import { getKLine } from '@/api/modules/kline'
 
 const props = defineProps<{
   result: ChanResult | null
+  code?: string
+  period?: string
 }>()
 
 const chartRef = ref<HTMLDivElement | null>(null)
@@ -40,6 +44,8 @@ const empty = ref(false)
 // chart 实例非响应式（design.md D6）
 let chart: Chart | null = null
 let resizeObserver: ResizeObserver | null = null
+/** 首屏数据是否已加载完毕，在此之前跳过增量加载 */
+let initialLoadDone = false
 
 /** 副图指标 pane id 前缀 */
 const PANE_PREFIX = 'chan_sub_'
@@ -54,6 +60,9 @@ const DOWN_COLOR = '#2EBD85'
 function applyResult(result: ChanResult): void {
   if (!chart) return
 
+  // 标记首屏加载中，阻止 applyNewData 触发的 Backward 增量回调
+  initialLoadDone = false
+
   const klines: KLineData[] = result.klines.map((k) => ({
     timestamp: k.timestamp,
     open: k.open,
@@ -64,33 +73,36 @@ function applyResult(result: ChanResult): void {
   }))
   chart.applyNewData(klines)
 
+  // applyNewData 后首屏加载完成，后续增量加载可正常触发
+  initialLoadDone = true
+
   // 先移除旧覆盖层，再重建
   chart.removeOverlay('chan_bi')
   chart.removeOverlay('chan_seg')
   chart.removeOverlay('chan_zs')
   chart.removeOverlay('chan_bsp')
 
-  // 笔覆盖层：points 按 [begin, end, begin, end, ...] 顺序
+  // 笔覆盖层：points 按 [begin, end, begin, end, ...] 顺序；lock=true 禁止拖动
   if (result.bi.length > 0) {
     const biPoints: Array<{ timestamp: number; value: number }> = []
     for (const b of result.bi) {
       biPoints.push({ timestamp: b.begin.t, value: b.begin.v })
       biPoints.push({ timestamp: b.end.t, value: b.end.v })
     }
-    chart.createOverlay({ name: 'chan_bi', points: biPoints })
+    chart.createOverlay({ name: 'chan_bi', lock: true, points: biPoints })
   }
 
-  // 线段覆盖层：同笔结构
+  // 线段覆盖层：同笔结构；lock=true 禁止拖动
   if (result.seg.length > 0) {
     const segPoints: Array<{ timestamp: number; value: number }> = []
     for (const s of result.seg) {
       segPoints.push({ timestamp: s.begin.t, value: s.begin.v })
       segPoints.push({ timestamp: s.end.t, value: s.end.v })
     }
-    chart.createOverlay({ name: 'chan_seg', points: segPoints })
+    chart.createOverlay({ name: 'chan_seg', lock: true, points: segPoints })
   }
 
-  // 中枢覆盖层：每个中枢 4 个角点，extendData 存 meta
+  // 中枢覆盖层：每个中枢 4 个角点，extendData 存 meta；lock=true 禁止拖动
   const allZs = [
     ...result.zs.map((z) => ({ z, level: 'bi' as const })),
     ...result.seg_zs.map((z) => ({ z, level: 'seg' as const })),
@@ -109,12 +121,13 @@ function applyResult(result: ChanResult): void {
     })
     chart.createOverlay({
       name: 'chan_zs',
+      lock: true,
       points: zsPoints,
       extendData: zsMeta,
     })
   }
 
-  // 买卖点覆盖层：每个买卖点 1 个点，extendData 存 meta
+  // 买卖点覆盖层：每个买卖点 1 个点，extendData 存 meta；lock=true 禁止拖动
   if (result.bsp.length > 0) {
     const bspPoints: Array<{ timestamp: number; value: number }> = []
     const bspMeta: Array<{ isBuy: boolean; types: string[]; pointIndex: number }> = []
@@ -124,6 +137,7 @@ function applyResult(result: ChanResult): void {
     })
     chart.createOverlay({
       name: 'chan_bsp',
+      lock: true,
       points: bspPoints,
       extendData: bspMeta,
     })
@@ -175,8 +189,9 @@ function initChart(): void {
     },
     yAxis: {
       show: true,
+      size: 100,
       axisLine: { show: true, color: '#2A303A', size: 1 },
-      tickText: { show: true, color: '#565D66', size: 11 },
+      tickText: { show: true, color: '#565D66', size: 11, marginStart: 6 },
       tickLine: { show: true, color: '#2A303A', size: 1 },
     },
     crosshair: {
@@ -192,6 +207,36 @@ function initChart(): void {
         text: { show: true, color: '#E6E8EB', backgroundColor: '#1C2128', size: 11, paddingLeft: 4, paddingRight: 4, paddingTop: 2, paddingBottom: 2, borderRadius: 2 },
       },
     },
+  })
+
+  // 增量加载 data loader（任务5.3：拖到最早端触发 getBars('backward')）
+  // design.md D4: 缠论全量返回，增量加载只针对 K 线
+  chart.setLoadDataCallback(async ({ type, data, callback }) => {
+    // 首屏加载期间不触发增量加载，避免 applyNewData 导致的重复请求
+    if (!initialLoadDone) return
+    // 只有向前/向后滚动才触发增量加载，初始化时不触发
+    if (type === LoadDataType.Init) return
+    if (!props.code || !props.period) return
+    try {
+      // 使用当前数据中最早的 timestamp 作为分页游标
+      const earliest = data?.timestamp ?? 0
+      const result = await getKLine(props.code, props.period, earliest)
+      if (!result.klines || result.klines.length === 0) {
+        callback([])
+        return
+      }
+      const extra: KLineData[] = result.klines.map((k) => ({
+        timestamp: k.timestamp,
+        open: k.open,
+        high: k.high,
+        low: k.low,
+        close: k.close,
+        volume: k.volume,
+      }))
+      callback(extra)
+    } catch {
+      callback([])
+    }
   })
 }
 
@@ -244,6 +289,7 @@ watch(
     if (!result) {
       empty.value = true
       loading.value = false
+      initialLoadDone = false // 切换股票期间禁止增量加载
       return
     }
     loading.value = false

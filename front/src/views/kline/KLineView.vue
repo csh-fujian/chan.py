@@ -105,7 +105,7 @@
 
       <section class="chart chart--grid main-chart reveal reveal--1">
         <div class="chart__tag">{{ code.toUpperCase() }} · {{ periodLabel }} · 前复权</div>
-        <KLineChart ref="chartComp" :result="result" />
+        <KLineChart ref="chartComp" :result="result" :code="code" :period="period" />
       </section>
     </div>
   </div>
@@ -118,6 +118,7 @@
  * design.md D6：切换代码/周期触发命令式重载
  */
 import { ref, computed, onMounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { Search, Star, ChatDotRound, Fold, Expand, ArrowDown } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import KLineChart from '@/components/charts/KLineChart.vue'
@@ -126,6 +127,7 @@ import QaPanel from '@/components/kline/QaPanel.vue'
 import { getKLine } from '@/api/modules/kline'
 import type { ChanResult } from '@/api/types'
 
+const route = useRoute()
 const SearchIcon = Search
 
 const codeInput = ref('sz.000001')
@@ -179,7 +181,7 @@ function jumpTo(tab: 'stock' | 'qa'): void {
 async function load(): Promise<void> {
   loading.value = true
   try {
-    const res = await getKLine(code.value)
+    const res = await getKLine(code.value, period.value)
     result.value = res
   } catch (e) {
     ElMessage.error('加载 K 线数据失败')
@@ -216,6 +218,12 @@ function toggleIndicator(value: string): void {
 }
 
 onMounted(() => {
+  // 从 URL query 参数读取股票代码（从其他页面跳转）
+  const qCode = route.query.code
+  if (qCode && typeof qCode === 'string' && qCode.trim()) {
+    code.value = qCode.trim()
+    codeInput.value = code.value
+  }
   load()
 })
 
@@ -470,12 +478,17 @@ watch(result, () => {
 .chart__tag {
   position: absolute;
   top: 10px;
-  left: 14px;
-  font-size: 11px;
-  color: var(--text-disabled);
+  right: 14px;
+  left: auto;
+  font-size: 12px;
+  color: var(--text-secondary);
   font-family: var(--font-mono);
-  letter-spacing: 0.06em;
+  letter-spacing: 0.04em;
   pointer-events: none;
   z-index: 5;
+  white-space: nowrap;
+  padding: 2px 8px;
+  background: color-mix(in srgb, var(--bg-chart) 88%, transparent);
+  border-radius: var(--r-sm);
 }
 </style>

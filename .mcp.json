@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "postgres": {
+      "args": [
+        "--access-mode=unrestricted"
+      ],
+      "command": "postgres-mcp",
+      "env": {
+        "DATABASE_URI": "postgresql://postgres:postgres@127.0.0.1:5432/chan"
+      },
+      "type": "stdio"
+    }
+  }
+}
