@@ -15,14 +15,15 @@ import sys
 
 _DEBUG_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_DEBUG_DIR)
+_DATA_DIR = os.path.join(_REPO_ROOT, "Data")
 sys.path.insert(0, _REPO_ROOT)
-sys.path.insert(0, _DEBUG_DIR)
+sys.path.insert(0, _DATA_DIR)
 
-from Common.CEnum import DATA_FIELD, KL_TYPE
-from Common.CTime import CTime
-from DataAPI.KLineStore import KLineStore
-from DataAPI.RecomputeCursor import MemoryCursor
-from KLine.KLine_Unit import CKLine_Unit
+from ChanAnalyse.Common.CEnum import DATA_FIELD, KL_TYPE
+from ChanAnalyse.Common.CTime import CTime
+from ChanAnalyse.DataAPI.KLineStore import KLineStore
+from ChanAnalyse.DataAPI.RecomputeCursor import MemoryCursor
+from ChanAnalyse.KLine.KLine_Unit import CKLine_Unit
 
 import intraday_poll as ip
 
@@ -115,7 +116,7 @@ def test_poll_once_only_closed():
         mklu(2026, 9, 7, 9, 45, 10.3, 10.4),  # 形成中
     ]
     with KLineStore(":memory:") as store:
-        wm = ip.poll_once(FakeMinute, "sz.000001", KL_TYPE.K_5M, __import__("Common.CEnum", fromlist=["AUTYPE"]).AUTYPE.QFQ,
+        wm = ip.poll_once(FakeMinute, "sz.000001", KL_TYPE.K_5M, __import__("ChanAnalyse.Common.CEnum", fromlist=["AUTYPE"]).AUTYPE.QFQ,
                           store, "2026-09-07 09:37:00")
         check("水位 = 最后一根已收盘 bar 09:35", wm == "2026-09-07 09:35:00")
         df = store.query("sz.000001", "K_5M", "QFQ")

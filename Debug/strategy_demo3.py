@@ -22,11 +22,11 @@ Java 开发者注意：
 import copy
 from typing import List
 
-from Chan import CChan
-from ChanConfig import CChanConfig
-from Common.CEnum import AUTYPE, DATA_FIELD, DATA_SRC, KL_TYPE
-from DataAPI.BaoStockAPI import CBaoStock
-from KLine.KLine_Unit import CKLine_Unit
+from ChanAnalyse.Chan import CChan
+from ChanAnalyse.ChanConfig import CChanConfig
+from ChanAnalyse.Common.CEnum import AUTYPE, DATA_FIELD, DATA_SRC, KL_TYPE
+from ChanAnalyse.DataAPI.BaoStockAPI import CBaoStock
+from ChanAnalyse.KLine.KLine_Unit import CKLine_Unit
 
 
 def combine_60m_klu_form_15m(klu_15m_lst: List[CKLine_Unit]) -> CKLine_Unit:

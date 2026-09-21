@@ -18,10 +18,10 @@ out/
 .cache/
 logs/
 *.log
-ß
+
 # 虚拟环境与大型媒体
 venv/
 .venv/
-kl_store.duckdb
-kl_store.duckdb.wal
+Data/kl_store.duckdb
+Data/kl_store.duckdb.wal
 .~临时记录.docx

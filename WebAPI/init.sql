@@ -146,7 +146,7 @@ DROP TRIGGER IF EXISTS trg_chan_snapshot_updated_at ON chan_snapshot;
 CREATE TRIGGER trg_chan_snapshot_updated_at BEFORE UPDATE ON chan_snapshot FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TABLE IF NOT EXISTS watchlist_folder (
     id          SERIAL PRIMARY KEY,
-    name        VARCHAR NOT NULL DEFAULT 'é»è®¤æä»¶å¤¹',
+    name        VARCHAR NOT NULL DEFAULT '默认文件夹',
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -295,9 +295,9 @@ CREATE INDEX IF NOT EXISTS idx_au_role_id ON app_user (role_id);
 
 -- 4.1 chan_user seeds (dev plaintext)
 INSERT INTO chan_user (username, password, nickname, role, status) VALUES
-    ('admin',  'admin123',  'é»è®¤æ¢¼å¤', 'admin',  'active'),
-    ('trader', 'trader123', 'æ¢¼ä½¼å', 'trader', 'active'),
-    ('viewer', 'viewer123', 'é»è¾å¯', 'viewer', 'active')
+    ('admin',  'admin123',  '管理员', 'admin',  'active'),
+    ('trader', 'trader123', '交易员', 'trader', 'active'),
+    ('viewer', 'viewer123', '观察者', 'viewer', 'active')
 ON CONFLICT (username) DO NOTHING;
 
 -- admin: all permissions
@@ -325,21 +325,21 @@ WHERE u.username = 'viewer'
 ON CONFLICT (user_id, code) DO NOTHING;
 -- 4.2 permission seeds (7 menu + 1 button)
 INSERT INTO permission (code, name, type) VALUES
-    ('menu:watchlist',   'æÒçèªé',    'menu'),
-    ('menu:bsp',         'åå²ä¹°åç¹',  'menu'),
-    ('menu:monitor',     'è¡ç¥¨çæ§',    'menu'),
-    ('menu:performance', 'ä¹°åç¹ç»©æ',  'menu'),
-    ('menu:screener',    'æ¡ä»¶éè¡',    'menu'),
-    ('menu:alerts',      'é¢è­¦æé',    'menu'),
-    ('menu:system',      'æéç®¡ç',    'menu'),
-    ('manage',           'ç®¡çæä½',    'button')
+    ('menu:watchlist',   '我的自选',    'menu'),
+    ('menu:bsp',         '历史买卖点',  'menu'),
+    ('menu:monitor',     '股票监控',    'menu'),
+    ('menu:performance', '买卖点绩效',  'menu'),
+    ('menu:screener',    '条件选股',    'menu'),
+    ('menu:alerts',      '预警提醒',    'menu'),
+    ('menu:system',      '权限管理',    'menu'),
+    ('manage',           '管理操作',    'button')
 ON CONFLICT (code) DO NOTHING;
 
 -- 4.3 role seeds
 INSERT INTO role (name, code, is_admin) VALUES
-    ('é»è®¤æ¢¼å¤', 'admin',  TRUE),
-    ('æ¢¼ä½¼å', 'trader', FALSE),
-    ('é»è¾å¯', 'viewer', FALSE)
+    ('管理员', 'admin',  TRUE),
+    ('交易员', 'trader', FALSE),
+    ('观察者', 'viewer', FALSE)
 ON CONFLICT (code) DO NOTHING;
 -- 4.4 role_permission: admin gets all
 INSERT INTO role_permission (role_id, permission_id)
@@ -361,16 +361,16 @@ ON CONFLICT (role_id, permission_id) DO NOTHING;
 
 -- 4.5 app_user seeds (bcrypt hashes)
 INSERT INTO app_user (username, password_hash, display_name, role_id, enabled)
-SELECT 'admin', '$2b$12$Gruc49mpn/ASBbvMRPfVk.nAfHPmZ2XnjyZnch1.ov9QkxyGgEv2i', 'é»è®¤æ¢¼å¤',
+SELECT 'admin', '$2b$12$Gruc49mpn/ASBbvMRPfVk.nAfHPmZ2XnjyZnch1.ov9QkxyGgEv2i', '管理员',
        (SELECT id FROM role WHERE code = 'admin'), TRUE
 WHERE NOT EXISTS (SELECT 1 FROM app_user WHERE username = 'admin');
 
 INSERT INTO app_user (username, password_hash, display_name, role_id, enabled)
-SELECT 'trader', '$2b$12$o4BNm4bcwQQZTOAWhTvNquD8ph2odYb4xq7kW.TJL/3nbfXwu.dpi', 'æ¢¼ä½¼å',
+SELECT 'trader', '$2b$12$o4BNm4bcwQQZTOAWhTvNquD8ph2odYb4xq7kW.TJL/3nbfXwu.dpi', '交易员',
        (SELECT id FROM role WHERE code = 'trader'), TRUE
 WHERE NOT EXISTS (SELECT 1 FROM app_user WHERE username = 'trader');
 
 INSERT INTO app_user (username, password_hash, display_name, role_id, enabled)
-SELECT 'viewer', '$2b$12$TDnvTtBch4pMkyNnghMg2uTi7GGz6CQ6NXqRg1R.LPEMPjMig9J.O', 'é»è¾å¯',
+SELECT 'viewer', '$2b$12$TDnvTtBch4pMkyNnghMg2uTi7GGz6CQ6NXqRg1R.LPEMPjMig9J.O', '观察者',
        (SELECT id FROM role WHERE code = 'viewer'), TRUE
 WHERE NOT EXISTS (SELECT 1 FROM app_user WHERE username = 'viewer');

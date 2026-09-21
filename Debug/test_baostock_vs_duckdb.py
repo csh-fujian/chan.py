@@ -19,11 +19,11 @@ sys.path.insert(0, _REPO_ROOT)
 
 import pandas as pd
 
-from Common.CEnum import AUTYPE, DATA_SRC, KL_TYPE
-from DataAPI.BaoStockAPI import CBaoStock
-from DataAPI.DuckDBAPI import CDuckDB
-from DataAPI.IngestUtil import klu_to_row
-from DataAPI.KLineStore import KLineStore
+from ChanAnalyse.Common.CEnum import AUTYPE, DATA_SRC, KL_TYPE
+from ChanAnalyse.DataAPI.BaoStockAPI import CBaoStock
+from ChanAnalyse.DataAPI.DuckDBAPI import CDuckDB
+from ChanAnalyse.DataAPI.IngestUtil import klu_to_row
+from ChanAnalyse.DataAPI.KLineStore import KLineStore
 
 CODE = "sz.000001"
 K_TYPE = KL_TYPE.K_DAY
@@ -63,7 +63,7 @@ def chan_signature(kl):
 
 
 def run_chan(data_src):
-    from Chan import CChan
+    from ChanAnalyse.Chan import CChan
     return CChan(code=CODE, begin_time=BEGIN, end_time=None,
                  data_src=data_src, lv_list=[K_TYPE], autype=AU)
 

@@ -46,9 +46,9 @@ import matplotlib.pyplot as plt
 import akshare as ak
 import pandas as pd
 
-from Chan import CChan
-from ChanConfig import CChanConfig
-from Common.CEnum import AUTYPE, DATA_SRC, KL_TYPE
+from ChanAnalyse.Chan import CChan
+from ChanAnalyse.ChanConfig import CChanConfig
+from ChanAnalyse.Common.CEnum import AUTYPE, DATA_SRC, KL_TYPE
 
 
 def get_tradable_stocks():
@@ -676,7 +676,7 @@ class AkshareGUI(QMainWindow):
             return
 
         try:
-            from Plot.PlotDriver import CPlotDriver
+            from ChanAnalyse.Plot.PlotDriver import CPlotDriver
 
             # 关闭旧的 figure 释放内存
             plt.close('all')

@@ -20,11 +20,11 @@ import sys
 # 将项目根目录加入 sys.path，使脚本可从任意目录直接运行（无需 PYTHONPATH）
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ChanConfig import CChanConfig
-from Common.CEnum import BI_DIR, DATA_FIELD, KL_TYPE
-from Common.CTime import CTime
-from KLine.KLine_List import CKLine_List
-from KLine.KLine_Unit import CKLine_Unit
+from ChanAnalyse.ChanConfig import CChanConfig
+from ChanAnalyse.Common.CEnum import BI_DIR, DATA_FIELD, KL_TYPE
+from ChanAnalyse.Common.CTime import CTime
+from ChanAnalyse.KLine.KLine_List import CKLine_List
+from ChanAnalyse.KLine.KLine_Unit import CKLine_Unit
 
 
 def make_klu(year, month, day, o, h, l, c):

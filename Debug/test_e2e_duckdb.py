@@ -24,13 +24,13 @@ import datetime as dt
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _REPO_ROOT)
 
-from Common.CEnum import AUTYPE, DATA_FIELD, KL_TYPE
-from Common.CTime import CTime
-from DataAPI.CommonStockAPI import CCommonStockApi
-from DataAPI.DuckDBAPI import CDuckDB
-from DataAPI.IngestUtil import klu_to_row
-from DataAPI.KLineStore import KLineStore
-from KLine.KLine_Unit import CKLine_Unit
+from ChanAnalyse.Common.CEnum import AUTYPE, DATA_FIELD, KL_TYPE
+from ChanAnalyse.Common.CTime import CTime
+from ChanAnalyse.DataAPI.CommonStockAPI import CCommonStockApi
+from ChanAnalyse.DataAPI.DuckDBAPI import CDuckDB
+from ChanAnalyse.DataAPI.IngestUtil import klu_to_row
+from ChanAnalyse.DataAPI.KLineStore import KLineStore
+from ChanAnalyse.KLine.KLine_Unit import CKLine_Unit
 
 import pandas as pd
 
@@ -119,13 +119,13 @@ def install_mem_source(bars):
         def do_close(cls):
             pass
 
-    mod = types.ModuleType("DataAPI._mem_source")
+    mod = types.ModuleType("ChanAnalyse.DataAPI._mem_source")
     mod.CMemSource = CMemSource
-    sys.modules["DataAPI._mem_source"] = mod
+    sys.modules["ChanAnalyse.DataAPI._mem_source"] = mod
 
 
 def run_chan(data_src):
-    from Chan import CChan
+    from ChanAnalyse.Chan import CChan
     return CChan(code="sz.000001", data_src=data_src,
                  lv_list=[KL_TYPE.K_DAY], autype=AUTYPE.QFQ)
 

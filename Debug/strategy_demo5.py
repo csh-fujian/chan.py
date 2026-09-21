@@ -31,12 +31,12 @@ from typing import Dict, TypedDict
 
 import xgboost as xgb
 
-from Chan import CChan
-from ChanConfig import CChanConfig
-from ChanModel.Features import CFeatures
-from Common.CEnum import AUTYPE, DATA_SRC, KL_TYPE
-from Common.CTime import CTime
-from Plot.PlotDriver import CPlotDriver
+from ChanAnalyse.Chan import CChan
+from ChanAnalyse.ChanConfig import CChanConfig
+from ChanAnalyse.ChanModel.Features import CFeatures
+from ChanAnalyse.Common.CEnum import AUTYPE, DATA_SRC, KL_TYPE
+from ChanAnalyse.Common.CTime import CTime
+from ChanAnalyse.Plot.PlotDriver import CPlotDriver
 
 
 class T_SAMPLE_INFO(TypedDict):

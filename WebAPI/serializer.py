@@ -11,8 +11,8 @@
 
 from typing import Any, Dict, List
 
-from Chan import CChan
-from Common.CEnum import BI_DIR, DATA_FIELD, KL_TYPE
+from ChanAnalyse.Chan import CChan
+from ChanAnalyse.Common.CEnum import BI_DIR, DATA_FIELD, KL_TYPE
 
 
 def _bival_to_str(bival: BI_DIR) -> str:

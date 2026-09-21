@@ -6,7 +6,7 @@ FastAPI 应用 — chan-web-viewer 后端入口。
     uvicorn WebAPI.main:app --host 0.0.0.0 --port 8000
 
 注意：必须在项目根目录运行，或设置 PYTHONPATH 指向项目根目录，
-以确保 from Common.CEnum / Chan / DataAPI 等导入正常工作。
+以确保 from ChanAnalyse.Common.CEnum / Chan / DataAPI 等导入正常工作。
 
 业务路由（stocks/bsp/watchlist/monitor/performance/screener/alerts/system/qa）
 已迁移到独立路由器文件中，通过 app.py 组装。本文件仅保留：
@@ -21,9 +21,9 @@ from typing import Optional
 from fastapi import Header, HTTPException, Query
 from pydantic import BaseModel
 
-from Common.CEnum import AUTYPE, DATA_SRC, KL_TYPE
-from Chan import CChan
-from ChanConfig import CChanConfig
+from ChanAnalyse.Common.CEnum import AUTYPE, DATA_SRC, KL_TYPE
+from ChanAnalyse.Chan import CChan
+from ChanAnalyse.ChanConfig import CChanConfig
 
 from .app import app
 from .auth import _authenticate, _make_token, _verify_token
@@ -62,7 +62,7 @@ def _resolve_data_src(period: str) -> str:
     优先使用 DuckDB 离线源；如果 DuckDB 文件不存在，对日线使用 BaoStock 兜底。
     其他周期在 DuckDB 缺失时报错。
     """
-    from DataAPI.KLineStore import DEFAULT_DB_PATH
+    from ChanAnalyse.DataAPI.KLineStore import DEFAULT_DB_PATH
 
     if os.path.exists(DEFAULT_DB_PATH):
         return "custom:DuckDBAPI.CDuckDB"

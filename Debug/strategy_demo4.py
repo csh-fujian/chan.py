@@ -21,10 +21,10 @@ Java 开发者注意：
     避免了手动进行 K 线对齐的繁琐工作。
 """
 
-from Chan import CChan
-from ChanConfig import CChanConfig
-from Common.CEnum import AUTYPE, DATA_SRC, KL_TYPE
-from DataAPI.BaoStockAPI import CBaoStock
+from ChanAnalyse.Chan import CChan
+from ChanAnalyse.ChanConfig import CChanConfig
+from ChanAnalyse.Common.CEnum import AUTYPE, DATA_SRC, KL_TYPE
+from ChanAnalyse.DataAPI.BaoStockAPI import CBaoStock
 
 if __name__ == "__main__":
     code = "sz.000001"

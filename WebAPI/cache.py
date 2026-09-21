@@ -20,7 +20,7 @@ import json
 import os
 from typing import Any, Dict, Optional, Tuple
 
-from Common.CEnum import KL_TYPE
+from ChanAnalyse.Common.CEnum import KL_TYPE
 
 
 class ChanCache:

@@ -28,12 +28,12 @@ from typing import Dict, TypedDict
 import xgboost as xgb
 from strategy_demo5 import stragety_feature  # 复用 demo5 的策略特征函数
 
-from BuySellPoint.BS_Point import CBS_Point
-from Chan import CChan
-from ChanConfig import CChanConfig
-from ChanModel.Features import CFeatures
-from Common.CEnum import AUTYPE, DATA_SRC, KL_TYPE
-from Common.CTime import CTime
+from ChanAnalyse.BuySellPoint.BS_Point import CBS_Point
+from ChanAnalyse.Chan import CChan
+from ChanAnalyse.ChanConfig import CChanConfig
+from ChanAnalyse.ChanModel.Features import CFeatures
+from ChanAnalyse.Common.CEnum import AUTYPE, DATA_SRC, KL_TYPE
+from ChanAnalyse.Common.CTime import CTime
 
 
 class T_SAMPLE_INFO(TypedDict):

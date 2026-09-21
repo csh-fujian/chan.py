@@ -14,11 +14,11 @@ Java 开发者注意：
     python main.py
 """
 
-from Chan import CChan
-from ChanConfig import CChanConfig
-from Common.CEnum import AUTYPE, DATA_SRC, KL_TYPE
-from Plot.AnimatePlotDriver import CAnimateDriver
-from Plot.PlotDriver import CPlotDriver
+from ChanAnalyse.Chan import CChan
+from ChanAnalyse.ChanConfig import CChanConfig
+from ChanAnalyse.Common.CEnum import AUTYPE, DATA_SRC, KL_TYPE
+from ChanAnalyse.Plot.AnimatePlotDriver import CAnimateDriver
+from ChanAnalyse.Plot.PlotDriver import CPlotDriver
 
 if __name__ == "__main__":
     """

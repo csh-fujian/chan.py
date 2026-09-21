@@ -20,9 +20,9 @@ Java 开发者注意：
     仅用于展示如何使用 chan.py 的步进模式实现交易策略。
 """
 
-from Chan import CChan
-from ChanConfig import CChanConfig
-from Common.CEnum import AUTYPE, BSP_TYPE, DATA_SRC, FX_TYPE, KL_TYPE
+from ChanAnalyse.Chan import CChan
+from ChanAnalyse.ChanConfig import CChanConfig
+from ChanAnalyse.Common.CEnum import AUTYPE, BSP_TYPE, DATA_SRC, FX_TYPE, KL_TYPE
 
 if __name__ == "__main__":
     code = "sz.000001"
