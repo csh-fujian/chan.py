@@ -34,6 +34,60 @@ export interface Stock {
 export type StockProfile = Stock
 
 // ---------------------------------------------------------------------------
+// 股票元数据（kline-stock-metadata 契约：GET /api/stocks/{code}/meta）
+// ---------------------------------------------------------------------------
+
+/** 股东户数序列项（近 1 年，按 stat_date 升序） */
+export interface StockHolderPoint {
+  stat_date: string
+  holder_num: number | null
+}
+
+/**
+ * 股票元数据 — 一次性返回，键恒定存在：
+ * 空值形态：字符串 = ''、数值/日期 = null、序列 = []（可空数组）
+ */
+export interface StockMeta {
+  // 身份
+  code: string
+  name: string
+  exchange: string
+  ipo_date: string | null
+  board: string
+  // A 公司档案（16 列）
+  full_name: string
+  en_name: string
+  former_names: string
+  legal_person: string
+  reg_capital: string
+  found_date: string | null
+  website: string
+  email: string
+  phone: string
+  fax: string
+  reg_addr: string
+  office_addr: string
+  postal_code: string
+  main_business: string
+  business_scope: string
+  intro: string
+  // D 行情快照（8 列；快照缺失时数值为 null、snapshot_at 为 null）
+  price: number | null
+  total_mv: number | null
+  float_mv: number | null
+  pe_ttm: number | null
+  pb: number | null
+  turnover_rate: number | null
+  main_net_inflow: number | null
+  snapshot_at: string | null
+  // 用户列
+  tags: string[]
+  notes: string
+  // 股东户数近 1 年序列
+  holders: StockHolderPoint[]
+}
+
+// ---------------------------------------------------------------------------
 // K 线（design.md D2 序列化契约）
 // ---------------------------------------------------------------------------
 export interface KLine {

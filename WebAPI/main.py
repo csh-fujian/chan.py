@@ -31,9 +31,14 @@ from .cache import get_chan_cache
 from .serializer import serialize_chan
 
 # ---- 周期字符串 -> KL_TYPE 映射 ----
+# 与 DuckDB kl_store 实际保存的 kl_type 对齐：K_5M/K_15M/K_30M/K_60M/K_DAY/K_WEEK/K_MON
+# （"1m"/"1h" 为旧值别名，保留以兼容历史请求）
 PERIOD_MAP: dict[str, KL_TYPE] = {
     "1m": KL_TYPE.K_1M,
     "5m": KL_TYPE.K_5M,
+    "15m": KL_TYPE.K_15M,
+    "30m": KL_TYPE.K_30M,
+    "60m": KL_TYPE.K_60M,
     "1h": KL_TYPE.K_60M,
     "1d": KL_TYPE.K_DAY,
     "1w": KL_TYPE.K_WEEK,
@@ -186,7 +191,7 @@ async def logout():
 @app.get("/api/klines")
 async def get_klines(
     symbol: str = Query(..., description="股票代码，如 sz.000001"),
-    period: str = Query("1d", description="K线周期: 1m/5m/1h/1d/1w/1M"),
+    period: str = Query("1d", description="K线周期: 5m/15m/30m/60m/1d/1w/1M"),
     end: Optional[int] = Query(
         None,
         description="增量加载分页游标（毫秒），返回 <= 此时间戳的更早K线",

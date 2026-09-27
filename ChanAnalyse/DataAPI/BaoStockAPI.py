@@ -137,19 +137,20 @@ class CBaoStock(CCommonStockApi):
             CKLine_Unit 的迭代器
 
         处理逻辑：
-        1. 天级别以上：获取完整 OHLCV 数据
-        2. 分钟级别：只获取 OHLC 数据（分钟线没有成交量和成交额）
+        1. 天级别以上：获取完整 OHLCV 数据（含换手率）
+        2. 分钟级别：获取 OHLC + 成交量/成交额（baostock 分钟线支持 volume/amount，
+           但不支持 turn，传入会报 "指标参数传入错误"）
         3. 根据复权类型设置 adjustflag 参数
         4. 逐行读取数据，用 yield 返回
 
         Python 特性：yield 生成器，逐条返回数据而不是一次性返回列表
         Java 对比：Java 无 yield，需要实现 Iterator 接口或使用 Stream
         """
-        # 天级别以上才有详细交易信息（成交量、成交额、换手率）
         if kltype_lt_day(self.k_type):
             if not self.is_stock:
                 raise Exception("没有获取到数据，注意指数是没有分钟级别数据的！")
-            fields = "time,open,high,low,close"
+            # baostock 分钟线有成交量/成交额，换手率 turn 仅日线及以上支持
+            fields = "time,open,high,low,close,volume,amount"
         else:
             fields = "date,open,high,low,close,volume,amount,turn"
 

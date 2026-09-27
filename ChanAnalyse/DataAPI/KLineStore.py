@@ -14,10 +14,18 @@ Data/download_kl.py）与回读（回读见 DataAPI/DuckDBAPI.py 的 CDuckDB 适
   以便日线（时分秒均为 0）与分钟线都能无损往返，且不受 DuckDB TIMESTAMP 隐式时区影响。
 """
 
+import logging
+import os
+import random
+import time
+from contextlib import contextmanager
+
 import pandas as pd
 
 # DuckDB 为可选依赖，仅在使用 KLineStore 时才会 import；延迟导入避免无依赖场景报错。
 import duckdb
+
+log = logging.getLogger("KLineStore")
 
 # 字段顺序固定，upsert 与 query 均按此对齐。
 # 默认 DuckDB 单文件路径（灌数脚本与读适配器共用；可用 KLineStore 构造参数覆盖）。
@@ -98,16 +106,87 @@ def _normalize_time(value, is_end: bool = False) -> str:
     return s
 
 
-class KLineStore:
-    """K 线存储：打开/创建 DuckDB 单文件，建表，提供 upsert 与 query。"""
+# 打开连接遇到「锁冲突」时的自旋重试：30 × 0.2s = 最多等 6s。
+# DuckDB 的文件锁是连接级独占/共享锁：读写连接持有独占锁期间，read_only
+# 连接同样打不开（1.5.5 实测）。因此并发不靠 read_only 单独实现，而是靠
+# 「两端都短连接 + 见锁自旋」：写方按任务开合连接（见 Data/download_kl.py），
+# 读方在写方持锁的短暂窗口内重试等待。
+LOCK_RETRY_ATTEMPTS = 30
+LOCK_RETRY_INTERVAL = 0.2
 
-    def __init__(self, db_path: str):
-        # duckdb.connect 对不存在的路径会自动创建文件；read_only 默认 False。
-        self._conn = duckdb.connect(db_path)
-        self._conn.execute(_TABLE_SCHEMA)
+
+class KLineStore:
+    """K 线存储：打开/创建 DuckDB 单文件，建表，提供 upsert 与 query。
+
+    并发模型（重要，勿改回长连接）：DuckDB 的文件锁是**读写互斥**——只要有一方
+    持着读写连接，另一方（含 read_only）一律打不开（1.5.5 实测）。若灌数整批持锁
+    数小时，后端整个期间都读不到数据。因此对文件库本类采用**按操作短连接**：
+    每次 upsert/query/delete/max_time_key 各自开连接、执行完立即释放（毫秒级窗口），
+    网络拉取/限频 sleep 期间不持锁；再配合 _connect 的锁冲突自旋重试（随机抖动），
+    读写两端可互相穿插。":memory:" 无法重开，保持单条长连接。
+
+    read_only=True（查询路径用）：不建库、不建表、不可写；文件不存在时回退为
+    读写连接（等价旧的自动建库行为）。
+    """
+
+    def __init__(self, db_path: str, read_only: bool = False):
+        # 只读连接既不能对不存在的文件建库，也不能执行建表 DDL，
+        # 故文件不存在时回退为读写连接（与旧行为一致：自动创建空库）。
+        if read_only and db_path != ":memory:" and not os.path.exists(db_path):
+            log.debug("read_only: %s 不存在，回退为读写连接以建库", db_path)
+            read_only = False
+        self._db_path = db_path
+        self._read_only = read_only
+        if db_path == ":memory:":
+            # 内存库不能重开，只能长连接持有
+            self._conn = self._connect(db_path, read_only)
+            if not read_only:
+                self._conn.execute(_TABLE_SCHEMA)
+        else:
+            self._conn = None
+            if not read_only:
+                # 文件库只在写模式下建表；读模式首次查询时自然校验表存在
+                with self._open() as conn:
+                    conn.execute(_TABLE_SCHEMA)
+
+    # ------------------------------------------------------------------
+    # 连接管理：短连接 + 锁冲突自旋
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _connect(db_path: str, read_only: bool):
+        """打开连接；遇到锁冲突自旋重试（随机抖动防两端同步碰撞），其它异常立即抛出。"""
+        last_err = None
+        for attempt in range(LOCK_RETRY_ATTEMPTS):
+            try:
+                return duckdb.connect(db_path, read_only=read_only)
+            except Exception as e:
+                if "Could not set lock" not in str(e):
+                    raise
+                last_err = e
+                if attempt + 1 < LOCK_RETRY_ATTEMPTS:
+                    time.sleep(LOCK_RETRY_INTERVAL + random.uniform(0, 0.1))
+        log.warning(
+            "等待 DuckDB 锁超时（最多 %d × %.1fs）：%s",
+            LOCK_RETRY_ATTEMPTS, LOCK_RETRY_INTERVAL, last_err,
+        )
+        raise last_err
+
+    @contextmanager
+    def _open(self):
+        """按操作开合短连接（:memory: 复用长连接）。"""
+        if self._conn is not None:
+            yield self._conn
+            return
+        conn = self._connect(self._db_path, self._read_only)
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     def close(self):
-        self._conn.close()
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
 
     def __enter__(self):
         return self
@@ -115,6 +194,14 @@ class KLineStore:
     def __exit__(self, exc_type, exc, tb):
         self.close()
 
+    def execute(self, sql: str, params=None) -> list:
+        """执行任意 SQL 并返回全部行（元组列表）。供测试/诊断用，短连接执行。"""
+        with self._open() as conn:
+            return conn.execute(sql, params or []).fetchall()
+
+    # ------------------------------------------------------------------
+    # 读写
+    # ------------------------------------------------------------------
     def upsert(self, df: pd.DataFrame) -> int:
         """幂等写入：按主键 (code, kl_type, autype, time_key) 去重，后写覆盖前写。
 
@@ -125,11 +212,14 @@ class KLineStore:
             return 0
         # 对齐列序，缺失列补 NULL，多余列丢弃。
         normalized = df.reindex(columns=_COLUMNS)
-        self._conn.register("_upsert_df", normalized)
-        self._conn.execute(
-            "INSERT OR REPLACE INTO kline SELECT * FROM _upsert_df"
-        )
-        self._conn.unregister("_upsert_df")
+        with self._open() as conn:
+            conn.register("_upsert_df", normalized)
+            try:
+                conn.execute(
+                    "INSERT OR REPLACE INTO kline SELECT * FROM _upsert_df"
+                )
+            finally:
+                conn.unregister("_upsert_df")
         return len(normalized)
 
     def query(self, code, kl_type, autype, begin=None, end=None) -> pd.DataFrame:
@@ -146,7 +236,8 @@ class KLineStore:
             where += " AND time_key <= ?"
             params.append(_normalize_time(end, is_end=True))
         sql = f"SELECT {', '.join(_COLUMNS)} FROM kline {where} ORDER BY time_key"
-        return self._conn.execute(sql, params).fetchdf()
+        with self._open() as conn:
+            return conn.execute(sql, params).fetchdf()
 
     def delete(self, code, kl_type, autype, begin=None, end=None) -> int:
         """删除某 (code, kl_type, autype) 的全部或指定区间 K 线。
@@ -161,8 +252,11 @@ class KLineStore:
         if end is not None:
             where += " AND time_key <= ?"
             params.append(_normalize_time(end, is_end=True))
-        cnt = self._conn.execute(f"SELECT count(*) FROM kline WHERE {where}", params).fetchone()[0]
-        self._conn.execute(f"DELETE FROM kline WHERE {where}", params)
+        with self._open() as conn:
+            cnt = conn.execute(
+                f"SELECT count(*) FROM kline WHERE {where}", params
+            ).fetchone()[0]
+            conn.execute(f"DELETE FROM kline WHERE {where}", params)
         return cnt
 
     def max_time_key(self, code, kl_type, autype):
@@ -170,8 +264,9 @@ class KLineStore:
 
         无任何数据时返回 None。
         """
-        row = self._conn.execute(
-            "SELECT max(time_key) FROM kline WHERE code = ? AND kl_type = ? AND autype = ?",
-            [code, kl_type, autype],
-        ).fetchone()
+        with self._open() as conn:
+            row = conn.execute(
+                "SELECT max(time_key) FROM kline WHERE code = ? AND kl_type = ? AND autype = ?",
+                [code, kl_type, autype],
+            ).fetchone()
         return row[0] if row else None

@@ -45,6 +45,32 @@ log = logging.getLogger("download_kl")
 # 0.5s（≈2 QPS）为稳妥值；更保守可 --sleep 1.0。
 DEFAULT_REQUEST_INTERVAL = 0.5
 
+# ---- 失败退避 / 重试 / 会话重连 ----
+# 背景：2026-09-21 批量灌数在 21:16:03 被 BaoStock 掐断连接后，脚本对剩余
+# 2 万+ 条任务零等待连打，11 秒内产生 20437 条秒失败。故失败路径必须：
+#   1) 单次拉取指数退避重试，每次重试前重登会话（连接被掐断的主恢复手段）
+#   2) 批量循环里失败任务同样退避，禁止秒级空转
+#   3) 连续失败到阈值直接中止批量（幂等，重跑同一条命令即续跑）
+DEFAULT_RETRY_ATTEMPTS = 3       # 单个 [begin,end] 拉取失败后的重试次数（不含首次）
+BACKOFF_BASE_SECONDS = 5.0       # 首次退避时长
+BACKOFF_MAX_SECONDS = 60.0       # 退避时长上限
+SESSION_RESET_AFTER = 3          # 连续失败任务数达到该值 → 重登 BaoStock 会话
+ABORT_AFTER = 10                 # 连续失败任务数达到该值 → 中止批量（避免空转烧完配置）
+
+# 这类错误重试也不会成功（数据本身不存在），直接失败，不浪费退避时间
+NON_RETRYABLE_MARKERS = ("指数是没有分钟级别数据",)
+
+
+class BatchAborted(RuntimeError):
+    """连续失败过多而主动中止批量灌数。
+
+    results 携带中止前的逐条结果；入库幂等，重跑同一条命令即从断点续传。
+    """
+
+    def __init__(self, message: str, results: dict):
+        super().__init__(message)
+        self.results = results
+
 
 # ---------------------------------------------------------------------------
 # 拉取：复用 CBaoStock
@@ -55,6 +81,57 @@ def fetch_baostock(code, k_type, autype, begin, end):
 
     api = CBaoStock(code=code, k_type=k_type, begin_date=begin, end_date=end, autype=autype)
     return list(api.get_kl_data())
+
+
+def relogin(reason: str) -> None:
+    """强制重新登录 BaoStock 会话。
+
+    连接被服务端掐断时 CBaoStock.is_connect 仍为真，do_init 不会重登，
+    所以这里必须先置 None 再登录，并校验登录返回码。
+    """
+    from ChanAnalyse.DataAPI.BaoStockAPI import CBaoStock
+
+    try:
+        CBaoStock.do_close()  # 登出已失效的连接可能直接抛错，忽略即可
+    except Exception as e:
+        log.debug("登出旧会话失败（忽略）: %s", e)
+    CBaoStock.is_connect = None
+    CBaoStock.do_init()
+    resp = CBaoStock.is_connect
+    if resp is None or str(getattr(resp, "error_code", "0")) != "0":
+        raise RuntimeError(
+            "重新登录 BaoStock 失败: %s" % getattr(resp, "error_msg", resp)
+        )
+    log.info("已重新登录 BaoStock 会话（%s）", reason)
+
+
+def fetch_with_retry(code, k_type, autype, begin, end, *, retries=DEFAULT_RETRY_ATTEMPTS):
+    """拉取 [begin, end]，失败按指数退避重试，每次重试前重登会话。
+
+    重试耗尽后抛出最后一次异常，由调用方决定记录还是中止。
+    """
+    delay = BACKOFF_BASE_SECONDS
+    last_err = None
+    for attempt in range(retries + 1):
+        try:
+            return fetch_baostock(code, k_type, autype, begin, end)
+        except Exception as e:
+            last_err = e
+            msg = str(e)
+            if attempt >= retries or any(m in msg for m in NON_RETRYABLE_MARKERS):
+                break
+            wait = min(delay, BACKOFF_MAX_SECONDS)
+            log.warning(
+                "[%s/%s] %s~%s 拉取失败（第 %d/%d 次），%.0fs 后重试并重登会话：%s",
+                code, k_type.name, begin, end, attempt + 1, retries, wait, msg,
+            )
+            time.sleep(wait)
+            delay = min(delay * 2, BACKOFF_MAX_SECONDS)
+            try:
+                relogin("%s/%s 第 %d 次重试" % (code, k_type.name, attempt + 1))
+            except Exception as re_err:
+                log.warning("重登会话失败（继续重试）：%s", re_err)
+    raise last_err
 
 
 # ---------------------------------------------------------------------------
@@ -106,11 +183,12 @@ def chunk_range(start: str, stop: str, chunk_days):
 # ---------------------------------------------------------------------------
 def ingest(code, k_type, autype, store: KLineStore, *, begin=None, end=None,
            full=False, chunk_days=None, cal=None, check_gaps=False,
-           sleep=0.0, manage_auth=True):
+           sleep=0.0, manage_auth=True, retries=DEFAULT_RETRY_ATTEMPTS):
     """灌数主流程，返回写入行数。
 
     sleep: 每次接口请求之间的间隔秒数（BaoStock 限频保护），<=0 则不额外等待。
     manage_auth: 是否在本函数内 do_init/do_close；批量灌数由外层登录一次复用。
+    retries: 单次拉取失败的重试次数（指数退避 + 重登会话），见 fetch_with_retry。
     """
     kt_name, au_name = k_type.name, autype.name
 
@@ -134,8 +212,11 @@ def ingest(code, k_type, autype, store: KLineStore, *, begin=None, end=None,
         CBaoStock.do_init()
     try:
         for c_begin, c_end in chunk_range(start, stop, chunk_days):
-            klus = fetch_baostock(code, k_type, autype, c_begin, c_end)
+            klus = fetch_with_retry(code, k_type, autype, c_begin, c_end, retries=retries)
             if not klus:
+                # 空结果也按间隔限速，避免无数据时秒级连打
+                if sleep > 0:
+                    time.sleep(sleep)
                 continue
             df = pd.DataFrame([klu_to_row(k, code, k_type, autype) for k in klus])
             valid, rejected, warns = validate(df)
@@ -168,19 +249,32 @@ def ingest_from_config(cfg: dict) -> dict:
 
     登录/登出只做一次（复用 CBaoStock.is_connect 会话），每股之间按
     request_interval_seconds 限频 sleep，避免全量跑触发 BaoStock 限频。
+
+    失败处理（针对 2026-09-21 被掐断连接后 11 秒秒失败 2 万条的事故）：
+    - 任务失败同样指数退避，禁止零等待连打；
+    - 连续失败 SESSION_RESET_AFTER 个任务 → 重登会话；
+    - 连续失败达到 max_consecutive_failures → 抛 BatchAborted 中止批量
+      （入库幂等，重跑同一条命令即从断点续传）。
     """
     from ChanAnalyse.DataAPI.BaoStockAPI import CBaoStock
 
     db_path = cfg.get("db_path", DEFAULT_DB_PATH)
     cal = get_calendar()
     sleep = cfg.get("request_interval_seconds", DEFAULT_REQUEST_INTERVAL)
+    retries = cfg.get("retry_attempts", DEFAULT_RETRY_ATTEMPTS)
+    abort_after = cfg.get("max_consecutive_failures", ABORT_AFTER)
     results = {}
+    fail_streak = 0   # 连续失败任务数：只有成功才清零，达到阈值中止批量
+    backoff_level = 0  # 退避档位：成功或重登会话成功后清零
     CBaoStock.do_init()
     try:
-        with KLineStore(db_path) as store:
-            for code, kt, au in iter_ingest_jobs(cfg):
-                key = (code, kt.name, au.name)
-                try:
+        for code, kt, au in iter_ingest_jobs(cfg):
+            key = (code, kt.name, au.name)
+            try:
+                # 每个任务单独开合连接：DuckDB 的读写锁是「读写互斥」（read_only
+                # 连接也一样打不开），整批持锁会让后端在整个灌数期间读不到数据。
+                # 按任务开合把独占锁窗口压缩到秒级，读方（KLineStore 锁重试）可穿插进来。
+                with KLineStore(db_path) as store:
                     n = ingest(
                         code, kt, au, store,
                         begin=cfg.get("begin"), end=cfg.get("end"),
@@ -190,14 +284,47 @@ def ingest_from_config(cfg: dict) -> dict:
                         check_gaps=cfg.get("check_gaps", False),
                         sleep=sleep,
                         manage_auth=False,
+                        retries=retries,
                     )
-                    results[key] = {"status": "ok", "rows": n}
-                    log.info("[%s] 完成，写入 %d 行", code, n)
-                except Exception as e:
-                    results[key] = {"status": "failed", "error": str(e)}
-                    log.error("[%s/%s/%s] 失败：%s", code, kt.name, au.name, e)
+                results[key] = {"status": "ok", "rows": n}
+                log.info("[%s] 完成，写入 %d 行", code, n)
+                fail_streak = 0
+                backoff_level = 0
+            except Exception as e:
+                results[key] = {"status": "failed", "error": str(e)}
+                fail_streak += 1
+                backoff_level += 1
+                log.error("[%s/%s/%s] 失败：%s", code, kt.name, au.name, e)
+
+                # 失败也要退避：连接失效时剩余任务会以千级 QPS 秒失败
+                wait = min(
+                    BACKOFF_BASE_SECONDS * (2 ** (backoff_level - 1)),
+                    BACKOFF_MAX_SECONDS,
+                )
+                log.warning(
+                    "连续失败 %d 次，退避 %.0fs 后继续", fail_streak, wait
+                )
+                time.sleep(wait)
+
+                if backoff_level >= SESSION_RESET_AFTER:
+                    try:
+                        relogin("连续失败 %d 次" % fail_streak)
+                        backoff_level = 0
+                    except Exception as re_err:
+                        log.error("重登会话失败：%s", re_err)
+
+                if fail_streak >= abort_after:
+                    raise BatchAborted(
+                        "连续失败 %d 次（阈值 %d），中止批量；"
+                        "已入库数据有效，重跑同一条命令可从断点续传"
+                        % (fail_streak, abort_after),
+                        results,
+                    )
     finally:
-        CBaoStock.do_close()
+        try:
+            CBaoStock.do_close()
+        except Exception as e:
+            log.debug("登出失败（忽略）: %s", e)
     return results
 
 
@@ -245,10 +372,15 @@ def main(argv=None):
     p.add_argument("--check-gaps", action="store_true", help="灌数后检测缺失交易日")
     p.add_argument("--db-path", default=DEFAULT_DB_PATH, help="DuckDB 库路径")
     p.add_argument("--config", help="JSON 配置文件路径，驱动批量灌数")
+    p.add_argument("--code-prefix", help="批量模式按代码前缀过滤（如 sz. 只跑深市）")
     p.add_argument("--status", action="store_true", help="打印每股票数据水位后退出")
     p.add_argument("--check-stale", action="store_true", help="检查停更并告警后退出")
     p.add_argument("--sleep", type=float, default=None,
                    help="接口请求间隔秒数（限频保护，默认 %.1f）" % DEFAULT_REQUEST_INTERVAL)
+    p.add_argument("--retries", type=int, default=None,
+                   help="单次拉取失败的重试次数（指数退避+重登会话，默认 %d）" % DEFAULT_RETRY_ATTEMPTS)
+    p.add_argument("--abort-after", type=int, default=None,
+                   help="连续失败任务数达到该值则中止批量（默认 %d）" % ABORT_AFTER)
     p.add_argument("--verbose", action="store_true", help="打印 DEBUG 日志")
     args = p.parse_args(argv)
 
@@ -262,7 +394,9 @@ def main(argv=None):
         if not args.config and (not args.code or not args.kl_type):
             p.error("--status 需 --config 或 --code + --kl-type")
         cfg = load_config(args.config) if args.config else {"stocks": [{"code": args.code, "kl_types": [args.kl_type], "autypes": [args.autype]}]}
-        with KLineStore(args.db_path) as store:
+        if args.code_prefix:
+            cfg["code_prefix"] = args.code_prefix
+        with KLineStore(args.db_path, read_only=True) as store:
             for code, kt_name, au_name, wm in report_status(store, cfg):
                 print(f"{code}\t{kt_name}\t{au_name}\t{wm}")
         return 0
@@ -271,7 +405,9 @@ def main(argv=None):
         if not args.config and (not args.code or not args.kl_type):
             p.error("--check-stale 需 --config 或 --code + --kl-type")
         cfg = load_config(args.config) if args.config else {"stocks": [{"code": args.code, "kl_types": [args.kl_type], "autypes": [args.autype]}]}
-        with KLineStore(args.db_path) as store:
+        if args.code_prefix:
+            cfg["code_prefix"] = args.code_prefix
+        with KLineStore(args.db_path, read_only=True) as store:
             alerts = check_staleness(store, cfg)
         for a in alerts:
             print(f"[STALE] {a}")
@@ -280,13 +416,28 @@ def main(argv=None):
 
     if args.config:
         cfg = load_config(args.config)
+        if args.code_prefix:
+            cfg["code_prefix"] = args.code_prefix
         if args.sleep is not None:
             cfg["request_interval_seconds"] = args.sleep
-        results = ingest_from_config(cfg)
+        if args.retries is not None:
+            cfg["retry_attempts"] = args.retries
+        if args.abort_after is not None:
+            cfg["max_consecutive_failures"] = args.abort_after
+        if args.full:
+            cfg["full"] = True
+        aborted = None
+        try:
+            results = ingest_from_config(cfg)
+        except BatchAborted as e:
+            results = e.results
+            aborted = str(e)
+            log.error("批量中止：%s", e)
         ok = sum(1 for r in results.values() if r["status"] == "ok")
         failed = sum(1 for r in results.values() if r["status"] != "ok")
-        print(f"batch ingest done: {ok} ok, {failed} failed")
-        return 0 if failed == 0 else 1
+        print(f"batch ingest done: {ok} ok, {failed} failed"
+              + (f"（已中止：{aborted}）" if aborted else ""))
+        return 0 if failed == 0 and aborted is None else 1
 
     if not args.code or not args.kl_type:
         p.error("单股模式需 --code 与 --kl-type（或改用 --config）")
@@ -301,6 +452,7 @@ def main(argv=None):
             begin=args.begin, end=args.end, full=args.full,
             chunk_days=args.chunk_days, cal=cal, check_gaps=args.check_gaps,
             sleep=args.sleep if args.sleep is not None else DEFAULT_REQUEST_INTERVAL,
+            retries=args.retries if args.retries is not None else DEFAULT_RETRY_ATTEMPTS,
         )
     print(f"done: wrote {n} rows for {args.code} {k_type.name} {autype.name}")
     return 0

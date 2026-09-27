@@ -56,6 +56,15 @@ const subPaneMap = new Map<string, string>()
 const UP_COLOR = '#F6465D'
 const DOWN_COLOR = '#2EBD85'
 
+/** 移除全部缠论覆盖层（按 name 匹配；切周期/股票、加载失败时调用） */
+function clearChanOverlays(): void {
+  if (!chart) return
+  const names = ['chan_bi', 'chan_seg', 'chan_zs', 'chan_bsp'] as const
+  for (const name of names) {
+    chart.removeOverlay({ name })
+  }
+}
+
 /** 应用 K 线数据 + 缠论覆盖层 */
 function applyResult(result: ChanResult): void {
   if (!chart) return
@@ -77,10 +86,9 @@ function applyResult(result: ChanResult): void {
   initialLoadDone = true
 
   // 先移除旧覆盖层，再重建
-  chart.removeOverlay('chan_bi')
-  chart.removeOverlay('chan_seg')
-  chart.removeOverlay('chan_zs')
-  chart.removeOverlay('chan_bsp')
+  // 注意：klinecharts 的 removeOverlay(string) 按 overlay id 匹配，而 createOverlay
+  // 未显式传 id 时 id 为自动生成，字符串传参删不掉旧实例 → 必须按 name 移除
+  clearChanOverlays()
 
   // 笔覆盖层：points 按 [begin, end, begin, end, ...] 顺序；lock=true 禁止拖动
   if (result.bi.length > 0) {
@@ -290,6 +298,7 @@ watch(
       empty.value = true
       loading.value = false
       initialLoadDone = false // 切换股票期间禁止增量加载
+      clearChanOverlays() // 加载失败/无数据时清掉上一周期的缠论标注
       return
     }
     loading.value = false

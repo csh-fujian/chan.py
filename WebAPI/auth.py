@@ -81,7 +81,14 @@ def _get_pg_conn():
             status_code=500,
             detail="PG_DSN not configured. Set PG_DSN environment variable to enable auth.",
         )
-    return psycopg2.connect(pg_dsn)
+    try:
+        return psycopg2.connect(pg_dsn)
+    except psycopg2.OperationalError as e:
+        # PG 不可达：认证强依赖数据库，不能降级，返回 503 而非裸 500
+        raise HTTPException(
+            status_code=503,
+            detail="数据库暂时不可用，请稍后重试",
+        ) from e
 
 
 def _authenticate(username: str, password: str) -> dict:

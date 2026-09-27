@@ -66,21 +66,89 @@ CREATE INDEX IF NOT EXISTS idx_cup_user_id ON chan_user_permission (user_id);
 -- Part 2: chan-stock-manage business tables
 -- ============================================================================
 
+-- stock: 身份 6 + 用户 7 + 档案 16 + 快照 8 四组合并（stock-metadata-sync）
+-- 已删列禁止出现：total_share/float_share、B/H 四列、market、index_members、
+-- out_date、status、change_pct、zdf_d5/d10/d20/d60、w52、amplitude、volume_ratio、成交量额列
 CREATE TABLE IF NOT EXISTS stock (
-    code        VARCHAR PRIMARY KEY,
-    name        VARCHAR NOT NULL DEFAULT '',
-    exchange    VARCHAR NOT NULL DEFAULT '',
-    enabled     BOOLEAN NOT NULL DEFAULT TRUE,
-    kl_types    VARCHAR[] NOT NULL DEFAULT '{}',
-    autypes     VARCHAR[] NOT NULL DEFAULT '{}',
-    tags        VARCHAR[] NOT NULL DEFAULT '{}',
-    notes       TEXT NOT NULL DEFAULT '',
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    code            VARCHAR PRIMARY KEY,
+    name            VARCHAR NOT NULL DEFAULT '',
+    name_py         VARCHAR NOT NULL DEFAULT '',
+    exchange        VARCHAR NOT NULL DEFAULT '',
+    ipo_date        DATE,
+    board           VARCHAR NOT NULL DEFAULT '',
+    industry_l1     VARCHAR NOT NULL DEFAULT '',
+    enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+    kl_types        VARCHAR[] NOT NULL DEFAULT '{}',
+    autypes         VARCHAR[] NOT NULL DEFAULT '{}',
+    tags            VARCHAR[] NOT NULL DEFAULT '{}',
+    notes           TEXT NOT NULL DEFAULT '',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    full_name       VARCHAR NOT NULL DEFAULT '',
+    en_name         VARCHAR NOT NULL DEFAULT '',
+    former_names    TEXT NOT NULL DEFAULT '',
+    legal_person    VARCHAR NOT NULL DEFAULT '',
+    reg_capital     VARCHAR NOT NULL DEFAULT '',
+    found_date      DATE,
+    website         VARCHAR NOT NULL DEFAULT '',
+    email           VARCHAR NOT NULL DEFAULT '',
+    phone           VARCHAR NOT NULL DEFAULT '',
+    fax             VARCHAR NOT NULL DEFAULT '',
+    reg_addr        TEXT NOT NULL DEFAULT '',
+    office_addr     TEXT NOT NULL DEFAULT '',
+    postal_code     VARCHAR NOT NULL DEFAULT '',
+    main_business   TEXT NOT NULL DEFAULT '',
+    business_scope  TEXT NOT NULL DEFAULT '',
+    intro           TEXT NOT NULL DEFAULT '',
+    price           NUMERIC(12,4),
+    total_mv        NUMERIC(18,4),
+    float_mv        NUMERIC(18,4),
+    pe_ttm          NUMERIC(14,4),
+    pb              NUMERIC(14,4),
+    turnover_rate   NUMERIC(10,4),
+    main_net_inflow NUMERIC(18,4),
+    snapshot_at     TIMESTAMPTZ
 );
 
+-- 存量库补列（幂等，与 WebAPI/stock_store._ensure_tables 保持一致）
+ALTER TABLE stock ADD COLUMN IF NOT EXISTS ipo_date DATE;
+ALTER TABLE stock ADD COLUMN IF NOT EXISTS board VARCHAR NOT NULL DEFAULT '';
+ALTER TABLE stock ADD COLUMN IF NOT EXISTS industry_l1 VARCHAR NOT NULL DEFAULT '';
+ALTER TABLE stock ADD COLUMN IF NOT EXISTS full_name VARCHAR NOT NULL DEFAULT '';
+ALTER TABLE stock ADD COLUMN IF NOT EXISTS en_name VARCHAR NOT NULL DEFAULT '';
+ALTER TABLE stock ADD COLUMN IF NOT EXISTS former_names TEXT NOT NULL DEFAULT '';
+ALTER TABLE stock ADD COLUMN IF NOT EXISTS legal_person VARCHAR NOT NULL DEFAULT '';
+ALTER TABLE stock ADD COLUMN IF NOT EXISTS reg_capital VARCHAR NOT NULL DEFAULT '';
+ALTER TABLE stock ADD COLUMN IF NOT EXISTS found_date DATE;
+ALTER TABLE stock ADD COLUMN IF NOT EXISTS website VARCHAR NOT NULL DEFAULT '';
+ALTER TABLE stock ADD COLUMN IF NOT EXISTS email VARCHAR NOT NULL DEFAULT '';
+ALTER TABLE stock ADD COLUMN IF NOT EXISTS phone VARCHAR NOT NULL DEFAULT '';
+ALTER TABLE stock ADD COLUMN IF NOT EXISTS fax VARCHAR NOT NULL DEFAULT '';
+ALTER TABLE stock ADD COLUMN IF NOT EXISTS reg_addr TEXT NOT NULL DEFAULT '';
+ALTER TABLE stock ADD COLUMN IF NOT EXISTS office_addr TEXT NOT NULL DEFAULT '';
+ALTER TABLE stock ADD COLUMN IF NOT EXISTS postal_code VARCHAR NOT NULL DEFAULT '';
+ALTER TABLE stock ADD COLUMN IF NOT EXISTS main_business TEXT NOT NULL DEFAULT '';
+ALTER TABLE stock ADD COLUMN IF NOT EXISTS business_scope TEXT NOT NULL DEFAULT '';
+ALTER TABLE stock ADD COLUMN IF NOT EXISTS intro TEXT NOT NULL DEFAULT '';
+ALTER TABLE stock ADD COLUMN IF NOT EXISTS price NUMERIC(12,4);
+ALTER TABLE stock ADD COLUMN IF NOT EXISTS total_mv NUMERIC(18,4);
+ALTER TABLE stock ADD COLUMN IF NOT EXISTS float_mv NUMERIC(18,4);
+ALTER TABLE stock ADD COLUMN IF NOT EXISTS pe_ttm NUMERIC(14,4);
+ALTER TABLE stock ADD COLUMN IF NOT EXISTS pb NUMERIC(14,4);
+ALTER TABLE stock ADD COLUMN IF NOT EXISTS turnover_rate NUMERIC(10,4);
+ALTER TABLE stock ADD COLUMN IF NOT EXISTS main_net_inflow NUMERIC(18,4);
+ALTER TABLE stock ADD COLUMN IF NOT EXISTS snapshot_at TIMESTAMPTZ;
+ALTER TABLE stock ADD COLUMN IF NOT EXISTS name_py VARCHAR NOT NULL DEFAULT '';
+
+-- updated_at 触发器仅响应用户列变更（enabled/kl_types/autypes/tags/notes）
 DROP TRIGGER IF EXISTS trg_stock_updated_at ON stock;
-CREATE TRIGGER trg_stock_updated_at BEFORE UPDATE ON stock FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER trg_stock_updated_at BEFORE UPDATE ON stock FOR EACH ROW
+WHEN (OLD.enabled IS DISTINCT FROM NEW.enabled
+   OR OLD.kl_types IS DISTINCT FROM NEW.kl_types
+   OR OLD.autypes IS DISTINCT FROM NEW.autypes
+   OR OLD.tags IS DISTINCT FROM NEW.tags
+   OR OLD.notes IS DISTINCT FROM NEW.notes)
+EXECUTE FUNCTION update_updated_at_column();
 
 CREATE INDEX IF NOT EXISTS idx_stock_exchange ON stock (exchange);
 CREATE INDEX IF NOT EXISTS idx_stock_enabled  ON stock (enabled);
@@ -95,6 +163,54 @@ CREATE TABLE IF NOT EXISTS stock_industry (
 );
 
 CREATE INDEX IF NOT EXISTS idx_si_industry ON stock_industry (industry_name);
+
+CREATE TABLE IF NOT EXISTS stock_financial_report (
+    code VARCHAR NOT NULL REFERENCES stock(code) ON DELETE CASCADE,
+    statement_type VARCHAR NOT NULL,
+    report_date DATE NOT NULL,
+    report_type VARCHAR NOT NULL DEFAULT '',
+    report_name VARCHAR NOT NULL DEFAULT '',
+    notice_date DATE,
+    data JSONB NOT NULL DEFAULT '{}',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (code, statement_type, report_date)
+);
+CREATE INDEX IF NOT EXISTS idx_sfr_code ON stock_financial_report (code);
+
+CREATE TABLE IF NOT EXISTS stock_holder_num (
+    code VARCHAR NOT NULL REFERENCES stock(code) ON DELETE CASCADE,
+    stat_date DATE NOT NULL,
+    notice_date DATE,
+    holder_num BIGINT,
+    prev_holder_num BIGINT,
+    holder_num_change BIGINT,
+    holder_num_change_pct NUMERIC(12,4),
+    avg_hold_mv NUMERIC(18,4),
+    avg_hold_shares NUMERIC(18,4),
+    total_share NUMERIC(18,4),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (code, stat_date)
+);
+CREATE INDEX IF NOT EXISTS idx_shn_code ON stock_holder_num (code);
+
+CREATE TABLE IF NOT EXISTS sync_watermark (
+    code VARCHAR NOT NULL,
+    domain VARCHAR NOT NULL,
+    synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (code, domain)
+);
+
+CREATE TABLE IF NOT EXISTS sync_job (
+    id SERIAL PRIMARY KEY,
+    domains TEXT[] NOT NULL DEFAULT '{}',
+    scope VARCHAR NOT NULL DEFAULT 'market',
+    force BOOLEAN NOT NULL DEFAULT TRUE,
+    status VARCHAR NOT NULL DEFAULT 'running',
+    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    finished_at TIMESTAMPTZ,
+    summary JSONB,
+    CONSTRAINT chk_sync_job_status CHECK (status IN ('running','interrupted','done','failed'))
+);
 
 CREATE TABLE IF NOT EXISTS chan_structure (
     id          SERIAL PRIMARY KEY,

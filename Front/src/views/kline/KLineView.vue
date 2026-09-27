@@ -7,22 +7,42 @@
         <el-icon><Expand v-if="panelCollapsed" /><Fold v-else /></el-icon>
       </button>
 
-      <el-input
-        v-model="codeInput"
-        class="code-field"
-        placeholder="股票代码 如 sz.000001"
-        :prefix-icon="SearchIcon"
-        size="default"
-        @keyup.enter="handleSearch"
-      />
+      <!-- 搜索框：el-autocomplete 远程下拉（D5 Enter 语义 / D6 300ms 本地防抖） -->
+      <div class="code-field" @keydown.capture="onSearchKeydown">
+        <el-autocomplete
+          ref="acRef"
+          v-model="codeInput"
+          :fetch-suggestions="queryStocks"
+          :trigger-on-focus="false"
+          :debounce="0"
+          placeholder="代码/名称/拼音 如 sz.000001"
+          :prefix-icon="SearchIcon"
+          size="default"
+          @select="onSelectSuggestion"
+        >
+          <template #default="{ item }">
+            <div class="sug-item" :class="{ 'sug-item--empty': item.placeholder }">
+              <template v-if="item.placeholder">
+                <span class="sug-item__empty">{{ item.name }}</span>
+              </template>
+              <template v-else>
+                <span class="sug-item__code mono">{{ item.code }}</span>
+                <span class="sug-item__name">{{ item.name }}</span>
+              </template>
+            </div>
+          </template>
+        </el-autocomplete>
+      </div>
       <el-button type="primary" size="default" :loading="loading" @click="handleSearch">
         搜索
       </el-button>
 
-      <el-select v-model="period" size="default" class="period-select" @change="handleSearch">
-        <el-option label="1分钟" value="1m" />
+      <!-- 周期选项与 DuckDB kl_type 对齐：K_5M/K_15M/K_30M/K_60M/K_DAY/K_WEEK/K_MON（无 1 分钟） -->
+      <el-select v-model="period" size="default" class="period-select">
         <el-option label="5分钟" value="5m" />
-        <el-option label="1小时" value="1h" />
+        <el-option label="15分钟" value="15m" />
+        <el-option label="30分钟" value="30m" />
+        <el-option label="60分钟" value="60m" />
         <el-option label="日线" value="1d" />
         <el-option label="周线" value="1w" />
         <el-option label="月线" value="1M" />
@@ -95,10 +115,12 @@
       <aside class="kline-side" :class="{ 'is-collapsed': panelCollapsed }">
         <div class="kline-side__tabs">
           <button class="tab" :class="{ 'is-active': activeTab === 'stock' }" @click="activeTab = 'stock'">标的</button>
+          <button class="tab" :class="{ 'is-active': activeTab === 'meta' }" @click="activeTab = 'meta'">股票信息</button>
           <button class="tab" :class="{ 'is-active': activeTab === 'qa' }" @click="activeTab = 'qa'">问答</button>
         </div>
         <div class="kline-side__body">
           <StockPanel v-if="activeTab === 'stock'" :code="code" />
+          <StockMetaPanel v-else-if="activeTab === 'meta'" :code="code" />
           <QaPanel v-else />
         </div>
       </aside>
@@ -114,17 +136,20 @@
 <script setup lang="ts">
 /**
  * KLineView.vue — K 线分析页
- * design.md D1：可折叠左侧面板（标的 / 问答）+ 主图
+ * design.md D1：可折叠左侧面板（标的 / 股票信息 / 问答）+ 主图
  * design.md D6：切换代码/周期触发命令式重载
+ * kline-metadata-change D5/D6：搜索框 el-autocomplete 远程下拉 + Enter 语义 + 300ms 本地防抖
  */
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { Search, Star, ChatDotRound, Fold, Expand, ArrowDown } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, type AutocompleteInstance } from 'element-plus'
 import KLineChart from '@/components/charts/KLineChart.vue'
 import StockPanel from '@/components/kline/StockPanel.vue'
+import StockMetaPanel from '@/components/kline/StockMetaPanel.vue'
 import QaPanel from '@/components/kline/QaPanel.vue'
 import { getKLine } from '@/api/modules/kline'
+import { searchStocks } from '@/api/modules/stock'
 import type { ChanResult } from '@/api/types'
 
 const route = useRoute()
@@ -158,15 +183,16 @@ const indicatorTooltip = computed(() =>
     .join('、'),
 )
 
-// 左侧面板状态
+// 左侧面板状态（默认仍为「标的」）
 const panelCollapsed = ref(false)
-const activeTab = ref<'stock' | 'qa'>('stock')
+const activeTab = ref<'stock' | 'meta' | 'qa'>('stock')
 
 const chartComp = ref<InstanceType<typeof KLineChart> | null>(null)
 
 const periodLabel = computed(() => {
   const m: Record<string, string> = {
-    '1m': '1分钟', '5m': '5分钟', '1h': '1小时', '1d': '日线', '1w': '周线', '1M': '月线',
+    '5m': '5分钟', '15m': '15分钟', '30m': '30分钟', '60m': '60分钟',
+    '1d': '日线', '1w': '周线', '1M': '月线',
   }
   return m[period.value] ?? period.value
 })
@@ -177,22 +203,31 @@ function jumpTo(tab: 'stock' | 'qa'): void {
   panelCollapsed.value = false
 }
 
+/** 加载序号：快速连续切换周期/股票时丢弃过期响应，避免旧周期数据覆盖新周期 */
+let loadSeq = 0
+
 /** 加载 K 线 + 缠论数据 */
 async function load(): Promise<void> {
+  const seq = ++loadSeq
   loading.value = true
   try {
     const res = await getKLine(code.value, period.value)
+    if (seq !== loadSeq) return
     result.value = res
   } catch (e) {
+    if (seq !== loadSeq) return
     ElMessage.error('加载 K 线数据失败')
     result.value = null
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
 }
 
 /** 搜索 — 切换代码/周期触发重载 */
 function handleSearch(): void {
+  cancelSuggest()
+  arrowBrowsed.value = false
+  acRef.value?.close()
   const c = codeInput.value.trim()
   if (!c) {
     ElMessage.warning('请输入股票代码')
@@ -200,6 +235,111 @@ function handleSearch(): void {
   }
   code.value = c
   load()
+}
+
+// ---------------------------------------------------------------------------
+// 股票搜索下拉（kline-stock-search）：300ms 本地防抖 + 后发覆盖 + Enter 语义
+// ---------------------------------------------------------------------------
+interface StockSuggestion {
+  /** el-autocomplete valueKey 默认取 value；点选后回填输入框 */
+  value: string
+  code: string
+  name: string
+  /** 无匹配候选的空态提示项，不参与加载 */
+  placeholder?: boolean
+}
+
+const acRef = ref<AutocompleteInstance | null>(null)
+/** 用户是否用 ↑↓ 浏览过候选（D5 Enter 分流标志，输入内容变化时重置） */
+const arrowBrowsed = ref(false)
+let suggestTimer: ReturnType<typeof setTimeout> | null = null
+let suggestSeq = 0
+
+/** 取消在途/待发的搜索请求（后发覆盖的作废通道） */
+function cancelSuggest(): void {
+  if (suggestTimer !== null) {
+    clearTimeout(suggestTimer)
+    suggestTimer = null
+  }
+  suggestSeq++
+}
+
+/**
+ * 远程搜索候选（D6：300ms 本地 setTimeout 防抖，不引 lodash）。
+ * 空输入不请求并收起下拉；过期响应丢弃，只采纳最后一次 query 的结果。
+ */
+function queryStocks(q: string, cb: (items: StockSuggestion[]) => void): void {
+  if (suggestTimer !== null) {
+    clearTimeout(suggestTimer)
+    suggestTimer = null
+  }
+  const query = q.trim()
+  if (!query) {
+    cancelSuggest()
+    cb([])
+    return
+  }
+  // 请求发出前先收起旧候选，避免加载态闪烁；结果到达后再展开
+  cb([])
+  suggestTimer = setTimeout(async () => {
+    suggestTimer = null
+    const seq = ++suggestSeq
+    try {
+      const list = await searchStocks(query)
+      if (seq !== suggestSeq) return // 过期响应丢弃（后发覆盖）
+      if (!list.length) {
+        // 无匹配候选：下拉空态提示，不阻断手动输入加载（4.4）
+        cb([{ value: query, code: '', name: '无匹配候选', placeholder: true }])
+        return
+      }
+      cb(list.map((s) => ({ value: s.code, code: s.code, name: s.name })))
+    } catch (e) {
+      if (seq !== suggestSeq) return
+      console.warn('[KLineView.queryStocks] 股票搜索失败', {
+        query,
+        error: e instanceof Error ? e.message : String(e),
+      })
+      cb([])
+    }
+  }, 300)
+}
+
+/** 点选候选（鼠标任何时候）：同步输入框为 code 并精确加载 */
+function onSelectSuggestion(item: StockSuggestion): void {
+  cancelSuggest()
+  arrowBrowsed.value = false
+  acRef.value?.close()
+  if (item.placeholder) {
+    // 空态提示项：仅收起下拉，不发起加载
+    return
+  }
+  codeInput.value = item.code
+  code.value = item.code
+  load()
+}
+
+/**
+ * Enter 语义（D5，捕获阶段拦截，防 autocomplete 默认回车劫持）：
+ * - 未用 ↑↓ 浏览过候选 → Enter 按输入框原值走既有 handleSearch()
+ * - 用 ↑↓ 浏览过且有高亮项 → 交给 autocomplete 选中高亮项
+ */
+function onSearchKeydown(e: KeyboardEvent): void {
+  // IME 组合确认的 Enter（如中文「平安」上屏）不触发搜索
+  if (e.isComposing || e.keyCode === 229) return
+  if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+    arrowBrowsed.value = true
+    return // 继续传播，由 autocomplete 移动高亮
+  }
+  if (e.key !== 'Enter') return
+  const ac = acRef.value
+  const highlighted = ac?.highlightedIndex ?? -1
+  const count = ac?.suggestions?.length ?? 0
+  if (arrowBrowsed.value && highlighted >= 0 && highlighted < count) {
+    return // 交给 autocomplete 选中高亮候选
+  }
+  e.preventDefault()
+  e.stopPropagation()
+  handleSearch()
 }
 
 /** 副图指标增删（自定义多选） */
@@ -230,10 +370,22 @@ onMounted(() => {
 // 周期切换触发重载
 watch(period, () => load())
 
+// 输入内容变化 → 重置 ↑↓ 浏览标志（D5）
+watch(codeInput, () => {
+  arrowBrowsed.value = false
+})
+
 // 数据加载后同步副图指标
 watch(result, () => {
   if (result.value) {
     chartComp.value?.syncSubIndicators(subIndicators.value)
+  }
+})
+
+onBeforeUnmount(() => {
+  if (suggestTimer !== null) {
+    clearTimeout(suggestTimer)
+    suggestTimer = null
   }
 })
 </script>
@@ -265,6 +417,9 @@ watch(result, () => {
 .code-field {
   width: 220px;
 }
+.code-field :deep(.el-autocomplete) {
+  width: 100%;
+}
 .code-field :deep(.el-input__wrapper) {
   background: var(--bg-surface);
   box-shadow: 0 0 0 1px var(--border-base) inset;
@@ -276,6 +431,33 @@ watch(result, () => {
   font-family: var(--font-mono);
   font-size: 13px;
   color: var(--text-primary);
+}
+
+/* 搜索候选下拉项：code + 名称（插槽内容带本组件 scope，可直接写 scoped 样式） */
+.sug-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+  padding: 2px 0;
+}
+.sug-item__code {
+  width: 84px;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: var(--accent-hover);
+}
+.sug-item__name {
+  font-size: 13px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sug-item__empty {
+  font-size: 12px;
+  color: var(--text-disabled);
 }
 
 .period-select {

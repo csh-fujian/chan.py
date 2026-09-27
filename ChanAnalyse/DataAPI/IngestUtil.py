@@ -110,11 +110,17 @@ def load_config(path: str) -> dict:
 
 
 def iter_ingest_jobs(cfg: dict):
-    """按配置文件展开为 (code, KL_TYPE, AUTYPE) 三元组，供批量灌数/状态遍历。"""
+    """按配置文件展开为 (code, KL_TYPE, AUTYPE) 三元组，供批量灌数/状态遍历。
+
+    可选 cfg["code_prefix"]（如 "sz."）：只保留该前缀的股票，用于按市场分跑。
+    """
     defaults = cfg.get("defaults", {})
     default_autype = defaults.get("autype", "QFQ")
+    prefix = cfg.get("code_prefix")
     for s in cfg.get("stocks", []):
         code = s["code"]
+        if prefix and not code.startswith(prefix):
+            continue
         for kt in s.get("kl_types", ["K_DAY"]):
             for au in s.get("autypes", [default_autype]):
                 yield code, parse_kl_type(kt), parse_autype(au)

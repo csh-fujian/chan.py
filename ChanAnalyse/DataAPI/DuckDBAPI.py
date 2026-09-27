@@ -62,7 +62,8 @@ class CDuckDB(CCommonStockApi):
         4. 交易信息（volume/turnover/turnover_rate）仅在非空时注入，
            与 BaoStock 分钟线无交易信息的行为一致
         """
-        with KLineStore(self.db_path) as store:
+        # 只读打开：查询路径不建库/建表，避免与灌数写进程互踩（锁冲突见 KLineStore）
+        with KLineStore(self.db_path, read_only=True) as store:
             df = store.query(
                 self.code,
                 _to_name(self.k_type),

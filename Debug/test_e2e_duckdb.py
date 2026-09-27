@@ -142,7 +142,7 @@ def main():
         df = pd.DataFrame([klu_to_row(k, "sz.000001", KL_TYPE.K_DAY, AUTYPE.QFQ) for k in bars])
         with KLineStore(db_path) as store:
             store.upsert(df)
-            n_rows = store._conn.execute("SELECT count(*) FROM kline").fetchone()[0]
+            n_rows = store.execute("SELECT count(*) FROM kline")[0][0]
         check("库中行数 = 合成 bar 数", n_rows == len(bars))
 
         CDuckDB.db_path = db_path

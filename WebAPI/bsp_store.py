@@ -4,6 +4,7 @@ BSP DAO — chan_structure / bsp_index / chan_snapshot 表的 PG 持久化。
 """
 
 import json
+import logging
 import os
 
 from typing import Any, Optional
@@ -12,12 +13,30 @@ import psycopg2
 
 from .config import PG_DSN
 
+log = logging.getLogger("bsp_store")
+
 
 def _get_pg_conn():
-    """获取 PG 连接，PG_DSN 未配置时返回 None。"""
+    """获取 PG 连接，PG_DSN 未配置或 PG 不可达时返回 None（降级为无数据库模式）。"""
+    global _pg_down
     if not PG_DSN:
         return None
-    return psycopg2.connect(PG_DSN)
+
+    try:
+        conn = psycopg2.connect(PG_DSN)
+    except psycopg2.OperationalError as e:
+        if not _pg_down:
+            log.warning("PG 不可达，降级为无数据库模式: %s", e)
+            _pg_down = True
+        return None
+    if _pg_down:
+        log.info("PG 连接已恢复")
+        _pg_down = False
+    return conn
+
+
+# PG 连接失败降级状态（仅状态翻转时记一次日志，防止每个请求刷屏）
+_pg_down = False
 
 
 def _ensure_tables():
