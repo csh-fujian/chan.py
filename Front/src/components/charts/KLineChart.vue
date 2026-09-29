@@ -21,7 +21,9 @@ import {
   dispose,
   type Chart,
   type KLineData,
+  type IndicatorCreate,
   LineType,
+  PolygonType,
   CandleType,
   TooltipShowRule,
   TooltipShowType,
@@ -248,12 +250,37 @@ function initChart(): void {
   })
 }
 
+/**
+ * 副图指标创建参数：MACD 柱体覆盖为「0 轴上红（涨）、0 轴下绿（跌）」，
+ * 与主图红涨绿跌一致——klinecharts 内置 MACD 默认绿涨红跌（0 轴下是红色）。
+ * 其余指标直接用注册名，走默认样式。
+ */
+function indicatorCreate(name: string): string | IndicatorCreate {
+  if (name !== 'MACD') return name
+  return {
+    name,
+    styles: {
+      bars: [
+        {
+          style: PolygonType.Fill,
+          borderStyle: LineType.Solid,
+          borderSize: 1,
+          borderDashedValue: [2, 2],
+          upColor: UP_COLOR,
+          downColor: DOWN_COLOR,
+          noChangeColor: '#9BA1A8',
+        },
+      ],
+    },
+  }
+}
+
 /** 添加副图指标（VOL/MACD/BOLL/RSI/KDJ） */
 function addSubIndicator(name: string): void {
   if (!chart) return
   if (subPaneMap.has(name)) return
   const paneId = `${PANE_PREFIX}${name.toLowerCase()}`
-  chart.createIndicator(name, false, { id: paneId, height: 130 })
+  chart.createIndicator(indicatorCreate(name), false, { id: paneId, height: 130 })
   subPaneMap.set(name, paneId)
 }
 

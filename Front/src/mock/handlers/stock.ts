@@ -23,20 +23,29 @@ export const stockHandlers = [
     return HttpResponse.json(stockMetas[code] ?? buildDefaultMeta(stock))
   }),
 
-  /** 搜索股票（编号/名称/名称拼音首字母 三列子串匹配，大小写不敏感） */
+  /** 搜索股票（编号/名称/名称拼音首字母 三列子串匹配，大小写不敏感）。
+   * 返回体与真实后端 stock_store.list_stocks 对齐：分页对象 {items,total,page,page_size} */
   http.get('/api/stocks', async ({ request }) => {
     await delay(200)
     const url = new URL(request.url)
     const q = (url.searchParams.get('q') || '').toLowerCase()
-    const limit = Number(url.searchParams.get('page_size') || 30)
-    if (!q) return HttpResponse.json(stocks.slice(0, limit))
-    const result = stocks.filter(
-      (s) =>
-        s.code.toLowerCase().includes(q) ||
-        s.name.toLowerCase().includes(q) ||
-        s.name_py.toLowerCase().includes(q),
-    ).slice(0, limit)
-    return HttpResponse.json(result)
+    const page = Number(url.searchParams.get('page') || 1)
+    const pageSize = Number(url.searchParams.get('page_size') || 30)
+    const matched = q
+      ? stocks.filter(
+          (s) =>
+            s.code.toLowerCase().includes(q) ||
+            s.name.toLowerCase().includes(q) ||
+            s.name_py.toLowerCase().includes(q),
+        )
+      : stocks
+    const start = (page - 1) * pageSize
+    return HttpResponse.json({
+      items: matched.slice(start, start + pageSize),
+      total: matched.length,
+      page,
+      page_size: pageSize,
+    })
   }),
 
   /** 行业列表 */
