@@ -26,9 +26,21 @@ from .routers import (
 )
 
 log = logging.getLogger("meta_sync_scheduler")
+bsp_log = logging.getLogger("bsp_scheduler")
 
 # 到期检查间隔（秒）：默认 3600（小时级），可用环境变量覆盖（可测试性）
 META_SYNC_INTERVAL_SECONDS = int(os.environ.get("META_SYNC_INTERVAL_SECONDS", "3600"))
+
+# ---- 买卖点补算调度（bsp-page-change D2：启动 + 低频 tick + 日终，电平触发可漏发自愈）----
+# BSP_CATCHUP_ENABLED=0 关闭调度入口（回滚手段：关调度即可，引擎只写 PG）
+# BSP_CATCHUP_TICK_SECONDS 低频 tick 间隔（默认 3600）
+# BSP_CATCHUP_BATCH 每次 tick 最多补算键数（默认 20，分批跑游标天然断点可续；首次
+#   全市场接入用 CLI: PYTHONPATH=. python -m WebAPI.incremental_engine --catch-up --limit 0）
+# BSP_EOD_AT 日终触发时刻 "HH:MM"（默认 16:30，收盘后；日终为主、盘中预留）
+BSP_CATCHUP_ENABLED = os.environ.get("BSP_CATCHUP_ENABLED", "1") != "0"
+BSP_CATCHUP_TICK_SECONDS = int(os.environ.get("BSP_CATCHUP_TICK_SECONDS", "3600"))
+BSP_CATCHUP_BATCH = int(os.environ.get("BSP_CATCHUP_BATCH", "20"))
+BSP_EOD_AT = os.environ.get("BSP_EOD_AT", "16:30")
 
 
 async def _meta_sync_scheduler(interval_seconds: Optional[int] = None) -> None:
@@ -61,17 +73,87 @@ async def _meta_sync_scheduler(interval_seconds: Optional[int] = None) -> None:
             log.exception("meta sync scheduler iteration failed")
 
 
+async def _bsp_tick_loop() -> None:
+    """低频 tick 水位补算（bsp-page-change 3.6：启动触发 + 定时触发）。
+
+    启动即跑一批（电平触发：无论错过多少次调度，任何入口触发时自然补上），
+    之后每 BSP_CATCHUP_TICK_SECONDS 醒来一批；每批最多 BSP_CATCHUP_BATCH 个键。
+    """
+    from .incremental_engine import catch_up
+
+    first = True
+    while True:
+        if not first:
+            await asyncio.sleep(BSP_CATCHUP_TICK_SECONDS)
+        first = False
+        try:
+            result = await asyncio.to_thread(catch_up, None, None, None, BSP_CATCHUP_BATCH, False)
+            if result["updated"] or result["failed"]:
+                bsp_log.info(
+                    "catch_up tick: scanned=%s updated=%s failed=%s",
+                    result["scanned"], result["updated"], len(result["failed"]),
+                )
+        except asyncio.CancelledError:
+            bsp_log.info("bsp tick loop cancelled")
+            raise
+        except Exception:
+            bsp_log.exception("bsp catch_up tick failed")
+
+
+def _seconds_until(hhmm: str) -> float:
+    """距下一次 hh:mm（本地时间）的秒数。"""
+    import datetime as _dt
+
+    now = _dt.datetime.now()
+    try:
+        hour, minute = (int(x) for x in hhmm.split(":"))
+        target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    except ValueError:
+        bsp_log.warning("BSP_EOD_AT=%r 非法，回退 16:30", hhmm)
+        target = now.replace(hour=16, minute=30, second=0, microsecond=0)
+    if target <= now:
+        target += _dt.timedelta(days=1)
+    return (target - now).total_seconds()
+
+
+async def _bsp_eod_loop() -> None:
+    """日终流水线（bsp-page-change 3.7）：每日 BSP_EOD_AT 扫描当日有新增 K 线的股票补算。
+
+    入口选择：服务内日终调度为主（与 _meta_sync_scheduler 同模式），CLI
+    `python -m WebAPI.incremental_engine --eod` 为 cron 兜底，两入口共用同一实现。
+    """
+    from .incremental_engine import run_eod_pipeline
+
+    while True:
+        await asyncio.sleep(_seconds_until(BSP_EOD_AT))
+        try:
+            result = await asyncio.to_thread(run_eod_pipeline)
+            bsp_log.info("eod pipeline: scanned=%s updated=%s", result["scanned"], result["updated"])
+        except asyncio.CancelledError:
+            bsp_log.info("bsp eod loop cancelled")
+            raise
+        except Exception:
+            bsp_log.exception("bsp eod pipeline failed")
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    task = asyncio.create_task(_meta_sync_scheduler())
+    tasks = [asyncio.create_task(_meta_sync_scheduler())]
+    if BSP_CATCHUP_ENABLED:
+        tasks.append(asyncio.create_task(_bsp_tick_loop()))
+        tasks.append(asyncio.create_task(_bsp_eod_loop()))
+    else:
+        bsp_log.info("bsp catch-up scheduler disabled (BSP_CATCHUP_ENABLED=0)")
     try:
         yield
     finally:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 app = FastAPI(

@@ -6,11 +6,11 @@ BSP DAO — chan_structure / bsp_index / chan_snapshot 表的 PG 持久化。
 import json
 import logging
 import os
-
 from typing import Any, Optional
 
 import psycopg2
 
+from .chan_service import PERIOD_MAP
 from .config import PG_DSN
 
 log = logging.getLogger("bsp_store")
@@ -167,10 +167,16 @@ def query_bsp(
     date: str = "",
     bsp_type: str = "",
     is_buy: Optional[bool] = None,
+    keyword: str = "",
     page: int = 1,
     page_size: int = 20,
 ) -> dict:
-    """条件查询买卖点，返回 {items, total, page, page_size}。"""
+    """条件查询买卖点，返回 {items, total, page, page_size}。
+
+    bsp-page-change 2.3/2.6：keyword（code/name ILIKE）与 kl_type/bsp_type/is_buy/date
+    全部下推进同一 WHERE，COUNT 与分页共用该条件，total = 过滤后总数；无命中返回
+    list=[] 且 total=0。行业信息不再逐行查询（N+1），由 router 层按页批量取。
+    """
     _ensure_tables()
     conn = _get_pg_conn()
     if conn is None:
@@ -191,6 +197,10 @@ def query_bsp(
     if is_buy is not None:
         conditions.append("b.is_buy = %s")
         params.append(is_buy)
+    if keyword:
+        kw = f"%{keyword}%"
+        conditions.append("(b.code ILIKE %s OR s.name ILIKE %s)")
+        params.extend([kw, kw])
 
     where_clause = ""
     if conditions:
@@ -198,8 +208,14 @@ def query_bsp(
 
     try:
         with conn.cursor() as cur:
+            # COUNT 与分页共用同一 WHERE（keyword 依赖 stock join，故 FROM/JOIN 保持一致）
             cur.execute(
-                f"SELECT COUNT(*) FROM bsp_index b {where_clause}",
+                f"""
+                SELECT COUNT(*)
+                FROM bsp_index b
+                LEFT JOIN stock s ON b.code = s.code
+                {where_clause}
+                """,
                 params,
             )
             total = cur.fetchone()[0]
@@ -225,20 +241,17 @@ def query_bsp(
     items = []
     for row in rows:
         code_val, kt, at, bd, bt, ib, price, tk, stock_name = row
-        item = {
+        items.append({
             "code": code_val,
             "name": stock_name,
             "kl_type": kt,
+            "autype": at,
             "bsp_date": bd.isoformat() if hasattr(bd, "isoformat") else str(bd),
             "bsp_type": bt,
             "is_buy": ib,
             "price": price,
             "time_key": tk,
-        }
-        # 附加行业信息
-        industries = _get_top_industries_for_code(code_val, 3)
-        item["industries"] = [{"name": i["name"]} for i in industries]
-        items.append(item)
+        })
 
     return {"items": items, "total": total, "page": page, "page_size": page_size}
 
@@ -294,21 +307,24 @@ def query_bsp_aggregate(
 
 
 def get_bsp_by_code(code: str, kl_types: Optional[list[str]] = None) -> list[dict]:
-    """获取指定股票的多级别买卖点。"""
+    """获取指定股票的多级别买卖点（区间套）。
+
+    bsp-page-change 2.5：kl_types IN 改为参数化占位符，消除字符串拼接注入面。
+    """
     _ensure_tables()
     conn = _get_pg_conn()
     if conn is None:
         return []
 
     if kl_types:
-        kl_list = ", ".join(f"'{kt}'" for kt in kl_types)
+        placeholders = ", ".join(["%s"] * len(kl_types))
         sql = f"""
             SELECT code, kl_type, autype, bsp_date, bsp_type, is_buy, price, time_key
             FROM bsp_index
-            WHERE code = %s AND kl_type IN ({kl_list})
+            WHERE code = %s AND kl_type IN ({placeholders})
             ORDER BY bsp_date DESC, kl_type
         """
-        params: tuple = (code,)
+        params: tuple = (code, *kl_types)
     else:
         sql = """
             SELECT code, kl_type, autype, bsp_date, bsp_type, is_buy, price, time_key
@@ -381,21 +397,196 @@ def get_snapshot(code: str, kl_type: str, autype: str = "QFQ") -> Optional[bytes
     return None
 
 
-def _get_top_industries_for_code(code: str, limit: int = 3) -> list[dict]:
-    """内部辅助：获取 top N 行业。"""
+def get_industries_for_codes(codes: list[str], limit: int = 3) -> dict[str, list[str]]:
+    """按页批量获取股票行业名（rank 升序取前 limit 个，bsp-page-change 2.4）。
+
+    单条 SQL 替代逐行 N+1 查询；返回 {code: [industry_name, ...]}，未命中行业不出现。
+    """
+    if not codes:
+        return {}
     conn = _get_pg_conn()
     if conn is None:
-        return []
+        return {}
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT industry_name, rank, is_primary FROM stock_industry WHERE code=%s ORDER BY rank LIMIT %s",
-                (code, limit),
+                """
+                SELECT code, industry_name
+                FROM stock_industry
+                WHERE code = ANY(%s) AND rank < %s
+                ORDER BY code, rank, industry_name
+                """,
+                (codes, limit),
             )
             rows = cur.fetchall()
     finally:
         conn.close()
-    return [{"name": r[0], "rank": r[1], "is_primary": r[2]} for r in rows]
+
+    result: dict[str, list[str]] = {}
+    for code_val, name in rows:
+        result.setdefault(code_val, []).append(name)
+    return result
+
+
+def fetch_current_prices(keys: list[tuple[str, str]]) -> dict[tuple[str, str], tuple[float, float]]:
+    """按页批量取股票最新两根 K 线收盘价 → 现价/涨跌幅（bsp-page-change 2.4）。
+
+    keys 为 (code, kl_type) 列表（kl_type 用 bsp 词表值，如 "D"），一次 DuckDB 查询
+    覆盖整页（≤ page_size 只）；按 (code, kl_type) 分区取最新两根，current_price =
+    最新收盘价，change_pct = (最新 - 前收) / 前收 * 100（无前收时为 0）。
+
+    DuckDB 被灌数锁住/不可用时降级返回空映射（调用方给 0，列表照常渲染，不阻塞）。
+    """
+    if not keys:
+        return {}
+    # bsp 词表 -> DuckDB 枚举名（D1 桥接）；未知词表的行跳过
+    pairs: list[tuple[str, str, str]] = []  # (code, period, kl_type_db_name)
+    for code, period in keys:
+        kl_type = PERIOD_MAP.get(period)
+        if kl_type is None:
+            continue
+        pairs.append((code, period, kl_type.name))
+    if not pairs:
+        return {}
+
+    codes = sorted({c for c, _, _ in pairs})
+    kl_names = sorted({k for _, _, k in pairs})
+    code_ph = ", ".join(["?"] * len(codes))
+    kl_ph = ", ".join(["?"] * len(kl_names))
+
+    try:
+        from ChanAnalyse.DataAPI.KLineStore import DEFAULT_DB_PATH, KLineStore
+
+        from .config import DUCKDB_PATH
+
+        db_path = DUCKDB_PATH if os.path.exists(DUCKDB_PATH) else DEFAULT_DB_PATH
+        with KLineStore(db_path, read_only=True) as store:
+            rows = store.execute(
+                f"""
+                SELECT code, kl_type, close, rn FROM (
+                    SELECT code, kl_type, close,
+                           ROW_NUMBER() OVER (PARTITION BY code, kl_type ORDER BY time_key DESC) AS rn
+                    FROM kline
+                    WHERE code IN ({code_ph}) AND kl_type IN ({kl_ph}) AND autype = 'QFQ'
+                ) t WHERE rn <= 2
+                """,
+                codes + kl_names,
+            )
+    except Exception as e:  # 锁冲突/文件缺失等：降级为 0，不阻塞列表
+        log.warning("DuckDB 现价批量查询失败，降级为 0: %s", e)
+        return {}
+
+    closes: dict[tuple[str, str], dict[int, float]] = {}
+    for code_val, kl_name, close, rn in rows:
+        closes.setdefault((code_val, kl_name), {})[int(rn)] = float(close)
+
+    result: dict[tuple[str, str], tuple[float, float]] = {}
+    for code, period, kl_name in pairs:
+        two = closes.get((code, kl_name), {})
+        cur_close = two.get(1)
+        if cur_close is None:
+            continue
+        prev_close = two.get(2)
+        if prev_close:
+            change_pct = (cur_close - prev_close) / prev_close * 100.0
+        else:
+            change_pct = 0.0
+        result[(code, period)] = (cur_close, round(change_pct, 2))
+    return result
+
+
+# ---- 整套替换写入（幂等层 2+3，bsp-page-change D4）----
+
+
+def _delete_bsp_rows(cur, code: str, kl_type: str, autype: str) -> int:
+    cur.execute(
+        "DELETE FROM bsp_index WHERE code=%s AND kl_type=%s AND autype=%s",
+        (code, kl_type, autype),
+    )
+    return cur.rowcount
+
+
+def _insert_bsp_rows(cur, code: str, kl_type: str, autype: str, bsp_rows) -> int:
+    """层 1 幂等：唯一键 + ON CONFLICT DO NOTHING（防并发/集合内重复写）。"""
+    if not bsp_rows:
+        return 0
+    cur.executemany(
+        """INSERT INTO bsp_index (code, kl_type, autype, bsp_date, bsp_type, is_buy, price, time_key)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+           ON CONFLICT (code, kl_type, autype, bsp_date, bsp_type, is_buy, time_key) DO NOTHING""",
+        [(code, kl_type, autype, bd, bt, ib, pr, tk) for (bd, bt, ib, pr, tk) in bsp_rows],
+    )
+    return cur.rowcount
+
+
+def _upsert_structure(cur, code: str, kl_type: str, autype: str, structure: dict) -> None:
+    cur.execute(
+        """INSERT INTO chan_structure (code, kl_type, autype, structure)
+           VALUES (%s, %s, %s, %s::jsonb)
+           ON CONFLICT (code, kl_type, autype) DO UPDATE SET
+             structure  = EXCLUDED.structure,
+             updated_at = NOW()""",
+        (code, kl_type, autype, json.dumps(structure, ensure_ascii=False)),
+    )
+
+
+def _upsert_snapshot(cur, code: str, kl_type: str, autype: str, pickle_bytes: bytes) -> None:
+    cur.execute(
+        """INSERT INTO chan_snapshot (code, kl_type, autype, pickle)
+           VALUES (%s, %s, %s, %s)
+           ON CONFLICT (code, kl_type, autype) DO UPDATE SET
+             pickle     = EXCLUDED.pickle,
+             updated_at = NOW()""",
+        (code, kl_type, autype, psycopg2.Binary(pickle_bytes)),
+    )
+
+
+def _advance_cursor(cur, code: str, kl_type_db: str, autype_db: str, last_processed_time: str) -> None:
+    """同事务推进 recompute_cursor（游标与数据同生共死，D4 层 3）。
+
+    注意：这里必须走调用方的事务连接，不能用 RecomputeCursor.set()（自连接自提交）。
+    """
+    cur.execute(
+        """
+        INSERT INTO recompute_cursor (code, kl_type, autype, last_processed_time)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (code, kl_type, autype)
+        DO UPDATE SET last_processed_time = EXCLUDED.last_processed_time
+        """,
+        (code, kl_type_db, autype_db, last_processed_time),
+    )
+
+
+def persist_full_set(
+    conn,
+    code: str,
+    kl_type: str,
+    autype: str,
+    bsp_rows,
+    structure: dict,
+    pickle_bytes: bytes,
+    last_processed_time: str,
+    kl_type_db: str,
+    autype_db: str,
+) -> int:
+    """整套替换写入（幂等层 2+3）——在调用方已开启的事务内执行，不 commit。
+
+    DELETE 该 (code,kl_type,autype) 旧行 → INSERT 当前买卖点全集（层 1 ON CONFLICT
+    DO NOTHING）→ upsert chan_structure / chan_snapshot → 同事务推进 recompute_cursor。
+    任一步失败由调用方 rollback，杜绝「游标已走、数据没落」或反之。
+
+    kl_type/autype 用 bsp 词表值（如 "D"/"QFQ"）；kl_type_db/autype_db 用 DuckDB
+    枚举名（如 "K_DAY"），只出现在 recompute_cursor 边界（D1）。
+
+    返回插入的索引行数。
+    """
+    with conn.cursor() as cur:
+        _delete_bsp_rows(cur, code, kl_type, autype)
+        inserted = _insert_bsp_rows(cur, code, kl_type, autype, bsp_rows)
+        _upsert_structure(cur, code, kl_type, autype, structure)
+        _upsert_snapshot(cur, code, kl_type, autype, pickle_bytes)
+        _advance_cursor(cur, code, kl_type_db, autype_db, last_processed_time)
+    return inserted
 
 
 # 模块加载时自动建表

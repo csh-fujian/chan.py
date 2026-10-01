@@ -113,9 +113,10 @@ async function onLogin() {
   position: absolute;
   inset: 0;
   background-image:
-    linear-gradient(rgba(59, 130, 246, 0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(59, 130, 246, 0.04) 1px, transparent 1px);
+    linear-gradient(color-mix(in srgb, var(--accent-base) 4%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--accent-base) 4%, transparent) 1px, transparent 1px);
   background-size: 40px 40px;
+  /* mask #000 仅为遮罩不透明度通道（非可见色，主题无关） */
   mask-image: radial-gradient(ellipse 80% 60% at 50% 50%, #000 30%, transparent 80%);
 }
 
@@ -126,7 +127,7 @@ async function onLogin() {
   background: var(--bg-surface);
   border: 1px solid var(--border-base);
   border-radius: var(--r-lg);
-  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  box-shadow: var(--shadow-lg), var(--shadow-highlight);
 }
 
 .login-brand {

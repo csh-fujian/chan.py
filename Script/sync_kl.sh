@@ -91,7 +91,7 @@ task_all_daily() {    # $1=sleep  $2=logfile
 
 task_single_minute() {  # $1=code  $2=sleep  $3=logfile → 失败级别数作为退出码
     local code="$1" sleep_s="$2" logfile="$3" kt rc=0
-    for kt in K_5M K_15M K_30M K_60M; do
+    for kt in K_30M K_60M; do
         run_cmd "$logfile" "$PY" Data/download_kl.py \
             --code "$code" --kl-type "$kt" --autype QFQ --sleep "$sleep_s" || rc=$((rc + 1))
     done
@@ -114,7 +114,7 @@ while true; do
     cat <<'EOF'
 
 ======== K 线灌数同步（增量续跑）========
-1) 所有股票 · 分钟级      K_5M / K_15M / K_30M / K_60M
+1) 所有股票 · 分钟级      K_5M / K_15M / K_30M / K_60M 暂停5分钟和15分钟的同步
 2) 所有股票 · 日线及以上   K_DAY / K_WEEK / K_MON
 3) 指定股票 · 分钟级
 4) 指定股票 · 日线及以上

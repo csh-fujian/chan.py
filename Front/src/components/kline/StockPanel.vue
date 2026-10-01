@@ -6,10 +6,14 @@
         <span class="sp-name">{{ profile.name }}</span>
         <span class="sp-code mono">{{ profile.code }}</span>
       </div>
-      <div class="sp-quote">
-        <span class="sp-price num">{{ formatPrice(profile.price) }}</span>
-        <ChangeBadge :value="profile.change_pct" />
-      </div>
+      <!-- 行情图例（kline-chart-change D7/5.3）：现价行 + 时间/今开/最高/最低/量能，
+           经共享状态随主图十字光标联动（5.4）；K 线未就绪时现价行回退 profile 报价 -->
+      <ChartLegend
+        :bar="legendState?.bar ?? null"
+        :prev-close="legendState?.prevClose ?? null"
+        :fallback-price="profile.price"
+        :fallback-change-pct="profile.change_pct"
+      />
     </div>
 
     <!-- 板块信息：行业 / 地区 / 概念 全量展示 -->
@@ -78,7 +82,6 @@
           <span class="sp-folder__count">{{ f.codes.length }}</span>
           <el-icon class="sp-folder__act" title="重命名分组" @click="openRenameFolder(f)"><EditPen /></el-icon>
           <el-icon
-            v-if="f.id !== 1"
             class="sp-folder__act sp-folder__act--danger"
             title="删除分组"
             @click="onDeleteFolder(f)"
@@ -114,8 +117,9 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Star, Folder, EditPen, Delete, Remove } from '@element-plus/icons-vue'
-import ChangeBadge from '@/components/ui/ChangeBadge.vue'
+import ChartLegend from '@/components/kline/ChartLegend.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
+import { useChartLegend } from '@/composables/useChartLegend'
 import { getStockProfile } from '@/api/modules/stock'
 import {
   getFolders,
@@ -133,6 +137,9 @@ const props = defineProps<{ code: string }>()
 const profile = ref<StockProfile | null>(null)
 const loading = ref(false)
 const folders = ref<WatchFolder[]>([])
+
+// 行情图例共享状态（kline-chart-change 5.4）：KLineChart 写、本组件只读渲染
+const { state: legendState } = useChartLegend()
 
 const memberFolders = computed(() => folders.value.filter((f) => f.codes.includes(props.code)))
 
@@ -237,11 +244,6 @@ async function onDeleteFolder(f: WatchFolder) {
   }
 }
 
-// ---- 工具 ----
-function formatPrice(v: number) {
-  return v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-}
-
 watch(() => props.code, loadProfile, { immediate: true })
 onMounted(loadFolders)
 </script>
@@ -276,19 +278,6 @@ onMounted(loadFolders)
 .sp-code {
   font-size: 12px;
   color: var(--text-disabled);
-}
-.sp-quote {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-md);
-}
-.sp-price {
-  font-size: 24px;
-  font-weight: 700;
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
-  color: var(--text-primary);
-  line-height: 1;
 }
 
 /* 板块信息 */
@@ -381,7 +370,7 @@ onMounted(loadFolders)
 }
 .sp-folder__act:hover {
   color: var(--accent-hover);
-  background: rgba(59, 130, 246, 0.1);
+  background: var(--accent-dim);
 }
 .sp-folder__act--danger:hover {
   color: var(--rise);

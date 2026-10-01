@@ -3,8 +3,13 @@
 Monitor 路由 — 交易监控 API。
 """
 
+import re
+
 from fastapi import APIRouter, HTTPException, Query
 
+from ..llm_client import LLMError, complete
+from ..llm_prompts import ATTRIBUTION_SYSTEM_PROMPT, build_attribution_prompt
+from ..llm_store import resolve_llm_config
 from ..monitor_store import (
     create_monitor,
     end_monitor,
@@ -19,6 +24,33 @@ from ..monitor_store import (
 )
 
 router = APIRouter(prefix="/api/monitor", tags=["monitor"])
+
+
+def _llm_error_to_http(e: LLMError) -> HTTPException:
+    """LLM 调用失败 → HTTP 异常：错误透传，保留上游 4xx/5xx 语义。
+
+    上游 401/403 归 502（属于供应商密钥/权限问题，非本服务会话问题——
+    若透传 401 会被前端误判为登录过期强制登出）；其余 4xx 原样透传；
+    5xx / 网络失败 / 响应解析失败 → 502。
+    """
+    status = 502
+    m = re.search(r"LLM 返回 HTTP (\d+)", str(e))
+    if m:
+        upstream = int(m.group(1))
+        if 400 <= upstream <= 499 and upstream not in (401, 403):
+            status = upstream
+    return HTTPException(status_code=status, detail=f"LLM 调用失败: {e}")
+
+
+def _parse_reason_type(text: str) -> str:
+    """从归因输出解析归因类别（计算逻辑错误 / 缠论失效），解析不出时回退 LLM归因。"""
+    m = re.search(r"【归因类别】\s*([^\n\r]*)", text)
+    category = m.group(1) if m else text[:200]
+    if "计算逻辑" in category:
+        return "计算逻辑错误"
+    if "缠论" in category:
+        return "缠论失效"
+    return "LLM归因"
 
 
 @router.get("")
@@ -92,16 +124,41 @@ async def monitor_detail(monitor_id: int):
 
 @router.post("/{monitor_id}/analyze")
 async def monitor_analyze(monitor_id: int):
-    """大模型归因分析（stub — 返回占位归因）。"""
+    """大模型归因分析（design D5/U5：真实生成、失败显式报错且不落库）。
+
+    - 标的最终盈利 >= 5% → 400「仅分析盈利低于 5% 的标的」
+    - LLM 未配置 → 400「LLM 未配置」
+    - 供应商调用失败 → 错误透传（4xx/5xx 语义保留），不写任何占位归因记录
+    - 成功才经 save_attribution 持久化
+    """
     monitor = get_monitor(monitor_id)
     if not monitor:
         raise HTTPException(status_code=404, detail=f"Monitor {monitor_id} not found")
 
-    # Stub 归因：写入一条占位归因记录
-    existing = get_attribution(monitor_id)
-    if not existing:
-        save_attribution(monitor_id, "auto", "LLM 归因结果占位（待接入大模型）")
+    pnl_pct = monitor.get("pnl_pct")
+    if pnl_pct is None or float(pnl_pct) >= 5:
+        raise HTTPException(status_code=400, detail="仅分析盈利低于 5% 的标的")
 
+    llm_cfg = resolve_llm_config()
+    if llm_cfg is None:
+        raise HTTPException(status_code=400, detail="LLM 未配置")
+
+    prompt = build_attribution_prompt(monitor)
+    try:
+        text = complete(
+            ATTRIBUTION_SYSTEM_PROMPT,
+            prompt,
+            llm_cfg.get("timeout", 60.0),
+            config=llm_cfg,
+        )
+    except LLMError as e:
+        # 调用失败：不写任何占位归因记录
+        raise _llm_error_to_http(e) from e
+
+    if not text:
+        raise HTTPException(status_code=502, detail="LLM 返回空归因结果")
+
+    save_attribution(monitor_id, _parse_reason_type(text), text)
     return {"success": True, "id": monitor_id, "attribution": get_attribution(monitor_id)}
 
 

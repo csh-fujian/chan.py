@@ -56,18 +56,20 @@
     <!-- 右侧主面板 -->
     <div class="main-panel">
       <div class="bsp-page">
-        <!-- 查询筛选区 -->
+        <!-- 查询筛选区（design D8：周期 | 日期 | 买卖点类型 | 方向 | 关键词） -->
         <div class="toolbar reveal reveal--1">
           <el-select v-model="query.kl_type" placeholder="周期" style="width: 130px" @change="onQueryChange">
             <el-option v-for="kl in klOptions" :key="kl.value" :label="kl.label" :value="kl.value" />
           </el-select>
-          <el-input
-            v-model="query.keyword"
-            placeholder="名称 / 编码"
-            style="width: 180px"
+          <!-- 日期条件（U6）：单日选择，可清空；命中买卖点日期等于所选日期 -->
+          <el-date-picker
+            v-model="query.date"
+            type="date"
+            value-format="YYYY-MM-DD"
+            placeholder="买卖点日期"
             clearable
-            @input="onSearchInput"
-            :prefix-icon="Search"
+            style="width: 150px"
+            @change="onQueryChange"
           />
           <el-select v-model="query.bsp_type" placeholder="买卖点类型" style="width: 150px" @change="onQueryChange">
             <el-option label="全部类型" value="" />
@@ -78,6 +80,14 @@
             <el-option label="买" value="buy" />
             <el-option label="卖" value="sell" />
           </el-select>
+          <el-input
+            v-model="query.keyword"
+            placeholder="名称 / 编码"
+            style="width: 180px"
+            clearable
+            @input="onSearchInput"
+            :prefix-icon="Search"
+          />
           <button class="btn btn--primary" @click="onQuery">查询</button>
           <button class="btn btn--default" @click="onReset">重置</button>
         </div>
@@ -108,17 +118,24 @@
                   row-key="id"
                 >
                   <el-table-column type="selection" width="44" reserve-selection />
-                  <el-table-column label="名称 / 编码" width="180">
+                  <el-table-column label="编码" width="110">
                     <template #default="{ row }">
-                      <div class="cell-stock">
-                        <span class="nm">{{ row.name }}</span>
-                        <span class="cd mono">{{ row.code }}</span>
-                      </div>
+                      <span class="mono">{{ row.code }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="名称" width="100">
+                    <template #default="{ row }">
+                      <span>{{ row.name }}</span>
                     </template>
                   </el-table-column>
                   <el-table-column label="股价" width="100" align="right">
                     <template #default="{ row }">
                       <span class="num">{{ formatPrice(row.current_price) }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="涨跌幅" width="95" align="right">
+                    <template #default="{ row }">
+                      <ChangeBadge :value="row.change_pct" />
                     </template>
                   </el-table-column>
                   <el-table-column label="行业" min-width="160">
@@ -143,6 +160,11 @@
                   <el-table-column label="买卖点价格" width="120" align="right">
                     <template #default="{ row }">
                       <span class="num">{{ formatPrice(row.bsp_price) }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="当前价格" width="100" align="right">
+                    <template #default="{ row }">
+                      <span class="num">{{ formatPrice(row.current_price) }}</span>
                     </template>
                   </el-table-column>
                   <el-table-column label="买卖点日期" width="120">
@@ -245,6 +267,7 @@ import { ElMessage } from 'element-plus'
 import { TrendCharts, Top, Bottom, Calendar, Search } from '@element-plus/icons-vue'
 import { useDebounceFn } from '@vueuse/core'
 import IndustryBadges from '@/components/ui/IndustryBadges.vue'
+import ChangeBadge from '@/components/ui/ChangeBadge.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import NestingDrawer from './NestingDrawer.vue'
 import { getBspList, getBspAggregate, type BspQuery } from '@/api/modules/bsp'
@@ -252,14 +275,14 @@ import { getFolders, addStock, type WatchFolder } from '@/api/modules/watchlist'
 import { ALL_BSP_LABELS } from '@/utils/bsp'
 import type { BspRecord, BspAggregate } from '@/api/types'
 
+// 周期词表（design D1）：30分 → 60分 → 日线 → 周线 → 月线，无 1/5/15 分钟
+// 单一数组同时驱动左侧周期列表与工具栏下拉，改一处两边同步
 const klOptions = [
+  { label: '30分', value: '30m' },
+  { label: '60分', value: '60m' },
   { label: '日线', value: 'D' },
-  { label: '60分钟', value: '60m' },
-  { label: '30分钟', value: '30m' },
-  { label: '15分钟', value: '15m' },
-  { label: '5分钟', value: '5m' },
-  { label: '1分钟', value: '1m' },
   { label: '周线', value: 'W' },
+  { label: '月线', value: 'M' },
 ]
 
 function klLabel(v: string) {
@@ -274,6 +297,7 @@ const query = reactive<BspQuery>({
   bsp_type: '',
   direction: '',
   kl_type: '',
+  date: '',
 })
 
 const activeTab = ref<'list' | 'sector'>('list')
@@ -338,6 +362,7 @@ function onReset() {
   query.bsp_type = ''
   query.direction = ''
   query.kl_type = ''
+  query.date = ''
   query.page = 1
   loadList()
 }

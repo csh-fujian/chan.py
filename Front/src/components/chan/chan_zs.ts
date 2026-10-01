@@ -5,6 +5,7 @@
 // 实现方式：每个中枢注入 4 个角点到 overlay.points（顺序：左上→右上→右下→左下），
 // klinecharts 自动转为 coordinates。extendData 存每个中枢的 {level, startIndex}。
 import { registerOverlay, type OverlayFigure } from 'klinecharts'
+import { getChanPalette } from './palette'
 
 /** 中枢 overlay 元数据（存于 extendData，描述每个中枢在 points 中的位置） */
 export interface ChanZsMeta {
@@ -13,13 +14,6 @@ export interface ChanZsMeta {
   /** 在 overlay.points / coordinates 中的起始索引（每个中枢占 4 个点） */
   startIndex: number
 }
-
-/** 笔中枢颜色 — design.css zs-bi */
-const ZS_BI_FILL = 'rgba(155, 161, 168, 0.10)'
-const ZS_BI_BORDER = 'rgba(155, 161, 168, 0.55)'
-/** 线段中枢颜色 — design.css zs-seg */
-const ZS_SEG_FILL = 'rgba(59, 130, 246, 0.09)'
-const ZS_SEG_BORDER = 'rgba(59, 130, 246, 0.65)'
 
 let registered = false
 
@@ -39,6 +33,7 @@ export function registerChanZs(): void {
       if (!meta || meta.length === 0 || !coordinates || coordinates.length === 0) return []
 
       const figures: OverlayFigure[] = []
+      const pal = getChanPalette()
       meta.forEach((m) => {
         const i = m.startIndex
         // 4 个角点：左上(begin,high) 右上(end,high) 右下(end,low) 左下(begin,low)
@@ -60,8 +55,8 @@ export function registerChanZs(): void {
           attrs: { x, y, width, height },
           styles: {
             style: 'stroke_fill',
-            color: isSeg ? ZS_SEG_FILL : ZS_BI_FILL,
-            borderColor: isSeg ? ZS_SEG_BORDER : ZS_BI_BORDER,
+            color: isSeg ? pal.zsSegFill : pal.zsBiFill,
+            borderColor: isSeg ? pal.zsSegBorder : pal.zsBiBorder,
             borderSize: 1,
             borderStyle: isSeg ? 'solid' : 'dashed',
             borderDashedValue: [4, 3],

@@ -213,7 +213,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
@@ -226,7 +226,7 @@ import ProfitChart from '@/components/charts/ProfitChart.vue'
 import SampleDrawer from './SampleDrawer.vue'
 import { usePagination } from '@/composables/usePagination'
 import { getCompletedList, getProfitSeries, analyzeMonitor } from '@/api/modules/monitor'
-import type { CompletedItem } from '@/api/types'
+import type { CompletedItem, AnalyzeResult } from '@/api/types'
 
 const router = useRouter()
 const route = useRoute()
@@ -380,20 +380,33 @@ function onViewDetail(row: CompletedItem) {
   drawerVisible.value = true
 }
 
-// ---- AI 分析 ----
+// ---- AI 分析（design D5：真实归因对接；成功展示归因内容，失败展示明确错误） ----
 const analyzingId = ref<number | null>(null)
+
+/** 应用真实返回的归因结果（AttributionRecord[]）到标的行 */
+function applyAttribution(row: CompletedItem, res: AnalyzeResult) {
+  const evidences = (res.attribution || []).map((a) => a.evidence).filter(Boolean)
+  if (evidences.length > 0) row.attribution = evidences.join('\n')
+  row.ai_analyzed = true
+}
+
 async function onAnalyze(row: CompletedItem) {
   analyzingId.value = row.id
   try {
-    await analyzeMonitor(row.id)
-    row.ai_analyzed = true
+    const res = await analyzeMonitor(row.id)
+    applyAttribution(row, res)
     ElMessage.success('归因分析完成')
+    // 展示归因内容
+    drawerItem.value = row
+    drawerVisible.value = true
+  } catch {
+    // 失败（400 未配置/盈利≥5、调用失败 5xx）：明确错误文案由 client 拦截器按后端 detail 展示，不写占位结果
   } finally {
     analyzingId.value = null
   }
 }
 
-// ---- 批量分析 ----
+// ---- 批量分析（前端过滤：仅 pnl < 5% 可触发） ----
 const batchAnalyzing = ref(false)
 const batchProgress = ref(0)
 async function onBatchAnalyze() {
@@ -404,21 +417,38 @@ async function onBatchAnalyze() {
   }
   batchAnalyzing.value = true
   batchProgress.value = 0
+  let okCount = 0
+  let failCount = 0
   try {
     for (let i = 0; i < targets.length; i++) {
       const row = targets[i]
-      await analyzeMonitor(row.id)
-      row.ai_analyzed = true
+      try {
+        const res = await analyzeMonitor(row.id)
+        applyAttribution(row, res)
+        okCount++
+      } catch {
+        // 单条失败：错误文案由拦截器按 detail 提示，继续处理后续标的
+        failCount++
+      }
       batchProgress.value = Math.round(((i + 1) / targets.length) * 100)
     }
-    ElMessage.success(`完成 ${targets.length} 只标的的归因分析`)
+    if (failCount === 0) {
+      ElMessage.success(`完成 ${okCount} 只标的的归因分析`)
+    } else {
+      ElMessage.warning(`归因完成 ${okCount} 只，失败 ${failCount} 只`)
+    }
   } finally {
     batchAnalyzing.value = false
   }
 }
 
 // ---- 加载 ----
+// 最近一次加载所应用的 code —— 页面缓存复活后判断是否需按新 code 重载（design.md D10）
+let appliedCode: string | undefined
+
 async function loadAll() {
+  const code = route.query.code as string | undefined
+  appliedCode = code
   loading.value = true
   try {
     const [cl, ps] = await Promise.all([
@@ -428,7 +458,6 @@ async function loadAll() {
     completedList.value = cl
     profitSeries.value = ps
     // 若从监控页带 code 跳入，定位该行
-    const code = route.query.code as string | undefined
     if (code) {
       const idx = cl.findIndex((r) => r.code === code)
       if (idx >= 0) {
@@ -442,6 +471,16 @@ async function loadAll() {
 }
 
 onMounted(loadAll)
+
+// 页面缓存（design.md D10）：本页被 KeepAlive 缓存后，onMounted 不再执行，
+// 带参跳入（监控 → completed?code=）需经此 watch 重载并定位；
+// 无 code（普通切回）保持缓存原样
+watch(
+  () => route.query.code,
+  (q) => {
+    if (typeof q === 'string' && q && q !== appliedCode) loadAll()
+  },
+)
 </script>
 
 <style scoped>

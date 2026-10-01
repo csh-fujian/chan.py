@@ -9,18 +9,20 @@
         resize="none"
         placeholder="向大模型提问，例如：当前日线级别处于哪个买卖点？"
       />
-      <button class="btn btn--primary qa-send" :disabled="asking || !question.trim()" @click="onAsk">
-        <el-icon v-if="!asking"><Promotion /></el-icon>
-        <el-icon v-else class="is-loading"><Loading /></el-icon>
-        {{ asking ? '分析中' : '发送' }}
-      </button>
+      <div class="qa-input__actions">
+        <button class="btn btn--ghost btn--sm" title="查看 / 编辑系统提示词" @click="openPromptDialog">
+          <el-icon><Setting /></el-icon> 提示词
+        </button>
+        <button class="btn btn--primary qa-send" :disabled="asking || !question.trim()" @click="onAsk">
+          <el-icon v-if="!asking"><Promotion /></el-icon>
+          <el-icon v-else class="is-loading"><Loading /></el-icon>
+          {{ asking ? '分析中' : '发送' }}
+        </button>
+      </div>
     </div>
 
-    <!-- 当前回答 -->
-    <div v-if="asking" class="qa-answer is-thinking">
-      <span class="dot-bounce"></span> 大模型正在分析，请稍候…
-    </div>
-    <div v-else-if="latest" class="qa-answer">
+    <!-- 当前回答（最近一次完成的回答；流式过程在弹窗内展示） -->
+    <div v-if="latest" class="qa-answer">
       <div class="qa-answer__q">{{ latest.question }}</div>
       <div class="qa-answer__a">{{ latest.answer }}</div>
     </div>
@@ -66,6 +68,58 @@
       <EmptyState v-if="!records.length && !asking" description="暂无问答记录" />
     </div>
 
+    <!-- 流式回答弹窗（6.2）：发送即打开，逐段追加 delta -->
+    <el-dialog
+      v-model="streamVisible"
+      title="AI 问答"
+      width="560px"
+      append-to-body
+      :close-on-click-modal="false"
+      class="qa-stream-dialog"
+      @close="onStreamClose"
+    >
+      <div class="qa-stream">
+        <div class="qa-detail__label">提问</div>
+        <div class="qa-detail__q">{{ streamQuestion }}</div>
+        <div class="qa-detail__label">回答</div>
+        <div ref="streamBodyRef" class="qa-stream__body">
+          <div v-if="!streamAnswer && asking" class="qa-answer is-thinking">
+            <span class="dot-bounce"></span> 大模型正在分析，请稍候…
+          </div>
+          <div v-else class="qa-detail__a">
+            {{ streamAnswer }}<span v-if="asking" class="qa-stream__cursor"></span>
+          </div>
+        </div>
+        <div v-if="streamError" class="qa-stream__error">
+          <el-icon><WarningFilled /></el-icon> {{ streamError }}
+        </div>
+      </div>
+      <template #footer>
+        <el-button v-if="asking" @click="onAbortStream">停止</el-button>
+        <el-button type="primary" @click="streamVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 系统提示词弹窗（6.3）：展示 / 编辑 / 恢复默认 -->
+    <el-dialog v-model="promptVisible" title="系统提示词" width="640px" append-to-body>
+      <div class="qa-prompt-hint">
+        按用户保存、跨会话持久；未设置（或恢复默认）时使用内置默认提示词。修改仅影响本人后续提问。
+      </div>
+      <el-input
+        v-model="promptText"
+        type="textarea"
+        :rows="14"
+        resize="vertical"
+        :disabled="promptLoading"
+        placeholder="系统提示词（system 角色）"
+      />
+      <template #footer>
+        <el-button :loading="promptLoading" @click="onResetPrompt">恢复默认</el-button>
+        <el-button @click="promptVisible = false">取消</el-button>
+        <el-button type="primary" :loading="promptSaving" @click="onSavePrompt">保存</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 详情弹窗 -->
     <el-dialog v-model="detailVisible" title="问答详情" width="520px" append-to-body>
       <div v-if="detail" class="qa-detail">
@@ -80,12 +134,33 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+/**
+ * QaPanel.vue — 问答面板
+ * 6.1：提问携带当前股票 code / period 上下文（design D8.4 结构注入由后端自动完成）
+ * 6.2：SSE 流式回答对话框（fetch + ReadableStream，见 api/modules/qa.ts）
+ * 6.3：系统提示词对话框（按用户 GET/PUT，恢复默认 = PUT 空串）
+ * 6.4：mock 侧按登录账号隔离记录 + 假流式（mock/handlers/qa.ts）
+ */
+import { ref, watch, nextTick, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Star, StarFilled, Promotion, Loading } from '@element-plus/icons-vue'
+import { Star, StarFilled, Promotion, Loading, Setting, WarningFilled } from '@element-plus/icons-vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
-import { askQuestion, getQaRecords, starQaRecord, batchStarQa, deleteUnstarredQa } from '@/api/modules/qa'
+import {
+  askQuestionStream,
+  getQaRecords,
+  starQaRecord,
+  batchStarQa,
+  deleteUnstarredQa,
+  getSystemPrompt,
+  updateSystemPrompt,
+} from '@/api/modules/qa'
 import type { QaRecord } from '@/api/types'
+
+const props = defineProps<{
+  /** 当前股票代码 / 周期：提问时携带，用于结构上下文注入 */
+  code: string
+  period: string
+}>()
 
 const question = ref('')
 const asking = ref(false)
@@ -96,13 +171,37 @@ const selectedIds = ref<number[]>([])
 const detailVisible = ref(false)
 const detail = ref<QaRecord | null>(null)
 
+// --- 流式回答对话框状态 ---
+const streamVisible = ref(false)
+const streamQuestion = ref('')
+const streamAnswer = ref('')
+const streamError = ref('')
+const streamBodyRef = ref<HTMLElement | null>(null)
+let abortCtrl: AbortController | null = null
+
+// --- 系统提示词对话框状态 ---
+const promptVisible = ref(false)
+const promptText = ref('')
+const promptLoading = ref(false)
+const promptSaving = ref(false)
+
 async function loadRecords() {
   try {
     records.value = await getQaRecords()
-  } catch {
+  } catch (e) {
+    console.warn('[QaPanel.loadRecords] 加载问答记录失败', {
+      error: e instanceof Error ? e.message : String(e),
+    })
     records.value = []
   }
 }
+
+/** 流式回答时自动滚到底部 */
+watch(streamAnswer, async () => {
+  await nextTick()
+  const el = streamBodyRef.value
+  if (el) el.scrollTop = el.scrollHeight
+})
 
 async function onAsk() {
   const q = question.value.trim()
@@ -111,16 +210,51 @@ async function onAsk() {
     return
   }
   asking.value = true
-  try {
-    const rec = await askQuestion({ question: q })
-    latest.value = rec
-    records.value = [rec, ...records.value]
-    question.value = ''
-  } catch {
-    // 失败已处理
-  } finally {
+  streamQuestion.value = q
+  streamAnswer.value = ''
+  streamError.value = ''
+  streamVisible.value = true
+  abortCtrl = new AbortController()
+
+  await askQuestionStream(
+    { question: q, code: props.code, period: props.period },
+    {
+      onDelta: (text) => {
+        streamAnswer.value += text
+      },
+      onDone: async (rec) => {
+        // 成功才清空草稿、落定最新回答并刷新列表（中途失败草稿保留可重试）
+        question.value = ''
+        latest.value = rec
+        await loadRecords()
+        if (!records.value.some((r) => r.id === rec.id)) {
+          // 后置校验：done 记录未出现在列表中时本地兜底插入
+          console.warn('[QaPanel.onDone] done 记录未出现在列表，本地兜底插入', { id: rec.id })
+          records.value = [rec, ...records.value]
+        }
+      },
+      onError: (detail) => {
+        streamError.value = detail
+      },
+    },
+    abortCtrl.signal,
+  )
+  asking.value = false
+}
+
+/** 关闭弹窗：生成中则中断请求（中断不产生残缺记录） */
+function onStreamClose() {
+  if (asking.value) {
+    abortCtrl?.abort()
     asking.value = false
+    ElMessage.info('已中断本次生成')
   }
+}
+
+function onAbortStream() {
+  abortCtrl?.abort()
+  asking.value = false
+  streamVisible.value = false
 }
 
 async function toggleStar(rec: QaRecord) {
@@ -169,6 +303,59 @@ function openDetail(rec: QaRecord) {
   detailVisible.value = true
 }
 
+// --- 系统提示词（6.3） ---
+async function openPromptDialog() {
+  promptVisible.value = true
+  promptLoading.value = true
+  try {
+    const res = await getSystemPrompt()
+    promptText.value = res.prompt
+  } catch (e) {
+    console.warn('[QaPanel.openPromptDialog] 读取系统提示词失败', {
+      error: e instanceof Error ? e.message : String(e),
+    })
+    ElMessage.error('读取系统提示词失败')
+  } finally {
+    promptLoading.value = false
+  }
+}
+
+async function onSavePrompt() {
+  promptSaving.value = true
+  try {
+    await updateSystemPrompt(promptText.value)
+    ElMessage.success('系统提示词已保存')
+    promptVisible.value = false
+  } catch {
+    // 失败已处理
+  } finally {
+    promptSaving.value = false
+  }
+}
+
+async function onResetPrompt() {
+  try {
+    await ElMessageBox.confirm('确定恢复为内置默认提示词吗？当前自定义内容将被清空。', '恢复默认', {
+      type: 'warning',
+      confirmButtonText: '恢复默认',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
+  promptLoading.value = true
+  try {
+    await updateSystemPrompt('') // 恢复默认 = PUT 空串
+    const res = await getSystemPrompt()
+    promptText.value = res.prompt
+    ElMessage.success('已恢复默认提示词')
+  } catch {
+    // 失败已处理
+  } finally {
+    promptLoading.value = false
+  }
+}
+
 function formatTime(ts: number): string {
   const d = new Date(ts)
   const p = (n: number) => String(n).padStart(2, '0')
@@ -204,8 +391,11 @@ onMounted(loadRecords)
 .qa-input :deep(.el-textarea__inner:focus) {
   box-shadow: 0 0 0 1px var(--accent-base) inset, 0 0 14px var(--accent-glow);
 }
-.qa-send {
-  align-self: flex-end;
+.qa-input__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-sm);
 }
 .qa-send .is-loading {
   animation: rotating 1s linear infinite;
@@ -289,8 +479,8 @@ onMounted(loadRecords)
   background: var(--bg-surface-hover);
 }
 .qa-item.is-selected {
-  background: rgba(59, 130, 246, 0.08);
-  border-color: rgba(59, 130, 246, 0.3);
+  background: var(--accent-dim);
+  border-color: var(--accent-border);
 }
 .qa-item__body {
   flex: 1;
@@ -324,7 +514,49 @@ onMounted(loadRecords)
   color: var(--warning);
 }
 
-/* 详情弹窗 */
+/* 流式回答弹窗 */
+.qa-stream {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-sm);
+}
+.qa-stream__body {
+  max-height: 46vh;
+  overflow-y: auto;
+}
+.qa-stream__cursor {
+  display: inline-block;
+  width: 7px;
+  height: 14px;
+  margin-left: 2px;
+  vertical-align: -2px;
+  background: var(--accent-base);
+  animation: blink 0.9s step-start infinite;
+}
+@keyframes blink {
+  50% { opacity: 0; }
+}
+.qa-stream__error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--rise);
+  background: var(--rise-dim);
+  border: 1px solid var(--rise);
+  border-radius: var(--r-md);
+  padding: var(--sp-sm) var(--sp-md);
+}
+
+/* 系统提示词弹窗 */
+.qa-prompt-hint {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: var(--sp-sm);
+  line-height: 1.6;
+}
+
+/* 详情 / 流式弹窗共用文本块 */
 .qa-detail {
   display: flex;
   flex-direction: column;

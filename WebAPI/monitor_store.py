@@ -230,13 +230,18 @@ def get_monitor(monitor_id: int) -> Optional[dict]:
 # ---- 归因 ----
 
 def save_attribution(monitor_id: int, reason_type: str, evidence: str) -> Optional[dict]:
-    """保存监控归因。"""
+    """保存监控归因（替换式：同 monitor_id 旧归因先删，支持重复分析）。"""
     _ensure_tables()
     conn = _get_pg_conn()
     if conn is None:
         return None
     try:
         with conn.cursor() as cur:
+            # init.sql 侧 uq_ma_monitor_id UNIQUE(monitor_id)：重复分析需替换而非追加
+            cur.execute(
+                "DELETE FROM monitor_attribution WHERE monitor_id = %s",
+                (monitor_id,),
+            )
             cur.execute(
                 "INSERT INTO monitor_attribution (monitor_id, reason_type, evidence) VALUES (%s, %s, %s) RETURNING id, monitor_id, reason_type, evidence, created_at",
                 (monitor_id, reason_type, evidence),

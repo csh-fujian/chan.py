@@ -9,6 +9,8 @@ export interface BspQuery {
   bsp_type?: string
   direction?: 'buy' | 'sell' | ''
   kl_type?: string
+  /** 日期条件（YYYY-MM-DD，命中买卖点日期等于所选日期；空/清空则不过滤） */
+  date?: string | null
 }
 
 /** 买卖点列表（服务端分页） */

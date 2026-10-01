@@ -28,9 +28,28 @@ export function renameFolder(id: number, name: string) {
   return client.patch<unknown, { success: boolean }>(`/watchlist/folders/${id}`, { name })
 }
 
-/** 获取某文件夹下的股票（mock 返回全量数组；真实后端将服务端分页） */
-export function getFolderStocks(folderId: number) {
-  return client.get<unknown, Stock[]>(`/watchlist/folders/${folderId}/stocks`)
+/**
+ * 获取某文件夹下的股票（mock 返回全量数组；真实后端全量返回 + 前端分页）
+ * @param q 可选关键字，服务端按编码/名称子串过滤；空/缺省返回全量
+ */
+export function getFolderStocks(folderId: number, q?: string) {
+  const keyword = q?.trim()
+  return client.get<unknown, Stock[]>(`/watchlist/folders/${folderId}/stocks`, {
+    params: keyword ? { q: keyword } : {},
+  })
+}
+
+/** 重排文件夹顺序（全量覆盖 sort_order，ids 下标即新序） */
+export function reorderFolders(ids: number[]) {
+  return client.put<unknown, { success: boolean }>('/watchlist/folders/reorder', { ids })
+}
+
+/** 重排文件夹内股票顺序（全量覆盖该文件夹 sort_order，codes 下标即新序） */
+export function reorderFolderStocks(folderId: number, codes: string[]) {
+  return client.put<unknown, { success: boolean }>(
+    `/watchlist/folders/${folderId}/stocks/reorder`,
+    { codes },
+  )
 }
 
 /** 添加股票到文件夹 */

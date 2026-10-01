@@ -1,5 +1,7 @@
 ## Context
 
+> **需求迁移注记（2026-10-01）**：本文件中「增量续算引擎与买卖点索引（D3/D4 写入侧）」「买卖点查询/区间套多级别查询（D4 查询侧/D11）」「/bsp 页面字段与交互（D13/D14/D15 第 2 节）」的**需求**已迁移至 `bsp-page-change`（`bsp-index`/`bsp-page` 能力，板块聚合按冲突裁定删除）；「LLM 亏损归因（D7）」「买卖点绩效统计（D9）」「权限管理页 /system（D16 页面表格）」已迁移至 `system-page-change`（`bsp-monitoring`/`bsp-performance`/`system-management` 能力）；自选需求已迁移至 `watchlist-page-change`（`watchlist`/`watchlist-page` 能力，本文件中自选页面内容已删除）；对应章节保留为本变更的历史设计记录，需求以各承接变更的 specs 为准。
+
 动机见 proposal.md - Why。这里只列决定方案所需的状态与约束：
 
 - 买卖点模型：`CBS_Point`（`klu`/`is_buy`/`type`），类型 `BSP_TYPE`：T1/T1P/T2/T2S/T3A/T3B，方向由 `is_buy` 区分；`chan[KL_TYPE].bs_point_lst.getSortedBspList()` 可取排序后列表。
@@ -13,8 +15,8 @@
 ## Goals / Non-Goals
 
 **Goals:**
-- 用「增量续算引擎 + 买卖点索引」把缠论结论落库，让「全市场某日某买卖点查询 + 板块聚合」退化成 SQL。
-- 提供 3 Tab（自选 / 历史买卖点 / 监控 + LLM 归因）的 Web 管理页，串起选股→跟踪→复盘闭环。
+- 消费 `bsp-page-change` 的「增量续算引擎 + 买卖点索引」产出（引擎与索引需求已迁出，见顶部注记），让监控卖点检测、选股器、预警基于落库的 `bsp_index` 运作。
+- 提供 3 Tab（自选 / 历史买卖点 / 监控 + LLM 归因）的 Web 管理页骨架，串起选股→跟踪→复盘闭环（页面需求分别归 `watchlist-page-change`/`bsp-page-change`/`system-page-change`，本变更保留骨架与监控侧对接）。
 - 不改 `CChan` 计算逻辑，仅复用其 `trigger_step`/pickle 能力。
 
 **Non-Goals:**
@@ -55,13 +57,15 @@ WebAPI/
   bsp_store.py          # chan_structure / bsp_index / chan_snapshot DAO
   watchlist_store.py    # watchlist_folder / watchlist_item DAO
   monitor_store.py      # monitor DAO
-  incremental_engine.py # 增量续算引擎（D3）
+  incremental_engine.py # 增量续算引擎（需求与实现归 bsp-page-change，见其 design D2/D3）
   routers/{stocks,bsp,watchlist,monitor}.py
 ```
 
 `chan-web-viewer` 落地时追加 `routers/klines.py`，谁先落地谁建 `app.py` 骨架。
 
 ### D3. 增量续算引擎（方案 (ii) 状态续算）
+
+> 需求与任务已整体迁移至 `bsp-page-change`（其 design D2/D3，方案 C 水位补算 + spike 硬门 10/10 PASS 已实测，2026-10-01）；本节保留为历史设计记录。
 
 **机制**（复用 chan.py 原生能力，不改计算逻辑）：
 
@@ -87,6 +91,8 @@ WebAPI/
 
 ### D4. 买卖点索引与查询聚合
 
+> 需求拆分（2026-10-01）：查询（含日期条件）与索引写入侧的需求已迁移至 `bsp-page-change`（`bsp-index` 能力，API 契约以其 design D5 为准）；板块聚合需求按冲突裁定删除（端点保留现状不验收）。以下为历史设计记录。
+
 - `bsp_index` 一行 = 一个买卖点，`bsp_date` 用 `klu.time` 的日期（可建索引），`price` = 买点取 `klu.low`、卖点取 `klu.high`。
 - 查询 `GET /api/bsp?kl_type=&date=&bsp_type=&is_buy=` → 按条件过滤命中股票；聚合 `GET /api/bsp/aggregate?` → 按 `stock_industry.industry_name`（取 `rank` 最小的主行业）GROUP BY 得板块买卖点分布。
 - 日终批量写入用 `INSERT ... ON CONFLICT DO NOTHING`（按 `(code,kl_type,autype,bsp_date,bsp_type,is_buy,time_key)` 去重），避免重复记录。
@@ -107,6 +113,8 @@ WebAPI/
 
 ### D7. LLM 亏损归因
 
+> 需求已迁移至 `system-page-change`（`bsp-monitoring` 监控完成与归因，接真实现见其 design D5 / tasks 6.x）；本节保留为历史设计记录。
+
 - 触发：监控完成页手动「大模型分析」按钮，仅对 `pnl_pct < 5%` 的标的。
 - 输入：标的 + 周期 + K 线序列 + 缠论结构（bi/seg/zs/bsp）+ 买卖点特征（`CFeatures`）+ 买入/卖出/最终盈利。
 - 输出：失败原因（缠论方法论失效 vs chan.py 计算逻辑错误）+ 关键证据，落库供列表/详情查看。
@@ -116,8 +124,8 @@ WebAPI/
 
 ```
 web/
-  /watchlist          自选：文件夹树 + 股票表格（名称/编码/股价/行业≤3）+ 增删改 + 批量加入
-  /bsp                历史买卖点：查询表单（周期/日期/类型）+ 结果表（多选）+ 板块聚合 + 加入自选/监控
+  /watchlist          自选（页面需求归 watchlist-page-change，本变更不维护其内容）
+  /bsp                历史买卖点（页面需求归 bsp-page-change，见其 design D8）
   /monitor            监控：列表 + 盈利走势折线（ECharts）+ 总体盈利
   /monitor/completed  监控完成：结算列表 + 大模型归因按钮 + 失败原因列表/详情
 ```
@@ -126,6 +134,8 @@ web/
 
 ### D9. 买卖点绩效统计（`bsp-performance`）
 
+> 需求已整体迁移至 `system-page-change`（其 `bsp-performance` 能力）；本节保留为历史设计记录。
+
 按 `(kl_type, bsp_type, is_buy)` 聚合 bsp_index 与 monitor 结算，产出样本数、胜率（`pnl_pct>0` 占比）、平均盈亏比。数据量小，先实时聚合（联查 bsp_index + monitor），不物化。端点 `GET /api/bsp/performance?kl_type=&bsp_type=`，附样本明细下钻。
 
 ### D10. 条件选股器（`stock-screener`）
@@ -133,6 +143,8 @@ web/
 `screener` 表存策略条件 JSONB（kl_type/date/bsp_type/is_buy/行业/指标阈值）；执行 = 翻译成对 bsp_index + stock + stock_industry + DuckDB（指标）的查询。定时跑放在日终流水线之后（可选）。端点：策略 CRUD `/api/screeners` + `POST /api/screeners/{id}/run`。
 
 ### D11. 区间套（多级别买卖点）
+
+> 需求已迁移至 `bsp-page-change`（`bsp-index` 多级别买卖点查询）；本节保留为历史设计记录。
 
 bsp_index 已含 `kl_type` 列，多级别查询天然支持：`GET /api/bsp/{code}?kl_types=K_DAY,K_60M,K_30M` 返回该股票各周期买卖点。前端叠加依赖 `chan-web-viewer` 的 K 线图（本变更只提供多级别数据接口），或本页加一个轻量多级别时间轴视图（可选）。
 
@@ -146,49 +158,39 @@ bsp_index 已含 `kl_type` 列，多级别查询天然支持：`GET /api/bsp/{co
 
 | # | 页面 | 路由 | capability |
 |---|------|------|------------|
-| 1 | 我的自选 | `/watchlist` | watchlist |
-| 2 | 历史买卖点 | `/bsp` | bsp-index |
+| 1 | 我的自选 | `/watchlist` | watchlist（归 `watchlist-page-change`） |
+| 2 | 历史买卖点 | `/bsp` | bsp-index（归 `bsp-page-change`） |
 | 3 | 股票监控 | `/monitor` | bsp-monitoring |
 | 4 | 监控完成 | `/monitor/completed` | bsp-monitoring |
-| 5 | 买卖点绩效 | `/performance` | bsp-performance |
+| 5 | 买卖点绩效 | `/performance` | bsp-performance（归 `system-page-change`） |
 | 6 | 条件选股 | `/screener` | stock-screener |
 | 7 | 预警提醒 | `/alerts`（规则 + 站内通知子 tab） | alerts |
 | 8 | 登录 | `/login` | auth |
-| 9 | 权限管理 | `/system`（admin 专属） | auth |
+| 9 | 权限管理 | `/system`（admin 专属） | auth（页面归 `system-page-change`） |
 
 **股票基本信息字段（stock 实体，各页复用）：** `code`、`name`、`exchange`、`price`（DuckDB 最新收盘）、`change_pct`（涨跌幅，可选增强）、`industries`（≤3 最相关行业）。
 
 **各页面列表字段：**
 
-- **`/watchlist` 自选**：左 = 文件夹树；右表 = `选择框 | 编码 | 名称 | 股价 | 涨跌幅 | 行业(≤3) | 操作(移出/移动文件夹)`。
-- **`/bsp` 历史买卖点**：查询表单 = `周期 | 日期 | 买卖点类型 | 方向`；结果表（一行 = 一个买卖点记录）= `选择框 | 编码 | 名称 | 股价 | 行业(≤3) | 买卖点类型 | 方向 | 买卖点价格 | 买卖点日期 | 周期`（加入自选/监控时按 `code` 去重）；板块聚合表 = `行业 | 买点股票数 | 卖点股票数 | 合计`；区间套子面板 = 选中股票后横向列出各周期（日/60M/30M）买卖点。
+- **`/watchlist` 自选**：字段清单已随需求迁移至 `watchlist-page-change`，本变更不再维护。
+- **`/bsp` 历史买卖点**：字段与交互已迁移至 `bsp-page-change`（其 design D8），本变更不再维护。
 - **`/monitor` 监控**：汇总卡 = `总体盈利(%) | 监控中数量`；表 = `编码 | 名称 | 周期 | 监控起始时间 | 买入价 | 现价 | 盈利% | 状态`；盈利走势折线（ECharts）。
 - **`/monitor/completed` 监控完成**：表 = `编码 | 名称 | 周期 | 买入价 | 卖出价 | 卖出时间 | 最终盈利% | 归因状态 | 操作(大模型分析/查看详情)`；失败原因列表 + 详情；顶部「大模型分析」按钮（仅 `pnl_pct < 5%`）。
 - **`/performance` 绩效**：筛选 = `周期 | 买卖点类型`；统计表 = `周期 | 类型 | 方向 | 样本数 | 胜率% | 平均盈亏% | 盈亏比`；样本明细 = `编码 | 名称 | 日期 | 盈亏%`。
 - **`/screener` 选股**：策略列表 = `策略名 | 条件摘要 | 更新时间 | 操作(执行/编辑/删除/新建)`；执行结果 = `编码 | 名称 | 股价 | 行业(≤3) | 匹配指标`。
 - **`/alerts` 预警**：规则子 tab = `类型(价格/买卖点/监控卖点) | 目标 | 阈值/参数 | 状态 | 创建时间 | 操作`；站内通知子 tab = `时间 | 类型 | 内容 | 关联股票 | 已读状态`。
 
-**统计信息基本字段：** 板块聚合 = `行业 | 买点股票数 | 卖点股票数 | 合计`；绩效 = `样本数 | 胜率% | 平均盈亏% | 盈亏比`；监控 = `总体盈利(%) | 盈利走势时序`。
+**统计信息基本字段：** 绩效 = `样本数 | 胜率% | 平均盈亏% | 盈亏比`（归 `system-page-change`）；监控 = `总体盈利(%) | 盈利走势时序`。（板块聚合统计按冲突裁定删除，不维护。）
 
-**区间套**：不单独开页，作为 `/bsp` 子面板；本变更只提供多级别买卖点数据 + 轻量时间轴，K 线图叠加留给 `chan-web-viewer`。
+**区间套**：不单独开页，作为 `/bsp` 子面板；需求已迁移至 `bsp-page-change`（其 design D8），K 线图叠加留给 `chan-web-viewer`。
 
 ### D14. 页面交互细化
 
 **通用约定：** 顶部导航栏含 7 个菜单 + 面包屑；组件用 Element Plus（表格/表单/弹窗/Drawer/消息/分页/switch）；列表服务端分页（默认 20/页）；搜索输入防抖 300ms；异步操作 loading 骨架屏；空态 `el-empty` + 引导文案；失败 `ElMessage.error`。
 
-**1. `/watchlist` 自选**
-- 左 = 文件夹树（新建/重命名/删除，删除含股文件夹需二次确认），右 = 表格随选中文件夹刷新。
-- 顶部虚拟「全部」节点 = 跨文件夹去重视图。
-- 股票行操作：移出自选、移动到其他文件夹（下拉选择）。
-- 添加入口：`/bsp` 批量加入（主入口），或手动搜索股票加入。
-- 股价/涨跌幅列可排序。
+**1. `/watchlist` 自选**：交互需求已整体迁移至 `watchlist-page-change/design.md`，本变更不再维护。
 
-**2. `/bsp` 历史买卖点**
-- 查询表单（周期/日期/类型/方向）+「查询」「重置」；结果表多选 + 服务端分页。
-- 「板块聚合」tab：按第一行业聚合，点行业行回填筛选该行业。
-- 批量加入自选：选中 → 弹窗（文件夹名默认 = 查询日期，可改）→ 确认 → 返回「新增 N 只」。
-- 加入监控：选中 → 弹窗（周期默认 = 查询周期、监控时间可设）→ 确认落 `monitor`。
-- 区间套：行内「区间套」按钮 / 双击 → Drawer 展示多级别（日/60M/30M）买卖点时间轴。
+**2. `/bsp` 历史买卖点**：交互需求已整体迁移至 `bsp-page-change`（其 design D8），本变更仅保留「加入监控」按钮的监控侧对接（tasks 7.1）。
 
 **3. `/monitor` 监控**
 - 顶部汇总卡：总体盈利%、监控中数量。
@@ -220,22 +222,11 @@ bsp_index 已含 `kl_type` 列，多级别查询天然支持：`GET /api/bsp/{co
 
 #### 1. `/watchlist` 我的自选
 
-| 模块 | 字段 / 内容 |
-|------|-------------|
-| 文件夹树（左） | 文件夹名、股票数；操作：新建/重命名/删除/切换 |
-| 顶部工具条 | 搜索框（名称/编码，防抖）、「添加股票」「批量移出」按钮 |
-| 自选股票表格（右） | 选择框、编码、名称、股价、涨跌幅、行业(≤3)、操作（移出/移动到文件夹） |
-| 加入自选弹窗（跨页） | 文件夹名（默认 = 日期，可改） |
+> 模块与字段已整体迁移至 `watchlist-page-change`，本变更不再维护。
 
 #### 2. `/bsp` 历史买卖点
 
-| 模块 | 字段 / 内容 |
-|------|-------------|
-| 查询筛选区 | 周期类型、日期、买卖点类型、方向(买/卖)、「查询」「重置」 |
-| 操作工具条 | 「批量加入自选」「加入监控」（基于多选） |
-| 结果表 | 选择框、编码、名称、股价、行业(≤3)、买卖点类型、方向、买卖点价格、买卖点日期、周期、操作（区间套） |
-| 板块聚合区 | 行业、买点股票数、卖点股票数、合计；点行业行回填筛选 |
-| 区间套 Drawer | 周期(日/60M/30M)、买卖点列表（类型、方向、价格、日期） |
+> 模块与字段已整体迁移至 `bsp-page-change`（其 design D8：查询表单、结果表、工具条归属、区间套 Drawer；板块聚合按冲突裁定删除），本变更不再维护。
 
 #### 3. `/monitor` 股票监控
 
@@ -314,6 +305,8 @@ role_permission (role_id, permission_id)   -- 多对多
 
 **权限管理页 `/system`（admin 专属）：**
 
+> 本表格由 `system-page-change` 维护（需求以其 `system-management` spec + 该变更 design D2 的 API 契约为准，含四条件查询、角色查询/绑定、权限清单等细化）；下表保留为初始设计记录。
+
 | 模块 | 字段 / 内容 |
 |------|-------------|
 | 用户管理 | 用户名、显示名、角色、状态(启用/停用)、创建时间、操作（编辑/重置密码/启停/删除） |
@@ -326,7 +319,7 @@ role_permission (role_id, permission_id)   -- 多对多
 
 ## Risks / Trade-offs
 
-- **[增量续算正确性（最大风险）]** pickle 往返 + `trigger_load` 续算可能污染已确认前缀 → spike 硬门，失败回退全量重算（D3）。
+- **[增量续算正确性]** 该风险及其处置（spike 硬门 + 全量回退）已随需求迁移至 `bsp-page-change`（其 design D3；spike 10/10 PASS 已实测），本变更只消费其产出。
 - **[快照体积/一致性]** pickle 整棵 CChan 体积大、与业务数据分处两类存储 → 存 PG BYTEA 与 chan_structure 同事务，避免半新半旧；必要时压 pg 大对象或磁盘。
 - **[DuckDB 单写锁]** 续算读 K 线时可能撞灌数写 → read-only 短连接 + 日终错峰。
 - **[全市场扫描量级]** ~5000 只 × 多周期，首次全量建索引耗时数小时 → 复用 `download_kl.py` 批处理/分批 + 游标水位，可续跑。
@@ -339,8 +332,7 @@ role_permission (role_id, permission_id)   -- 多对多
 纯新增为主，`stock` 表仅去掉 `industry` 单值列（迁移到 `stock_industry`）：
 
 1. 建 PG 新表（`stock_industry`/`chan_structure`/`bsp_index`/`chan_snapshot`/`watchlist_*`/`monitor`），`stock` 表迁走 `industry`。
-2. **Spike**：验证 pickle 往返 + `trigger_load` 续算正确性（D3），决定走 (ii) 还是回退全量重算。
-3. 增量续算引擎 + 首次全量建索引（分批）。
+2. **Spike 与增量续算引擎 + 首次全量建索引**：已随需求迁移至 `bsp-page-change`（其 tasks 第 3 组；spike 任务 3.1 已完成 10/10 PASS）。
 4. 行业数据源接入 + `stock_industry` 填充。
 5. `WebAPI/` 路由（stocks 已有 → bsp → watchlist → monitor）。
 6. `web/` 三 Tab + 监控完成页，联调。
@@ -354,4 +346,3 @@ role_permission (role_id, permission_id)   -- 多对多
 - **监控调度节奏**：日终批算 vs 盘中实时（当前默认日终，盘中为后续优化）。
 - **LLM 供应商/模型与输入裁剪**：供应商待定；输入契约已定（D7），具体 prompt/字段裁剪实现期定。
 - **行业「最相关前 3」的排序信号**：数据源返回顺序 vs 主行业标记 vs 市值/概念热度，实现期定。
-- **快照存储介质**：PG BYTEA vs 磁盘（权衡体积与一致性），spike 后定。

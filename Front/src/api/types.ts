@@ -192,6 +192,22 @@ export interface CompletedItem extends MonitorItem {
   ai_analyzed: boolean
 }
 
+/** 归因记录（POST /monitor/{id}/analyze 成功返回的真实结构，design D5） */
+export interface AttributionRecord {
+  id: number
+  monitor_id: number
+  reason_type: string
+  evidence: string
+  created_at: number
+}
+
+/** 归因分析结果 */
+export interface AnalyzeResult {
+  success: boolean
+  id: number
+  attribution: AttributionRecord[]
+}
+
 // ---------------------------------------------------------------------------
 // 绩效
 // ---------------------------------------------------------------------------
@@ -279,7 +295,6 @@ export interface User {
   role_name: string
   status: 'active' | 'disabled'
   created_at: number
-  last_login?: number
 }
 
 export interface Role {
@@ -289,6 +304,8 @@ export interface Role {
   description: string
   user_count: number
   perms: string[]
+  /** 内置 admin 角色：删除/权限修改受保护（design D2） */
+  is_admin: boolean
 }
 
 export interface Permission {
@@ -307,4 +324,46 @@ export interface QaRecord {
   answer: string
   starred: boolean
   created_at: number
+}
+
+/** 系统提示词读写（GET/PUT /api/qa/system-prompt，按用户隔离，空值回退内置默认） */
+export interface SystemPromptInfo {
+  prompt: string
+}
+
+/** ask SSE 流式事件回调（design D8.2：delta / done / error 三事件） */
+export interface QaStreamHandlers {
+  /** LLM 增量文本 */
+  onDelta: (text: string) => void
+  /** 生成完成且落库成功，携带完整记录（可异步刷新列表） */
+  onDone: (record: QaRecord) => void | Promise<void>
+  /** 生成/落库失败（不产生残缺记录） */
+  onError: (detail: string) => void
+}
+
+// ---------------------------------------------------------------------------
+// LLM 供应商（design D8.1：cc-switch 式预设切换，manage 权限管理）
+// ---------------------------------------------------------------------------
+/** 供应商预设（api_key 已脱敏，仅尾 4 位明文） */
+export interface LlmProvider {
+  id: number
+  name: string
+  base_url: string
+  api_key: string
+  model: string
+  active: boolean
+}
+
+/** 新增供应商请求体 */
+export interface LlmProviderInput {
+  name: string
+  base_url: string
+  api_key: string
+  model: string
+}
+
+/** 测试连接结果 */
+export interface LlmTestResult {
+  ok: boolean
+  detail: string
 }

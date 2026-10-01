@@ -201,6 +201,7 @@
 import { ref, computed, watch, nextTick, onMounted } from 'vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import { useEcharts } from '@/composables/useEcharts'
+import { getEchartsPalette } from '@/components/charts/echartsPalette'
 import { getStockMeta } from '@/api/modules/stock'
 import type { StockMeta, StockHolderPoint } from '@/api/types'
 
@@ -307,36 +308,42 @@ const introLong = computed(() => (meta.value?.intro ?? '').length >= LONG_TEXT_M
 
 // ---- 股东户数趋势（ECharts，沿用 useEcharts 惯例）----
 const holderChartEl = ref<HTMLElement | null>(null)
-const { setOption, dispose } = useEcharts(holderChartEl)
+// 主题切换收口在 useEcharts：以新调色板重建 option（实例仍挂当前 DOM，无需 re-init）
+const { setOption, dispose } = useEcharts(holderChartEl, () => {
+  const pts = meta.value?.holders ?? []
+  if (!pts.length || !holderChartEl.value) return
+  setOption(holderOption(pts))
+})
 
 function holderOption(pts: StockHolderPoint[]) {
   // 源单位原样展示（holder_num 为户数）
+  const p = getEchartsPalette()
   return {
     backgroundColor: 'transparent',
     grid: { left: 6, right: 6, top: 14, bottom: 22, containLabel: true },
     tooltip: {
       trigger: 'axis' as const,
-      // 以下颜色对应 design.css 令牌（canvas 无法读 CSS 变量）
-      backgroundColor: '#161B22', // --bg-surface
-      borderColor: '#2A303A', // --border-base
-      textStyle: { color: '#E6E8EB', fontSize: 11 }, // --text-primary
+      // 配色经 getEchartsPalette 按主题取（canvas 无法读 CSS 变量）
+      backgroundColor: p.tooltipBg,
+      borderColor: p.tooltipBorder,
+      textStyle: { color: p.tooltipText, fontSize: 11 },
       valueFormatter: (v: unknown) =>
         typeof v === 'number' ? v.toLocaleString('zh-CN') : String(v ?? ''),
     },
     xAxis: {
       type: 'category' as const,
-      data: pts.map((p) => (p.stat_date.length >= 10 ? p.stat_date.slice(5) : p.stat_date)),
+      data: pts.map((pt) => (pt.stat_date.length >= 10 ? pt.stat_date.slice(5) : pt.stat_date)),
       boundaryGap: false,
-      axisLine: { lineStyle: { color: '#2A303A' } },
+      axisLine: { lineStyle: { color: p.axisLine } },
       axisTick: { show: false },
-      axisLabel: { color: '#565D66', fontSize: 10 }, // --text-disabled
+      axisLabel: { color: p.axisLabelDim, fontSize: 10 },
     },
     yAxis: {
       type: 'value' as const,
       scale: true,
-      splitLine: { lineStyle: { color: '#2A303A', type: 'dashed' as const } },
+      splitLine: { lineStyle: { color: p.axisLine, type: 'dashed' as const } },
       axisLabel: {
-        color: '#565D66',
+        color: p.axisLabelDim,
         fontSize: 10,
         formatter: (v: number) =>
           Math.abs(v) >= 10000 ? `${(v / 10000).toFixed(1)}万` : String(v),
@@ -346,13 +353,14 @@ function holderOption(pts: StockHolderPoint[]) {
       {
         name: '股东户数',
         type: 'line' as const,
-        data: pts.map((p) => p.holder_num),
+        data: pts.map((pt) => pt.holder_num),
         smooth: true,
         symbol: 'circle',
         symbolSize: 4,
-        lineStyle: { color: '#3B82F6', width: 1.5 }, // --accent-base
-        itemStyle: { color: '#3B82F6' },
-        areaStyle: { color: 'rgba(59, 130, 246, 0.12)' }, // --accent-glow
+        // 趋势线用强调主色（--accent-base，主题无关）
+        lineStyle: { color: p.accent, width: 1.5 },
+        itemStyle: { color: p.accent },
+        areaStyle: { color: 'rgba(59, 130, 246, 0.12)' },
       },
     ],
   }

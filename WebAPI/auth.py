@@ -1,22 +1,28 @@
 # -*- coding: utf-8 -*-
 """
-认证模块 — JWT 鉴权 + PG 用户表。
+认证模块 — JWT 鉴权 + B 套 RBAC（app_user/role/permission/role_permission）。
 
 支持:
 - POST /api/auth/login  — 用户名+密码登录，返回 JWT token
 - POST /api/auth/me     — 根据 token 获取当前用户信息
 - POST /api/auth/logout — 登出
 
-依赖: PyJWT + bcrypt（密码哈希）+ psycopg2
+权限读取路径（system-page-change design D3）：
+- 用户按 username 解析 `app_user`（token 中的 user_id 是历史签发载荷，不作为查询键）
+- 密码用 bcrypt 对比 `app_user.password_hash`；`enabled=false` 拒绝登录
+- 权限码经 `role → role_permission → permission.code` join 得出
+- 角色 `is_admin=true` 视为拥有全部权限（守卫全放行，与种子全量授权互为兜底）
+- `chan_user` 中存在而 `app_user` 中不存在的 username → 按未登录/401 处理
+
+依赖: bcrypt（密码哈希）+ psycopg2
 """
 
 import hashlib
 import os
 import time
-from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import Header, HTTPException
+from fastapi import Depends, Header, HTTPException
 
 
 # ---- 简易 token 生成（不依赖第三方 JWT 库） ----
@@ -70,7 +76,7 @@ def _timing_safe_equal(a: str, b: str) -> bool:
     return result == 0
 
 
-# ---- PG 用户查询 ----
+# ---- PG 用户查询（B 套 RBAC，design D3） ----
 
 def _get_pg_conn():
     """获取 PG 连接."""
@@ -91,50 +97,111 @@ def _get_pg_conn():
         ) from e
 
 
+def hash_password(plain: str) -> str:
+    """bcrypt 哈希口令（写入 app_user.password_hash）。"""
+    import bcrypt
+    return bcrypt.hashpw(plain.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def _check_password(plain: str, stored_hash: str) -> bool:
+    """bcrypt 校验口令；哈希损坏/格式非法时按不匹配处理。"""
+    import bcrypt
+    try:
+        return bcrypt.checkpw(plain.encode("utf-8"), stored_hash.encode("utf-8"))
+    except (ValueError, TypeError):
+        return False
+
+
+def _load_perms(cur, role_id: int, is_admin: bool) -> list:
+    """权限码：role → role_permission → permission.code；is_admin 视为拥有全部权限。"""
+    if is_admin:
+        cur.execute("SELECT code FROM permission")
+    else:
+        cur.execute(
+            """SELECT p.code FROM permission p
+               JOIN role_permission rp ON rp.permission_id = p.id
+               WHERE rp.role_id = %s""",
+            (role_id,),
+        )
+    return [r[0] for r in cur.fetchall()]
+
+
+def _row_to_user(row, perms: list) -> dict:
+    """app_user JOIN role 行 → 用户信息字典（保持 login/me 兼容字段）。"""
+    user_id, uname, nickname, role_code, is_admin, enabled = row
+    return {
+        "id": user_id,
+        "username": uname,
+        "nickname": nickname,
+        "role": role_code,
+        "status": "active" if enabled else "disabled",
+        "perms": perms,
+        "is_admin": is_admin,
+    }
+
+
+def _load_user_by_username(cur, username: str) -> dict:
+    """按 username 解析 app_user + role；不存在 → 401（chan_user 遗留用户按未登录处理）。"""
+    cur.execute(
+        """SELECT u.id, u.username, u.display_name, r.code, r.is_admin, u.enabled, u.role_id
+           FROM app_user u JOIN role r ON u.role_id = r.id
+           WHERE u.username = %s""",
+        (username,),
+    )
+    row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=401, detail="用户不存在")
+
+    _user_id, _uname, _nickname, _role_code, is_admin, enabled, role_id = row
+    if not enabled:
+        raise HTTPException(status_code=403, detail="账号已禁用")
+
+    perms = _load_perms(cur, role_id, is_admin)
+    return _row_to_user(
+        (_user_id, _uname, _nickname, _role_code, is_admin, enabled), perms
+    )
+
+
 def _authenticate(username: str, password: str) -> dict:
-    """验证用户名密码，返回用户信息字典."""
+    """验证用户名密码（app_user + bcrypt），返回用户信息字典."""
     conn = _get_pg_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """SELECT id, username, password, nickname, role, status
-                   FROM chan_user WHERE username = %s""",
+                """SELECT u.id, u.username, u.password_hash, u.display_name,
+                          r.code, r.is_admin, u.enabled, u.role_id
+                   FROM app_user u JOIN role r ON u.role_id = r.id
+                   WHERE u.username = %s""",
                 (username,),
             )
             row = cur.fetchone()
             if not row:
                 raise HTTPException(status_code=401, detail="用户名或密码错误")
 
-            user_id, uname, stored_pwd, nickname, role, status = row
+            user_id, uname, stored_hash, nickname, role_code, is_admin, enabled, role_id = row
 
-            if status != "active":
+            if not enabled:
                 raise HTTPException(status_code=403, detail="账号已禁用")
 
-            # 简易验证：直接比较（开发阶段，生产应使用 bcrypt）
-            if stored_pwd != password:
+            if not _check_password(password, stored_hash):
                 raise HTTPException(status_code=401, detail="用户名或密码错误")
 
-            # 查询权限
-            cur.execute(
-                "SELECT code FROM chan_user_permission WHERE user_id = %s",
-                (user_id,),
-            )
-            perms = [r[0] for r in cur.fetchall()]
-
+            perms = _load_perms(cur, role_id, is_admin)
             return {
                 "id": user_id,
                 "username": uname,
                 "nickname": nickname,
-                "role": role,
-                "status": status,
+                "role": role_code,
+                "status": "active" if enabled else "disabled",
                 "perms": perms,
+                "is_admin": is_admin,
             }
     finally:
         conn.close()
 
 
 def get_current_user(authorization: str = Header(default="")) -> dict:
-    """从 Authorization header 提取当前用户（Dependency 方式）。"""
+    """从 Authorization header 提取当前用户（Dependency 方式，按 username 解析 app_user）。"""
     if not authorization:
         raise HTTPException(status_code=401, detail="未提供认证信息")
 
@@ -143,35 +210,24 @@ def get_current_user(authorization: str = Header(default="")) -> dict:
     if not payload:
         raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
 
-    # 前缀是 "token:" 还是纯 token
+    # token 中的 user_id 为历史签发载荷（可能仍是 chan_user id），一律以 username 解析
     conn = _get_pg_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id, username, nickname, role, status FROM chan_user WHERE id = %s",
-                (payload["user_id"],),
-            )
-            row = cur.fetchone()
-            if not row:
-                raise HTTPException(status_code=401, detail="用户不存在")
-
-            user_id, uname, nickname, role, status = row
-            if status != "active":
-                raise HTTPException(status_code=403, detail="账号已禁用")
-
-            cur.execute(
-                "SELECT code FROM chan_user_permission WHERE user_id = %s",
-                (user_id,),
-            )
-            perms = [r[0] for r in cur.fetchall()]
-
-            return {
-                "id": user_id,
-                "username": uname,
-                "nickname": nickname,
-                "role": role,
-                "status": status,
-                "perms": perms,
-            }
+            return _load_user_by_username(cur, payload["username"])
     finally:
         conn.close()
+
+
+def require_manage(user: dict = Depends(get_current_user)) -> dict:
+    """依赖：get_current_user + manage 权限位检查（无权限 → 403；is_admin 全放行）。"""
+    if user.get("is_admin") or "manage" in (user.get("perms") or []):
+        return user
+    raise HTTPException(status_code=403, detail="无管理权限")
+
+
+def require_menu_system(user: dict = Depends(get_current_user)) -> dict:
+    """依赖：/system 读接口守卫 — 需 menu:system 权限（无权限 → 403；is_admin 全放行）。"""
+    if user.get("is_admin") or "menu:system" in (user.get("perms") or []):
+        return user
+    raise HTTPException(status_code=403, detail="无系统管理页面权限")

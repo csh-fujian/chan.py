@@ -5,6 +5,7 @@
 <script setup lang="ts">
 import { ref, watch, onMounted } from 'vue'
 import { useEcharts } from '@/composables/useEcharts'
+import { getEchartsPalette } from '@/components/charts/echartsPalette'
 
 interface SeriesPoint {
   date: string
@@ -16,35 +17,37 @@ const props = defineProps<{
 }>()
 
 const el = ref<HTMLElement | null>(null)
-const { setOption } = useEcharts(el)
+// 主题切换收口在 useEcharts：回调 render 以新调色板重建 option（任务 6.4）
+const { setOption } = useEcharts(el, render)
 
 function render() {
   if (!props.series || props.series.length === 0) return
+  const p = getEchartsPalette()
   setOption({
     backgroundColor: 'transparent',
     grid: { left: 48, right: 20, top: 20, bottom: 32 },
     tooltip: {
       trigger: 'axis',
-      backgroundColor: '#161B22',
-      borderColor: '#2A303A',
-      textStyle: { color: '#E6E8EB', fontSize: 12 },
+      backgroundColor: p.tooltipBg,
+      borderColor: p.tooltipBorder,
+      textStyle: { color: p.tooltipText, fontSize: 12 },
       valueFormatter: (v: number) => `+${v.toFixed(2)}%`,
     },
     xAxis: {
       type: 'category',
-      data: props.series.map((p) => p.date),
+      data: props.series.map((pt) => pt.date),
       boundaryGap: false,
-      axisLine: { lineStyle: { color: '#2A303A' } },
-      axisLabel: { color: '#565D66', fontSize: 11, fontFamily: 'JetBrains Mono' },
+      axisLine: { lineStyle: { color: p.axisLine } },
+      axisLabel: { color: p.axisLabelDim, fontSize: 11, fontFamily: 'JetBrains Mono' },
       axisTick: { show: false },
     },
     yAxis: {
       type: 'value',
       axisLine: { show: false },
       axisTick: { show: false },
-      splitLine: { lineStyle: { color: 'rgba(42,48,58,0.5)', type: 'dashed' } },
+      splitLine: { lineStyle: { color: p.splitLine, type: 'dashed' } },
       axisLabel: {
-        color: '#565D66',
+        color: p.axisLabelDim,
         fontSize: 11,
         fontFamily: 'JetBrains Mono',
         formatter: '{value}%',
@@ -57,9 +60,10 @@ function render() {
         symbol: 'circle',
         symbolSize: 6,
         showSymbol: false,
-        data: props.series.map((p) => p.value),
-        lineStyle: { color: '#F6465D', width: 2.2 },
-        itemStyle: { color: '#F6465D', borderColor: '#0A0D12', borderWidth: 2 },
+        data: props.series.map((pt) => pt.value),
+        // 收益曲线恒为红系（语义色，主题无关；spec「主题无关的语义色」）
+        lineStyle: { color: p.rise, width: 2.2 },
+        itemStyle: { color: p.rise, borderColor: p.symbolBorder, borderWidth: 2 },
         emphasis: { focus: 'series' },
         areaStyle: {
           color: {
@@ -74,7 +78,7 @@ function render() {
         markLine: {
           silent: true,
           symbol: 'none',
-          lineStyle: { color: '#3A424E', type: 'dashed' },
+          lineStyle: { color: p.markLine, type: 'dashed' },
           data: [{ yAxis: 0 }],
         },
       },

@@ -1,5 +1,5 @@
 import client from '../client'
-import type { MonitorItem, CompletedItem, PageRes } from '@/api/types'
+import type { MonitorItem, CompletedItem, PageRes, AnalyzeResult } from '@/api/types'
 
 /** 监控列表（keyword 可选） */
 export function getMonitorList(keyword?: string) {
@@ -21,7 +21,7 @@ export function endMonitor(id: number) {
   return client.post<unknown, { success: boolean; id: number }>(`/monitor/${id}/end`)
 }
 
-/** 大模型归因分析 */
+/** 大模型归因分析（design D5：真实生成；失败返回 400/5xx 错误体，不写占位） */
 export function analyzeMonitor(id: number) {
-  return client.post<unknown, { success: boolean; id: number }>(`/monitor/${id}/analyze`)
+  return client.post<unknown, AnalyzeResult>(`/monitor/${id}/analyze`)
 }

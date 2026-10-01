@@ -8,6 +8,10 @@ import App from './App.vue'
 import router from './router'
 import './styles/index.css'
 import { permission as permissionDirective } from './directives/permission'
+import { applyStoredTheme } from './stores/theme'
+
+// 主题偏好尽早应用（模块求值即执行，早于 MSW/挂载），避免首屏闪烁（kline-chart-change 6.2）
+applyStoredTheme()
 
 async function bootstrap() {
   // Mock Service Worker — 仅在 VITE_USE_MOCK=true 时启动

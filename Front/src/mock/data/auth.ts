@@ -46,3 +46,14 @@ export const mockUsers: MockUser[] = [
 export function findUser(username: string): MockUser | undefined {
   return mockUsers.find((u) => u.username === username)
 }
+
+/**
+ * 从请求头解析当前登录测试账号 id（token 形如 mock-token-{id}-{timestamp}，
+ * 与 handlers/auth.ts 的签发/解析约定一致）。无 token 时兜底 admin(1)。
+ */
+export function userIdFromRequest(request: Request): number {
+  const auth = request.headers.get('Authorization') || ''
+  const token = auth.replace('Bearer ', '')
+  const match = token.match(/^mock-token-(\d+)-/)
+  return match ? Number(match[1]) : 1
+}

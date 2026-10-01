@@ -7,31 +7,16 @@
 
 /* --------------------------------------------------------------------------
    1. Design Tokens
+   三层结构（kline-chart-change D3 / 任务 6.1）：
+   1.1 :root — 主题无关 token（金融语义色、间距、圆角、字体、尺寸）
+   1.2 :root[data-theme='dark']（+ 无属性默认）— 暗色主题 token = 原 :root 现值
+   1.3 :root[data-theme='light'] — 明亮主题覆盖（背景/边框/文字/阴影等镜像推导）
+   语义色（--rise 红涨 / --fall 绿跌）两套主题下保持不变（spec 主题无关语义色）。
    -------------------------------------------------------------------------- */
+
+/* 1.1 主题无关 */
 :root {
-  /* 背景 */
-  --bg-base: #0E1117;
-  --bg-surface: #161B22;
-  --bg-surface-hover: #1C2128;
-  --bg-chart: #0A0D12;
-  --bg-overlay: rgba(0, 0, 0, 0.5);
-
-  /* 边框 */
-  --border-base: #2A303A;
-  --border-strong: #3A424E;
-
-  /* 文字 */
-  --text-primary: #E6E8EB;
-  --text-secondary: #9BA1A8;
-  --text-disabled: #565D66;
-  --text-inverse: #0E1117;
-
-  /* 主色 */
-  --accent-base: #3B82F6;
-  --accent-hover: #60A5FA;
-  --accent-glow: rgba(59, 130, 246, 0.22);
-
-  /* 金融语义：红涨绿跌 */
+  /* 金融语义：红涨绿跌（主题无关，spec「主题无关的语义色」） */
   --rise: #F6465D;
   --rise-dim: rgba(246, 70, 93, 0.14);
   --fall: #2EBD85;
@@ -39,6 +24,20 @@
   --warning: #F0B90B;
   --warning-dim: rgba(240, 185, 11, 0.14);
   --info: #3B82F6;
+
+  /* 主色（基线部分主题无关；--accent-hover 随主题翻转明暗） */
+  --accent-base: #3B82F6;
+  --accent-active: #1D4ED8;
+  --accent-glow: rgba(59, 130, 246, 0.22);
+  --accent-dim: rgba(59, 130, 246, 0.12);
+  --accent-border: rgba(59, 130, 246, 0.30);
+
+  /* 反白前景（accent / 语义色等彩色底之上的文字与图形） */
+  --text-on-accent: #FFFFFF;
+
+  /* 品牌装饰渐变（头像 / 标识，主题无关） */
+  --brand-decor-from: #2563EB;
+  --brand-decor-to: #7C3AED;
 
   /* 间距（4px 基准） */
   --sp-xs: 4px;
@@ -64,6 +63,73 @@
   --topbar-h: 48px;
 }
 
+/* 1.2 暗色主题（默认外观：无 data-theme 属性即暗色，首屏无闪烁） */
+:root[data-theme='dark'],
+:root:not([data-theme]) {
+  /* 背景 */
+  --bg-base: #0E1117;
+  --bg-surface: #161B22;
+  --bg-surface-hover: #1C2128;
+  --bg-chart: #0A0D12;
+  --bg-overlay: rgba(0, 0, 0, 0.5);
+
+  /* 边框 */
+  --border-base: #2A303A;
+  --border-strong: #3A424E;
+
+  /* 文字 */
+  --text-primary: #E6E8EB;
+  --text-secondary: #9BA1A8;
+  --text-disabled: #565D66;
+  --text-inverse: #0E1117;
+  --text-faint: rgba(154, 161, 168, 0.25);
+
+  /* 主色 hover（暗色下提亮） */
+  --accent-hover: #60A5FA;
+
+  /* 阴影 */
+  --shadow-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.025);
+  --shadow-popover: 0 12px 32px rgba(0, 0, 0, 0.5);
+  --shadow-drawer: -20px 0 60px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 30px 80px rgba(0, 0, 0, 0.5);
+
+  /* 图表网格线（CSS 网格背景 / SVG grid-line） */
+  --chart-grid-line: rgba(42, 48, 58, 0.55);
+}
+
+/* 1.3 明亮主题（暗色 token 镜像推导；语义色与间距/字体等不覆盖） */
+:root[data-theme='light'] {
+  /* 背景 */
+  --bg-base: #F5F7FA;
+  --bg-surface: #FFFFFF;
+  --bg-surface-hover: #EDF1F6;
+  --bg-chart: #FFFFFF;
+  --bg-overlay: rgba(15, 23, 42, 0.40);
+
+  /* 边框 */
+  --border-base: #DCE1E8;
+  --border-strong: #B8C0CC;
+
+  /* 文字 */
+  --text-primary: #1F242C;
+  --text-secondary: #5C6673;
+  --text-disabled: #A0A8B4;
+  --text-inverse: #FFFFFF;
+  --text-faint: rgba(92, 102, 115, 0.30);
+
+  /* 主色 hover（亮色下压深，保证浅底可读） */
+  --accent-hover: #1D4ED8;
+
+  /* 阴影（亮色：柔和灰投影） */
+  --shadow-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  --shadow-popover: 0 12px 32px rgba(31, 41, 55, 0.12);
+  --shadow-drawer: -20px 0 60px rgba(31, 41, 55, 0.12);
+  --shadow-lg: 0 30px 80px rgba(31, 41, 55, 0.14);
+
+  /* 图表网格线 */
+  --chart-grid-line: rgba(206, 214, 224, 0.85);
+}
+
 /* --------------------------------------------------------------------------
    2. Reset & Base
    -------------------------------------------------------------------------- */
@@ -78,8 +144,8 @@ body {
   color: var(--text-primary);
   background-color: var(--bg-base);
   background-image:
-    radial-gradient(1200px 700px at 15% -10%, rgba(59, 130, 246, 0.05), transparent 60%),
-    radial-gradient(1000px 800px at 110% 20%, rgba(246, 70, 93, 0.04), transparent 55%);
+    radial-gradient(1200px 700px at 15% -10%, color-mix(in srgb, var(--accent-base) 5%, transparent), transparent 60%),
+    radial-gradient(1000px 800px at 110% 20%, color-mix(in srgb, var(--rise) 4%, transparent), transparent 55%);
   min-width: 1200px;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
@@ -100,7 +166,7 @@ a { color: inherit; text-decoration: none; }
 button { font-family: inherit; cursor: pointer; }
 input, select, button, textarea { font-family: inherit; font-size: inherit; color: inherit; }
 
-::selection { background: var(--accent-base); color: #fff; }
+::selection { background: var(--accent-base); color: var(--text-on-accent); }
 
 /* 滚动条 */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -136,7 +202,7 @@ input, select, button, textarea { font-family: inherit; font-size: inherit; colo
   align-items: center;
   gap: var(--sp-2xl);
   padding: 0 var(--sp-lg);
-  background: linear-gradient(180deg, rgba(22, 27, 34, 0.92), rgba(14, 17, 23, 0.92));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--bg-surface) 92%, transparent), color-mix(in srgb, var(--bg-base) 92%, transparent));
   backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--border-base);
 }
@@ -153,14 +219,14 @@ input, select, button, textarea { font-family: inherit; font-size: inherit; colo
   height: 22px;
   align-self: center;
   border-radius: var(--r-sm);
-  background: linear-gradient(135deg, var(--accent-base), #1d4ed8);
+  background: linear-gradient(135deg, var(--accent-base), var(--accent-active));
   display: grid;
   place-items: center;
-  color: #fff;
+  color: var(--text-on-accent);
   font-family: var(--font-mono);
   font-weight: 700;
   font-size: 12px;
-  box-shadow: 0 2px 10px rgba(59, 130, 246, 0.4);
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--accent-base) 40%, transparent);
 }
 .brand-mark::before { content: "缠"; }
 
@@ -237,8 +303,8 @@ input, select, button, textarea { font-family: inherit; font-size: inherit; colo
 .user-avatar {
   width: 26px; height: 26px;
   border-radius: var(--r-full);
-  background: linear-gradient(135deg, #2563eb, #7c3aed);
-  color: #fff;
+  background: linear-gradient(135deg, var(--brand-decor-from), var(--brand-decor-to));
+  color: var(--text-on-accent);
   font-size: 12px;
   font-weight: 600;
   display: grid;
@@ -264,7 +330,7 @@ input, select, button, textarea { font-family: inherit; font-size: inherit; colo
   background: var(--bg-surface);
   border: 1px solid var(--border-base);
   border-radius: var(--r-lg);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
+  box-shadow: var(--shadow-highlight);
   overflow: hidden;
 }
 
@@ -306,10 +372,10 @@ input, select, button, textarea { font-family: inherit; font-size: inherit; colo
 
 .btn--primary {
   background: var(--accent-base);
-  color: #fff;
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.08) inset, 0 2px 8px rgba(59, 130, 246, 0.28);
+  color: var(--text-on-accent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-on-accent) 8%, transparent), 0 2px 8px color-mix(in srgb, var(--accent-base) 28%, transparent);
 }
-.btn--primary:hover { background: var(--accent-hover); box-shadow: 0 2px 12px rgba(59, 130, 246, 0.4); }
+.btn--primary:hover { background: var(--accent-hover); box-shadow: 0 2px 12px color-mix(in srgb, var(--accent-base) 40%, transparent); }
 
 .btn--default {
   background: var(--bg-surface);
@@ -318,7 +384,7 @@ input, select, button, textarea { font-family: inherit; font-size: inherit; colo
 }
 .btn--default:hover { background: var(--bg-surface-hover); border-color: var(--border-strong); }
 
-.btn--danger { background: var(--rise); color: #fff; }
+.btn--danger { background: var(--rise); color: var(--text-on-accent); }
 .btn--danger:hover { filter: brightness(1.08); }
 
 .btn--ghost {
@@ -411,7 +477,7 @@ input, select, button, textarea { font-family: inherit; font-size: inherit; colo
   background: var(--bg-surface);
   border: 1px solid var(--border-base);
   border-radius: var(--r-md);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--shadow-popover);
   z-index: 60;
   padding: 4px;
   opacity: 0;
@@ -447,7 +513,7 @@ input, select, button, textarea { font-family: inherit; font-size: inherit; colo
   flex-shrink: 0;
 }
 .check-dot.is-on { background: var(--accent-base); border-color: var(--accent-base); }
-.check-dot.is-on::after { content: "✓"; color: #fff; font-size: 10px; }
+.check-dot.is-on::after { content: "✓"; color: var(--text-on-accent); font-size: 10px; }
 
 /* --------------------------------------------------------------------------
    8. Table
@@ -500,7 +566,7 @@ input, select, button, textarea { font-family: inherit; font-size: inherit; colo
   background: transparent;
   transition: all 0.12s ease;
 }
-.row-action:hover { color: var(--accent-hover); background: rgba(59, 130, 246, 0.1); }
+.row-action:hover { color: var(--accent-hover); background: var(--accent-dim); }
 .row-action--danger:hover { color: var(--rise); background: var(--rise-dim); }
 
 /* 自定义复选框 */
@@ -517,7 +583,7 @@ input, select, button, textarea { font-family: inherit; font-size: inherit; colo
 }
 .checkbox:hover { border-color: var(--accent-base); }
 .checkbox.is-checked { background: var(--accent-base); border-color: var(--accent-base); }
-.checkbox.is-checked::after { content: "✓"; color: #fff; font-size: 11px; font-weight: 600; line-height: 1; }
+.checkbox.is-checked::after { content: "✓"; color: var(--text-on-accent); font-size: 11px; font-weight: 600; line-height: 1; }
 
 /* 股票编码（等宽 + 交易所前缀着色） */
 .code { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
@@ -541,9 +607,9 @@ input, select, button, textarea { font-family: inherit; font-size: inherit; colo
 .badge--rise    { background: var(--rise-dim); color: var(--rise); }
 .badge--fall    { background: var(--fall-dim); color: var(--fall); }
 .badge--warning { background: var(--warning-dim); color: var(--warning); }
-.badge--info    { background: rgba(59, 130, 246, 0.14); color: var(--accent-hover); }
+.badge--info    { background: var(--accent-dim); color: var(--accent-hover); }
 .badge--disabled{ background: var(--bg-surface-hover); color: var(--text-disabled); }
-.badge--accent  { background: rgba(59, 130, 246, 0.14); color: var(--accent-hover); border: 1px solid rgba(59,130,246,0.3); }
+.badge--accent  { background: var(--accent-dim); color: var(--accent-hover); border: 1px solid var(--accent-border); }
 
 .badge + .badge { margin-left: 4px; }
 
@@ -566,7 +632,7 @@ input, select, button, textarea { font-family: inherit; font-size: inherit; colo
   top: 2px; left: 2px;
   width: 14px; height: 14px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--text-on-accent);
   transition: transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .switch.is-on { background: var(--accent-base); }
@@ -687,7 +753,7 @@ input, select, button, textarea { font-family: inherit; font-size: inherit; colo
   flex-direction: column;
   transform: translateX(100%);
   transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
-  box-shadow: -20px 0 60px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--shadow-drawer);
 }
 .drawer.is-open { transform: translateX(0); }
 
@@ -736,7 +802,7 @@ input, select, button, textarea { font-family: inherit; font-size: inherit; colo
   opacity: 0;
   visibility: hidden;
   transition: opacity 0.2s ease, transform 0.2s ease, visibility 0.2s;
-  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--shadow-lg);
 }
 .dialog.is-open { opacity: 1; visibility: visible; transform: translate(-50%, -50%) scale(1); }
 .dialog__head {
@@ -773,7 +839,7 @@ input, select, button, textarea { font-family: inherit; font-size: inherit; colo
   background: var(--bg-surface);
   border: 1px solid var(--border-base);
   border-radius: var(--r-md);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--shadow-popover);
   padding: 12px 14px;
   z-index: 50;
   opacity: 0;
@@ -796,8 +862,8 @@ input, select, button, textarea { font-family: inherit; font-size: inherit; colo
 }
 .chart--grid {
   background-image:
-    linear-gradient(rgba(42, 48, 58, 0.55) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(42, 48, 58, 0.55) 1px, transparent 1px);
+    linear-gradient(var(--chart-grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--chart-grid-line) 1px, transparent 1px);
   background-size: 100% 32px, 46px 100%;
 }
 .chart svg { display: block; width: 100%; height: 100%; }
@@ -816,13 +882,13 @@ input, select, button, textarea { font-family: inherit; font-size: inherit; colo
   top: 50%; left: 50%;
   transform: translate(-50%, -50%);
   font-size: 13px;
-  color: rgba(154, 161, 168, 0.25);
+  color: var(--text-faint);
   letter-spacing: 0.4em;
   pointer-events: none;
 }
 
 /* SVG 元素着色 */
-.grid-line { stroke: rgba(42, 48, 58, 0.5); stroke-width: 1; }
+.grid-line { stroke: var(--chart-grid-line); stroke-width: 1; }
 .axis-text { fill: var(--text-disabled); font-family: var(--font-mono); font-size: 10px; }
 
 .candle-up   { fill: var(--rise); stroke: var(--rise); }
@@ -830,15 +896,15 @@ input, select, button, textarea { font-family: inherit; font-size: inherit; colo
 .candle-wick-up   { stroke: var(--rise); stroke-width: 1; }
 .candle-wick-down { stroke: var(--fall); stroke-width: 1; }
 
-.bi-line { fill: none; stroke: #9BA1A8; stroke-width: 1.4; }
-.seg-line { fill: none; stroke: #3B82F6; stroke-width: 2.2; }
-.zs-bi  { fill: rgba(155, 161, 168, 0.10); stroke: rgba(155, 161, 168, 0.55); stroke-width: 1; stroke-dasharray: 4 3; }
-.zs-seg { fill: rgba(59, 130, 246, 0.09); stroke: rgba(59, 130, 246, 0.65); stroke-width: 1; }
+.bi-line { fill: none; stroke: var(--text-secondary); stroke-width: 1.4; }
+.seg-line { fill: none; stroke: var(--accent-base); stroke-width: 2.2; }
+.zs-bi  { fill: color-mix(in srgb, var(--text-secondary) 10%, transparent); stroke: color-mix(in srgb, var(--text-secondary) 55%, transparent); stroke-width: 1; stroke-dasharray: 4 3; }
+.zs-seg { fill: color-mix(in srgb, var(--accent-base) 9%, transparent); stroke: color-mix(in srgb, var(--accent-base) 65%, transparent); stroke-width: 1; }
 
 .vol-up   { fill: rgba(246, 70, 93, 0.7); }
 .vol-down { fill: rgba(46, 189, 133, 0.7); }
-.macd-line { fill: none; stroke: #3B82F6; stroke-width: 1.4; }
-.signal-line { fill: none; stroke: #F0B90B; stroke-width: 1.2; }
+.macd-line { fill: none; stroke: var(--accent-base); stroke-width: 1.4; }
+.signal-line { fill: none; stroke: var(--warning); stroke-width: 1.2; }
 .macd-up   { fill: rgba(246, 70, 93, 0.75); }
 .macd-down { fill: rgba(46, 189, 133, 0.75); }
 
@@ -882,7 +948,7 @@ input, select, button, textarea { font-family: inherit; font-size: inherit; colo
   transition: all 0.12s ease;
 }
 .tree__item:hover { background: var(--bg-surface-hover); color: var(--text-primary); }
-.tree__item.is-active { background: rgba(59, 130, 246, 0.12); color: var(--accent-hover); font-weight: 500; }
+.tree__item.is-active { background: var(--accent-dim); color: var(--accent-hover); font-weight: 500; }
 .tree__item .count { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--text-disabled); }
 .tree__item.is-active .count { color: var(--accent-hover); }
 .tree__icon { width: 16px; height: 16px; color: var(--text-disabled); flex-shrink: 0; }
@@ -944,7 +1010,7 @@ input, select, button, textarea { font-family: inherit; font-size: inherit; colo
   content: "";
   position: absolute;
   inset: 0;
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.35), transparent);
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--text-on-accent) 35%, transparent), transparent);
   animation: shimmer 1.4s infinite;
 }
 @keyframes shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }

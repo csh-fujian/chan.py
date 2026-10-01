@@ -36,14 +36,7 @@
       <el-form-item v-if="!isEdit" label="密码" prop="password">
         <el-input v-model="form.password" type="password" show-password placeholder="登录密码" />
       </el-form-item>
-      <el-form-item v-else label="密码">
-        <el-input
-          v-model="form.password"
-          type="password"
-          show-password
-          placeholder="留空则不修改密码"
-        />
-      </el-form-item>
+      <!-- 编辑态不改密码（D2 PUT /users/{id} 无 password 字段）；密码变更走「重置密码」对话框 -->
     </el-form>
     <template #footer>
       <el-button @click="visible = false">取消</el-button>
@@ -125,12 +118,10 @@ async function onSave() {
     if (!valid) return
     saving.value = true
     try {
-      const roleObj = props.roles.find((r) => r.code === form.role)
       if (props.user) {
         await systemApi.updateUser(props.user.id, {
           nickname: form.nickname,
           role: form.role,
-          role_name: roleObj?.name || form.role,
           status: form.status,
         })
         ElMessage.success('用户已更新')
@@ -138,16 +129,15 @@ async function onSave() {
         await systemApi.createUser({
           username: form.username,
           nickname: form.nickname,
+          password: form.password,
           role: form.role,
-          role_name: roleObj?.name || form.role,
-          status: form.status,
         })
         ElMessage.success('用户已创建')
       }
       visible.value = false
       emit('saved')
     } catch {
-      // handled
+      // 失败展示后端错误：由 client 拦截器按 detail 提示（用户名重复 409、admin 保护 403 等）
     } finally {
       saving.value = false
     }

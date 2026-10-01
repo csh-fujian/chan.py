@@ -15,88 +15,20 @@ FastAPI 应用 — chan-web-viewer 后端入口。
   - /api/klines          K线 + 缠论计算
 """
 
-import os
 from typing import Optional
 
-from fastapi import Header, HTTPException, Query
+from fastapi import Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from ChanAnalyse.Common.CEnum import AUTYPE, DATA_SRC, KL_TYPE
-from ChanAnalyse.Chan import CChan
-from ChanAnalyse.ChanConfig import CChanConfig
-
 from .app import app
-from .auth import _authenticate, _make_token, _verify_token
+from .auth import _authenticate, _make_token, get_current_user
 from .cache import get_chan_cache
+from .chan_service import (
+    _compute_chan,
+    _resolve_data_src,
+    _resolve_kl_type,
+)
 from .serializer import serialize_chan
-
-# ---- 周期字符串 -> KL_TYPE 映射 ----
-# 与 DuckDB kl_store 实际保存的 kl_type 对齐：K_5M/K_15M/K_30M/K_60M/K_DAY/K_WEEK/K_MON
-# （"1m"/"1h" 为旧值别名，保留以兼容历史请求）
-PERIOD_MAP: dict[str, KL_TYPE] = {
-    "1m": KL_TYPE.K_1M,
-    "5m": KL_TYPE.K_5M,
-    "15m": KL_TYPE.K_15M,
-    "30m": KL_TYPE.K_30M,
-    "60m": KL_TYPE.K_60M,
-    "1h": KL_TYPE.K_60M,
-    "1d": KL_TYPE.K_DAY,
-    "1w": KL_TYPE.K_WEEK,
-    "1M": KL_TYPE.K_MON,
-}
-
-
-def _resolve_kl_type(period: str) -> KL_TYPE:
-    """将前端周期字符串转换为 KL_TYPE 枚举，非法值抛出 400。"""
-    kl_type = PERIOD_MAP.get(period)
-    if kl_type is None:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Unsupported period: {period!r}. "
-                f"Valid values: {list(PERIOD_MAP.keys())}"
-            ),
-        )
-    return kl_type
-
-
-def _resolve_data_src(period: str) -> str:
-    """
-    确定数据源。
-
-    优先使用 DuckDB 离线源；如果 DuckDB 文件不存在，对日线使用 BaoStock 兜底。
-    其他周期在 DuckDB 缺失时报错。
-    """
-    from ChanAnalyse.DataAPI.KLineStore import DEFAULT_DB_PATH
-
-    if os.path.exists(DEFAULT_DB_PATH):
-        return "custom:DuckDBAPI.CDuckDB"
-
-    if period == "1d":
-        return DATA_SRC.BAO_STOCK
-
-    raise HTTPException(
-        status_code=404,
-        detail=(
-            f"DuckDB file {DEFAULT_DB_PATH!r} not found, "
-            f"and BaoStock fallback only supports daily ('1d') period."
-        ),
-    )
-
-
-def _compute_chan(symbol: str, kl_type: KL_TYPE, data_src: str) -> CChan:
-    """创建 CChan 实例并执行完整计算。"""
-    config = CChanConfig(
-        conf={"trigger_step": False, "kl_data_check": False},
-    )
-    chan = CChan(
-        code=symbol,
-        data_src=data_src,
-        lv_list=[kl_type],
-        config=config,
-        autype=AUTYPE.QFQ,
-    )
-    return chan
 
 
 @app.get("/api/health")
@@ -136,50 +68,23 @@ async def login(body: LoginRequest):
 
 
 @app.post("/api/auth/me")
-async def me(authorization: str = Header(default="")):
+async def me(user: dict = Depends(get_current_user)):
     """
     获取当前登录用户信息。
 
     从 Authorization header 提取 Bearer token，返回用户信息 + 权限列表。
+    权限读取走 B 套 RBAC（app_user，按 username 解析，design D3）。
     """
-    if not authorization:
-        raise HTTPException(status_code=401, detail="未提供认证信息")
-
-    token = authorization.replace("Bearer ", "")
-    payload = _verify_token(token)
-    if not payload:
-        raise HTTPException(status_code=401, detail="登录已过期")
-
-    from .auth import _get_pg_conn
-
-    conn = _get_pg_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id, username, nickname, role, status FROM chan_user WHERE id = %s",
-                (payload["user_id"],),
-            )
-            row = cur.fetchone()
-            if not row:
-                raise HTTPException(status_code=401, detail="用户不存在")
-            user_id, uname, nickname, role, status = row
-            cur.execute(
-                "SELECT code FROM chan_user_permission WHERE user_id = %s",
-                (user_id,),
-            )
-            perms = [r[0] for r in cur.fetchall()]
-            return {
-                "user": {
-                    "id": user_id,
-                    "username": uname,
-                    "nickname": nickname,
-                    "role": role,
-                    "status": status,
-                },
-                "perms": perms,
-            }
-    finally:
-        conn.close()
+    return {
+        "user": {
+            "id": user["id"],
+            "username": user["username"],
+            "nickname": user["nickname"],
+            "role": user["role"],
+            "status": user["status"],
+        },
+        "perms": user["perms"],
+    }
 
 
 @app.post("/api/auth/logout")

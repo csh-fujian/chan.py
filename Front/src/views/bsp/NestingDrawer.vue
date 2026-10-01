@@ -68,6 +68,7 @@ import * as echarts from 'echarts/core'
 import { TreemapChart } from 'echarts/charts'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import { useEcharts } from '@/composables/useEcharts'
+import { getEchartsPalette } from '@/components/charts/echartsPalette'
 import type { BspRecord } from '@/api/types'
 
 // 注册 treemap（useEcharts 仅注册了 line/bar）
@@ -86,18 +87,42 @@ watch(() => props.visible, (v) => (visibleRef.value = v))
 watch(visibleRef, (v) => emit('update:visible', v))
 
 const chartEl = ref<HTMLElement | null>(null)
-const { setOption } = useEcharts(chartEl)
+// 主题切换收口在 useEcharts：抽屉打开时以新调色板重建 option（任务 6.4）
+const { setOption } = useEcharts(chartEl, () => {
+  if (visibleRef.value && props.record) renderChart()
+})
 
+// 周期子集（design D1）：与 BspView.klOptions 同集合 — 30分/60分/日线/周线/月线
+const KL_LABEL_MAP: Record<string, string> = {
+  '30m': '30分',
+  '60m': '60分',
+  D: '日线',
+  W: '周线',
+  M: '月线',
+}
 const klLevels = [
+  { label: '30分', value: '30m' },
+  { label: '60分', value: '60m' },
   { label: '日线', value: 'D' },
-  { label: '60分钟', value: '60m' },
-  { label: '30分钟', value: '30m' },
+  { label: '周线', value: 'W' },
+  { label: '月线', value: 'M' },
 ]
 const activeKl = ref('D')
 
+// W/M 等周期显示中文标签（周线/月线），不再兜底显示原始值
 function klLabel(v: string) {
-  return klLevels.find((k) => k.value === v)?.label || v
+  return KL_LABEL_MAP[v] || v
 }
+
+// 记录切换时定位到其自身周期的子 tab（W/M 记录打开即显示周线/月线）
+watch(
+  () => props.record,
+  (r) => {
+    activeKl.value = r && KL_LABEL_MAP[r.kl_type] ? r.kl_type : 'D'
+  },
+  { immediate: true },
+)
+
 function typeLabel(t: string) {
   const map: Record<string, string> = {
     '1B': '第一类买点',
@@ -105,6 +130,7 @@ function typeLabel(t: string) {
     '3B': '第三类买点',
     '1S': '第一类卖点',
     '2S': '第二类卖点',
+    '3S': '第三类卖点',
     'L2B': '类二买点',
     'L2S': '类二卖点',
     'PZ-B': '盘整买点',
@@ -129,7 +155,7 @@ interface NestItem {
   desc: string
 }
 
-// 基于 record 生成多级别买卖点 mock（大级别包含小级别）
+// 基于 record 生成多级别买卖点 mock（每个周期子 tab 一条，记录自身周期用真实数据）
 const allItems = computed<NestItem[]>(() => {
   if (!props.record) return []
   const r = props.record
@@ -137,11 +163,18 @@ const allItems = computed<NestItem[]>(() => {
   const date = r.bsp_date
   const dir = r.direction
   const t = r.bsp_type
-  return [
-    { kl_type: 'D', type: t, direction: dir, price: base, date, desc: '大级别背驰后确认' },
-    { kl_type: '60m', type: dir === 'buy' ? '2B' : '2S', direction: dir, price: +(base * 1.01).toFixed(2), date: date + 3600000, desc: '回抽不创新低' },
-    { kl_type: '30m', type: dir === 'buy' ? '3B' : '3S', direction: dir, price: +(base * 1.02).toFixed(2), date: date + 7200000, desc: '中枢上移后回调不破' },
-  ]
+  const descs = ['大级别背驰后确认', '回抽不创新低', '中枢上移后回调不破', '次级别区间套确认', '本级别结构完成']
+  return klLevels.map((kl, idx) => {
+    const isSelf = kl.value === r.kl_type
+    return {
+      kl_type: kl.value,
+      type: isSelf ? t : dir === 'buy' ? (idx % 2 === 0 ? '2B' : '3B') : idx % 2 === 0 ? '2S' : '3S',
+      direction: dir,
+      price: isSelf ? base : +(base * (1 + (idx - 2) * 0.01)).toFixed(2),
+      date: isSelf ? date : date + idx * 3600000,
+      desc: isSelf ? '本级别买卖点（记录本体）' : descs[idx] || '次级别结构确认',
+    }
+  })
 })
 
 const currentItems = computed(() => allItems.value.filter((i) => i.kl_type === activeKl.value))
@@ -162,9 +195,11 @@ function renderChart() {
   if (!chartEl.value) return
   const items = allItems.value
   if (items.length === 0) return
+  const pal = getEchartsPalette()
 
   // 嵌套矩形：大级别在外，小级别在内
-  const data = items.map((it, idx) => ({
+  // 买红卖绿为语义色（主题不变，spec「主题无关的语义色」），仅标签/tooltip 随主题
+  const data = items.map((it) => ({
     value: 1,
     itemStyle: {
       color: it.direction === 'buy' ? 'rgba(246, 70, 93, 0.18)' : 'rgba(46, 189, 133, 0.18)',
@@ -174,7 +209,7 @@ function renderChart() {
     label: {
       show: true,
       formatter: `${klLabel(it.kl_type)} ${it.type}\n${formatPrice(it.price)}`,
-      color: '#E6E8EB',
+      color: pal.labelText,
       fontSize: 11,
       fontFamily: 'JetBrains Mono, monospace',
     },
@@ -183,6 +218,9 @@ function renderChart() {
   setOption({
     tooltip: {
       trigger: 'item',
+      backgroundColor: pal.tooltipBg,
+      borderColor: pal.tooltipBorder,
+      textStyle: { color: pal.tooltipText, fontSize: 12 },
       formatter: (p: any) => {
         const it = items[p.dataIndex]
         return `${klLabel(it.kl_type)} ${it.type}<br/>价格: ${formatPrice(it.price)}<br/>日期: ${formatDate(it.date)}<br/>${it.desc}`

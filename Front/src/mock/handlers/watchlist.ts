@@ -1,5 +1,16 @@
 import { http, HttpResponse, delay } from 'msw'
-import { watchFolders, addFolder, removeFolder, renameFolder, addStockToFolder, removeStockFromFolder, moveStock, getWatchStocks } from '../data/watchlist'
+import {
+  watchFolders,
+  addFolder,
+  removeFolder,
+  renameFolder,
+  addStockToFolder,
+  removeStockFromFolder,
+  moveStock,
+  getWatchStocks,
+  reorderFolders,
+  reorderFolderStocks,
+} from '../data/watchlist'
 
 export const watchlistHandlers = [
   http.get('/api/watchlist/folders', async () => {
@@ -27,9 +38,25 @@ export const watchlistHandlers = [
     return HttpResponse.json({ success: true })
   }),
 
-  http.get('/api/watchlist/folders/:id/stocks', async ({ params }) => {
+  http.get('/api/watchlist/folders/:id/stocks', async ({ params, request }) => {
     await delay(200)
-    return HttpResponse.json(getWatchStocks(Number(params.id)))
+    // q：按编码/名称不区分大小写子串过滤（与真实后端一致）
+    const q = new URL(request.url).searchParams.get('q') ?? ''
+    return HttpResponse.json(getWatchStocks(Number(params.id), q))
+  }),
+
+  http.put('/api/watchlist/folders/reorder', async ({ request }) => {
+    await delay(200)
+    const body = (await request.json()) as { ids: number[] }
+    reorderFolders(body.ids ?? [])
+    return HttpResponse.json({ success: true })
+  }),
+
+  http.put('/api/watchlist/folders/:id/stocks/reorder', async ({ params, request }) => {
+    await delay(200)
+    const body = (await request.json()) as { codes: string[] }
+    reorderFolderStocks(Number(params.id), body.codes ?? [])
+    return HttpResponse.json({ success: true })
   }),
 
   http.post('/api/watchlist/folders/:id/stocks', async ({ params, request }) => {

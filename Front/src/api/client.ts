@@ -17,12 +17,26 @@ client.interceptors.request.use((config) => {
   return config
 })
 
+/**
+ * 提取后端错误文案：优先 FastAPI HTTPException 的 `detail`，其次兼容 `message`；
+ * 无文案时回退兜底文案（error 契约 UI：必须展示后端 detail/message）。
+ */
+function extractErrorText(data: unknown, fallback: string): string {
+  if (data && typeof data === 'object') {
+    const detail = (data as { detail?: unknown }).detail
+    if (typeof detail === 'string' && detail.trim()) return detail
+    const message = (data as { message?: unknown }).message
+    if (typeof message === 'string' && message.trim()) return message
+  }
+  return fallback
+}
+
 // 响应拦截器 — 统一错误处理
 client.interceptors.response.use(
   (response) => response.data,
   (error) => {
     const status = error.response?.status
-    const message = error.response?.data?.message || error.message || '请求失败'
+    const message = extractErrorText(error.response?.data, error.message || '请求失败')
 
     if (status === 401) {
       const auth = useAuthStore()
@@ -35,7 +49,8 @@ client.interceptors.response.use(
         }
       }, 600)
     } else if (status === 403) {
-      ElMessage.error('没有权限执行此操作')
+      // 403 优先展示后端 detail（admin 保护 / 无权限场景各有具体文案）
+      ElMessage.error(extractErrorText(error.response?.data, '没有权限执行此操作'))
     } else {
       ElMessage.error(message)
     }

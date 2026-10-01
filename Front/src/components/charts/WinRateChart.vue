@@ -5,6 +5,7 @@
 <script setup lang="ts">
 import { ref, watch, onMounted } from 'vue'
 import { useEcharts } from '@/composables/useEcharts'
+import { getEchartsPalette } from '@/components/charts/echartsPalette'
 
 interface BarItem {
   name: string
@@ -16,26 +17,28 @@ const props = defineProps<{
 }>()
 
 const el = ref<HTMLElement | null>(null)
-const { setOption } = useEcharts(el)
+// 主题切换收口在 useEcharts：回调 render 以新调色板重建 option（任务 6.4）
+const { setOption } = useEcharts(el, render)
 
 function render() {
   if (!props.data || props.data.length === 0) return
+  const p = getEchartsPalette()
   setOption({
     backgroundColor: 'transparent',
     grid: { left: 48, right: 20, top: 24, bottom: 32 },
     tooltip: {
       trigger: 'axis',
-      backgroundColor: '#161B22',
-      borderColor: '#2A303A',
-      textStyle: { color: '#E6E8EB', fontSize: 12 },
+      backgroundColor: p.tooltipBg,
+      borderColor: p.tooltipBorder,
+      textStyle: { color: p.tooltipText, fontSize: 12 },
       axisPointer: { type: 'shadow' },
       valueFormatter: (v: number) => `${v}%`,
     },
     xAxis: {
       type: 'category',
       data: props.data.map((d) => d.name),
-      axisLine: { lineStyle: { color: '#2A303A' } },
-      axisLabel: { color: '#9BA1A8', fontSize: 12, fontFamily: 'JetBrains Mono' },
+      axisLine: { lineStyle: { color: p.axisLine } },
+      axisLabel: { color: p.axisLabelStrong, fontSize: 12, fontFamily: 'JetBrains Mono' },
       axisTick: { show: false },
     },
     yAxis: {
@@ -43,9 +46,9 @@ function render() {
       max: 100,
       axisLine: { show: false },
       axisTick: { show: false },
-      splitLine: { lineStyle: { color: 'rgba(42,48,58,0.5)', type: 'dashed' } },
+      splitLine: { lineStyle: { color: p.splitLine, type: 'dashed' } },
       axisLabel: {
-        color: '#565D66',
+        color: p.axisLabelDim,
         fontSize: 11,
         fontFamily: 'JetBrains Mono',
         formatter: '{value}%',
@@ -55,17 +58,18 @@ function render() {
       {
         type: 'bar',
         barWidth: 38,
+        // 胜率红绿柱为语义色（≥50 红 / <50 绿），两套主题保持不变
         data: props.data.map((d) => ({
           value: d.winRate,
-          itemStyle: { color: d.winRate >= 50 ? '#F6465D' : '#2EBD85' },
+          itemStyle: { color: d.winRate >= 50 ? p.rise : p.fall },
         })),
         markLine: {
           silent: true,
           symbol: 'none',
-          lineStyle: { color: '#F6465D', type: 'dashed', width: 1.5 },
+          lineStyle: { color: p.rise, type: 'dashed', width: 1.5 },
           label: {
             formatter: '50%',
-            color: '#F6465D',
+            color: p.rise,
             fontSize: 11,
             fontFamily: 'JetBrains Mono',
           },

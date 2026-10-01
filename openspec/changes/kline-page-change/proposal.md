@@ -6,8 +6,8 @@ K 线分析页目前只有「看」的能力：能展示 K 线与缠论结构，
 
 - **自选管理**：在 K 线页对当前股票快速「加入自选 / 移出自选」，选择或新建目标分组；分组支持新建、重命名、删除。
 - **标的详情**：展示当前股票所属的**全部**行业、地区、概念（全量，不截断），补足现有仅「行业 ≤ 3」的展示缺口。
-- **大模型问答**：输入框提问 → 大模型解答；生成问答记录列表（展示问答内容与问答时间）；点击记录弹窗展示提问与回答全文；支持单条/批量打星（收藏标识）、一键删除未打星记录；问答内容持久化到 PG。
-- **页面排版**：K 线页新增可折叠左侧面板，以「标的 / 问答」两个 Tab 收纳上述能力，主图占剩余宽度。
+- **大模型问答**：输入框提问 → 大模型**流式**解答（弹窗实时展示增量与最终回答）；**系统提示词按用户可配置**（内置默认提示词，可修改/恢复默认）；提问自动注入当前股票的**缠论结构上下文**（结构不可得时静默降级）；LLM **供应商预设可切换**（cc-switch 式，管理员在 /system 管理，激活即时生效）；生成问答记录列表（**按用户隔离**，展示内容与时间）；点击记录弹窗展示提问与回答全文；支持单条/批量打星（收藏标识）、一键删除未打星记录；问答内容持久化到 PG（含 `user_id`）。
+- **页面排版**：K 线页新增可折叠左侧面板，以「标的 / 问答」两个 Tab 收纳上述能力（后续 `kline-metadata-change` 追加「股票信息」Tab），Tab 切换带内容缓存——切回时内容仍在；主图占剩余宽度。
 
 ## Capabilities
 
@@ -24,7 +24,7 @@ K 线分析页目前只有「看」的能力：能展示 K 线与缠论结构，
 ## Impact
 
 - **修改前端文件**：`front/src/views/kline/KLineView.vue`（左侧面板 + 自选/问答入口）、`front/src/api/types.ts`（新增 `StockProfile`/`QaRecord`，`Stock` 增 `region`/`concepts`）、`front/src/api/modules/watchlist.ts`（新增 `renameFolder`）、`front/src/mock/data/stocks.ts`（补 region/concepts）、`front/src/mock/handlers/*`（新增 profile/qa/rename handler）。
-- **新增前端文件**：标的详情组件、问答面板组件（含记录列表/详情弹窗）、`front/src/api/modules/stock.ts`、`front/src/api/modules/qa.ts`、`front/src/mock/data/qa.ts`、`front/src/mock/handlers/qa.ts`。
-- **后端（依赖 WebAPI 落地）**：`ai-qa` 路由 + `qa_record` PG 表、标的 profile 路由、自选重命名路由；LLM 供应商可插拔。
+- **新增前端文件**：标的详情组件、问答面板组件（含记录列表/详情弹窗、流式回答对话框、系统提示词对话框）、`front/src/api/modules/stock.ts`、`front/src/api/modules/qa.ts`、`front/src/mock/data/qa.ts`、`front/src/mock/handlers/qa.ts`、系统管理页供应商预设管理组件。
+- **后端（WebAPI 已落地，QA/LLM 部分待实现）**：`ai-qa` 路由（鉴权 + SSE 流式 + 系统提示词端点）+ `qa_record`/`user_setting`/`llm_provider` PG 表 + `WebAPI/llm_client.py`（OpenAI 兼容，供应商预设切换）、标的 profile 路由、自选重命名路由。
 - **复用**：既有自选 API（folders/stocks CRUD）、`chan-stock-manage` 定义的 `watchlist_folder`/`watchlist_item`/`stock_industry` 模型、`chan-web-viewer` 的 FastAPI 栈。
 - **不修改**：`CChan` 及其计算流水线；本变更主体为前端，后端部分与既有 WebAPI 规划协调落地。

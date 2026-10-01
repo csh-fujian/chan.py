@@ -1,4 +1,6 @@
-/* Element Plus 暗色主题覆盖 — 对齐 design tokens */
+/* Element Plus 主题覆盖 — 对齐 design tokens。
+   --el-* 全部指向 design.css token，随 data-theme 明暗自动跟随（任务 6.1）。
+   明亮态走 Element Plus 默认浅色变量 + 本文件 token 映射，无需额外 --el-* 覆盖。 */
 :root {
   /* 背景色 */
   --el-bg-color: var(--bg-surface);
@@ -22,12 +24,12 @@
 
   /* 主色 */
   --el-color-primary: var(--accent-base);
-  --el-color-primary-light-3: #60a5fa;
-  --el-color-primary-light-5: #60a5fa;
-  --el-color-primary-light-7: rgba(59, 130, 246, 0.25);
-  --el-color-primary-light-8: rgba(59, 130, 246, 0.15);
-  --el-color-primary-light-9: rgba(59, 130, 246, 0.1);
-  --el-color-primary-dark-2: #1d4ed8;
+  --el-color-primary-light-3: var(--accent-hover);
+  --el-color-primary-light-5: var(--accent-hover);
+  --el-color-primary-light-7: var(--accent-glow);
+  --el-color-primary-light-8: color-mix(in srgb, var(--accent-base) 15%, transparent);
+  --el-color-primary-light-9: var(--accent-dim);
+  --el-color-primary-dark-2: var(--accent-active);
 
   /* 填充 */
   --el-fill-color: var(--bg-surface-hover);
@@ -52,12 +54,8 @@
   --el-border-radius-small: 4px;
 }
 
-/* 暗色模式强制 */
-html.dark {
-  --el-bg-color: var(--bg-surface);
-  --el-bg-color-page: var(--bg-base);
-  --el-bg-color-overlay: var(--bg-surface);
-}
+/* （原 html.dark 死代码块已删除：项目不启用 Element Plus html.dark 机制，
+   明暗主题由 design.css 的 data-theme token 双主题承担，任务 6.1） */
 
 /* el-button 覆盖 */
 .el-button {
@@ -76,13 +74,13 @@ html.dark {
   --el-button-border-color: var(--accent-base);
   --el-button-hover-bg-color: var(--accent-hover);
   --el-button-hover-border-color: var(--accent-hover);
-  --el-button-active-bg-color: #1d4ed8;
-  color: #fff;
+  --el-button-active-bg-color: var(--accent-active);
+  color: var(--text-on-accent);
 }
 .el-button--danger {
   --el-button-bg-color: var(--rise);
   --el-button-border-color: var(--rise);
-  color: #fff;
+  color: var(--text-on-accent);
 }
 .el-button--default {
   background: var(--bg-surface);
@@ -188,7 +186,7 @@ html.dark {
   background: var(--bg-base);
   border: 1px solid var(--border-base);
   border-radius: var(--r-lg);
-  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--shadow-lg);
 }
 .el-dialog__header {
   padding: 16px 20px;

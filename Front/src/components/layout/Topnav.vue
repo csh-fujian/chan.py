@@ -19,6 +19,18 @@
       </router-link>
     </div>
 
+    <el-tooltip content="切换主题" placement="bottom">
+      <button
+        class="topnav__theme-btn"
+        type="button"
+        aria-label="切换主题"
+        @click="themeStore.toggle()"
+      >
+        <el-icon v-if="themeStore.theme === 'dark'"><Sunny /></el-icon>
+        <el-icon v-else><Moon /></el-icon>
+      </button>
+    </el-tooltip>
+
     <el-dropdown trigger="click" @command="onUserCommand">
       <div class="topnav__user">
         <span class="user-avatar">{{ avatarText }}</span>
@@ -38,12 +50,15 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { ArrowDown, User, SwitchButton } from '@element-plus/icons-vue'
+import { ArrowDown, User, SwitchButton, Sunny, Moon } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
+import { useThemeStore } from '@/stores/theme'
 
 const router = useRouter()
 const route = useRoute()
 const auth = useAuthStore()
+// 全局主题切换入口（kline-chart-change 6.2）：任意页面即时生效并持久化
+const themeStore = useThemeStore()
 
 interface MenuItem {
   key: string
@@ -84,3 +99,29 @@ function onUserCommand(cmd: string) {
   }
 }
 </script>
+
+<style scoped>
+/* 主题切换按钮：与 topnav__user 同风格的图标按钮（全部走 token，随主题迁移） */
+.topnav__theme-btn {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border: 1px solid var(--border-base);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.topnav__theme-btn:hover {
+  color: var(--accent-hover);
+  border-color: var(--accent-base);
+  background: var(--bg-surface-hover);
+}
+.topnav__theme-btn :deep(.el-icon) {
+  width: 15px;
+  height: 15px;
+}
+</style>

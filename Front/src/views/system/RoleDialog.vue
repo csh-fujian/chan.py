@@ -162,18 +162,22 @@ async function onSave() {
         })
         ElMessage.success('角色已更新')
       } else {
-        await systemApi.createRole({
+        const created = await systemApi.createRole({
           name: form.name,
           code: form.code,
           description: form.description,
           perms: form.perms,
         })
+        // D2 POST /roles 契约不含 perms：创建后经 PUT 全量落一次权限，保证勾选生效
+        if (form.perms.length > 0 && created?.id) {
+          await systemApi.updateRole(created.id, { perms: form.perms })
+        }
         ElMessage.success('角色已创建')
       }
       visible.value = false
       emit('saved')
     } catch {
-      // handled
+      // 失败展示后端错误：由 client 拦截器按 detail 提示（code 重复 409、admin 保护 403 等）
     } finally {
       saving.value = false
     }

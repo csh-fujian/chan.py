@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS chan_stable_prefix (
     CONSTRAINT uq_csp_code_kltype UNIQUE (code, kl_type)
 );
 
+DROP TRIGGER IF EXISTS trg_csp_updated_at ON chan_stable_prefix;
 CREATE TRIGGER trg_csp_updated_at
     BEFORE UPDATE ON chan_stable_prefix
     FOR EACH ROW
@@ -48,6 +49,7 @@ CREATE TABLE IF NOT EXISTS chan_user (
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+DROP TRIGGER IF EXISTS trg_chan_user_updated_at ON chan_user;
 CREATE TRIGGER trg_chan_user_updated_at
     BEFORE UPDATE ON chan_user
     FOR EACH ROW
@@ -263,7 +265,8 @@ CREATE TRIGGER trg_chan_snapshot_updated_at BEFORE UPDATE ON chan_snapshot FOR E
 CREATE TABLE IF NOT EXISTS watchlist_folder (
     id          SERIAL PRIMARY KEY,
     name        VARCHAR NOT NULL DEFAULT '默认文件夹',
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    sort_order  INT NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS watchlist_item (
@@ -271,11 +274,31 @@ CREATE TABLE IF NOT EXISTS watchlist_item (
     folder_id   INTEGER NOT NULL REFERENCES watchlist_folder(id) ON DELETE CASCADE,
     code        VARCHAR NOT NULL,
     added_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    sort_order  INT NOT NULL DEFAULT 0,
     CONSTRAINT uq_wl_folder_code UNIQUE (folder_id, code)
 );
 
 CREATE INDEX IF NOT EXISTS idx_wl_folder_id ON watchlist_item (folder_id);
 CREATE INDEX IF NOT EXISTS idx_wl_code      ON watchlist_item (code);
+
+-- 存量库补列（幂等，与 WebAPI/watchlist_store._ensure_tables 保持一致）
+ALTER TABLE watchlist_folder ADD COLUMN IF NOT EXISTS sort_order INT NOT NULL DEFAULT 0;
+ALTER TABLE watchlist_item   ADD COLUMN IF NOT EXISTS sort_order INT NOT NULL DEFAULT 0;
+
+-- 一次性回填：sort_order 1 基且永不为 0（此后 WHERE sort_order = 0 永不命中，脚本可重复执行）
+-- folder 按 id 回填；item 在部分存量库中无 id 列（由 watchlist_store 惰性建表而来），
+-- 按 added_at 序编号（与旧行为 ORDER BY added_at 一致），语义同 SET sort_order = id
+UPDATE watchlist_folder SET sort_order = id WHERE sort_order = 0;
+
+UPDATE watchlist_item wi
+SET sort_order = s.rn
+FROM (
+    SELECT folder_id, code,
+           ROW_NUMBER() OVER (PARTITION BY folder_id ORDER BY added_at, code) AS rn
+    FROM watchlist_item
+    WHERE sort_order = 0
+) s
+WHERE wi.folder_id = s.folder_id AND wi.code = s.code AND wi.sort_order = 0;
 CREATE TABLE IF NOT EXISTS monitor (
     id                  SERIAL PRIMARY KEY,
     code                VARCHAR NOT NULL,
@@ -297,12 +320,13 @@ CREATE TRIGGER trg_monitor_updated_at BEFORE UPDATE ON monitor FOR EACH ROW EXEC
 CREATE INDEX IF NOT EXISTS idx_monitor_code   ON monitor (code);
 CREATE INDEX IF NOT EXISTS idx_monitor_status ON monitor (status);
 
+-- 列名与 monitor_store.save_attribution/get_attribution 代码契约对齐（reason_type/evidence）；
+-- 原 failure_reason/input_summary 为陈旧 DDL，全库零引用。
 CREATE TABLE IF NOT EXISTS monitor_attribution (
     id              SERIAL PRIMARY KEY,
     monitor_id      INTEGER NOT NULL REFERENCES monitor(id) ON DELETE CASCADE,
-    failure_reason  VARCHAR NOT NULL DEFAULT '',
+    reason_type     VARCHAR NOT NULL,
     evidence        TEXT NOT NULL DEFAULT '',
-    input_summary   TEXT NOT NULL DEFAULT '',
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT uq_ma_monitor_id UNIQUE (monitor_id)
 );
@@ -365,10 +389,14 @@ CREATE TABLE IF NOT EXISTS role (
     id          SERIAL PRIMARY KEY,
     name        VARCHAR NOT NULL DEFAULT '',
     code        VARCHAR NOT NULL,
+    description VARCHAR NOT NULL DEFAULT '',
     is_admin    BOOLEAN NOT NULL DEFAULT FALSE,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT uq_role_code UNIQUE (code)
 );
+
+-- 存量库补列（幂等）：role.description（前端 RoleDialog 契约，system-page-change design D6）
+ALTER TABLE role ADD COLUMN IF NOT EXISTS description VARCHAR NOT NULL DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS permission (
     id          SERIAL PRIMARY KEY,
@@ -439,8 +467,9 @@ SELECT u.id, p.code FROM chan_user u CROSS JOIN (
     VALUES ('menu:kline'),('menu:watchlist')) AS p(code)
 WHERE u.username = 'viewer'
 ON CONFLICT (user_id, code) DO NOTHING;
--- 4.2 permission seeds (7 menu + 1 button)
+-- 4.2 permission seeds (8 menu + 1 button)；menu:kline 名称对齐 Front/src/mock/data/system.ts
 INSERT INTO permission (code, name, type) VALUES
+    ('menu:kline',       'K线分析',    'menu'),
     ('menu:watchlist',   '我的自选',    'menu'),
     ('menu:bsp',         '历史买卖点',  'menu'),
     ('menu:monitor',     '股票监控',    'menu'),
@@ -451,29 +480,48 @@ INSERT INTO permission (code, name, type) VALUES
     ('manage',           '管理操作',    'button')
 ON CONFLICT (code) DO NOTHING;
 
--- 4.3 role seeds
-INSERT INTO role (name, code, is_admin) VALUES
-    ('管理员', 'admin',  TRUE),
-    ('交易员', 'trader', FALSE),
-    ('观察者', 'viewer', FALSE)
+-- 4.3 role seeds（description 对齐 mock，system-page-change design D6）
+INSERT INTO role (name, code, description, is_admin) VALUES
+    ('管理员', 'admin',  '拥有所有权限', TRUE),
+    ('交易员', 'trader', '可访问业务页面，无系统管理权限', FALSE),
+    ('观察者', 'viewer', '仅可查看K线和自选', FALSE)
 ON CONFLICT (code) DO NOTHING;
--- 4.4 role_permission: admin gets all
+
+-- 存量行补 description（幂等：只填空、不覆盖已有描述）
+UPDATE role SET description = '拥有所有权限'                   WHERE code = 'admin'  AND description = '';
+UPDATE role SET description = '可访问业务页面，无系统管理权限'   WHERE code = 'trader' AND description = '';
+UPDATE role SET description = '仅可查看K线和自选'               WHERE code = 'viewer' AND description = '';
+
+-- 4.4 role_permission: admin gets all（CROSS JOIN 重跑自然补齐新增权限）
 INSERT INTO role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM role r CROSS JOIN permission p
 WHERE r.code = 'admin'
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 
--- trader: all menu permissions
+-- trader: 业务 menu 全部 7 项（含 menu:kline，不含 menu:system）
 INSERT INTO role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM role r CROSS JOIN permission p
-WHERE r.code = 'trader' AND p.type = 'menu'
+WHERE r.code = 'trader' AND p.type = 'menu' AND p.code <> 'menu:system'
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 
--- viewer: watchlist + bsp only
+-- viewer: menu:kline + menu:watchlist
 INSERT INTO role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM role r CROSS JOIN permission p
-WHERE r.code = 'viewer' AND p.code IN ('menu:watchlist', 'menu:bsp')
+WHERE r.code = 'viewer' AND p.code IN ('menu:kline', 'menu:watchlist')
 ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+-- 存量校正（幂等）：清除旧种子残留授权（system-page-change design D6「存量校正」）。
+-- 旧 trader 种子按 p.type='menu' 全量授予（含 menu:system），旧 viewer 种子曾授予 menu:bsp，
+-- 均与目标授权集不符。注意：本 DELETE 在每次重跑时清理这两处，目标集之外的同类授权勿持久依赖。
+DELETE FROM role_permission rp
+USING role r, permission p
+WHERE rp.role_id = r.id AND rp.permission_id = p.id
+  AND r.code = 'trader' AND p.code = 'menu:system';
+
+DELETE FROM role_permission rp
+USING role r, permission p
+WHERE rp.role_id = r.id AND rp.permission_id = p.id
+  AND r.code = 'viewer' AND p.code = 'menu:bsp';
 
 -- 4.5 app_user seeds (bcrypt hashes)
 INSERT INTO app_user (username, password_hash, display_name, role_id, enabled)
@@ -490,3 +538,34 @@ INSERT INTO app_user (username, password_hash, display_name, role_id, enabled)
 SELECT 'viewer', '$2b$12$TDnvTtBch4pMkyNnghMg2uTi7GGz6CQ6NXqRg1R.LPEMPjMig9J.O', '观察者',
        (SELECT id FROM role WHERE code = 'viewer'), TRUE
 WHERE NOT EXISTS (SELECT 1 FROM app_user WHERE username = 'viewer');
+-- ============================================================================
+-- Part 5: kline-page-change QA / LLM (design D4 / D8.1)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS qa_record (
+    id          SERIAL PRIMARY KEY,
+    user_id     INTEGER NOT NULL REFERENCES chan_user(id),
+    question    TEXT NOT NULL,
+    answer      TEXT NOT NULL,
+    starred     BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_qa_record_user_created ON qa_record (user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS user_setting (
+    user_id     INTEGER NOT NULL REFERENCES chan_user(id),
+    key         TEXT NOT NULL,
+    value       TEXT NOT NULL,
+    PRIMARY KEY (user_id, key)
+);
+
+CREATE TABLE IF NOT EXISTS llm_provider (
+    id          SERIAL PRIMARY KEY,
+    name        TEXT NOT NULL,
+    base_url    TEXT NOT NULL,
+    api_key     TEXT NOT NULL,
+    model       TEXT NOT NULL,
+    active      BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

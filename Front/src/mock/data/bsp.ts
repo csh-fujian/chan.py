@@ -2,7 +2,8 @@ import type { BspRecord, BspAggregate } from '@/api/types'
 import { stocks } from './stocks'
 
 const bspTypes = ['1B', '2B', '3B', '1S', '2S', 'L2B', 'L2S', 'PZ-B', 'PZ-S']
-const klTypes = ['1m', '5m', '15m', '30m', '60m', 'D', 'W']
+// 周期词表（design D1）：与 BspView.klOptions 同集合 — 30m/60m/D/W/M，无 1/5/15 分钟
+const klTypes = ['30m', '60m', 'D', 'W', 'M']
 
 function rand(seed: number) {
   return ((seed * 9301 + 49297) % 233280) / 233280

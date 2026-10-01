@@ -83,6 +83,11 @@
         </div>
       </el-popover>
 
+      <!-- 均线配置 — kline-chart-change D2 -->
+      <button class="btn btn--ghost btn--sm topbar-action" @click="maDialogVisible = true">
+        <el-icon><TrendCharts /></el-icon> 均线
+      </button>
+
       <span class="topbar__spacer" />
 
       <!-- 快捷入口：加入自选 / AI 问答 -->
@@ -119,9 +124,11 @@
           <button class="tab" :class="{ 'is-active': activeTab === 'qa' }" @click="activeTab = 'qa'">问答</button>
         </div>
         <div class="kline-side__body">
-          <StockPanel v-if="activeTab === 'stock'" :code="code" />
-          <StockMetaPanel v-else-if="activeTab === 'meta'" :code="code" />
-          <QaPanel v-else />
+          <!-- Tab 内容缓存（design D7 / 1.3）：组件 :is + KeepAlive，三个 Tab 各一缓存槽，
+               首次切换才挂载、其后本地状态跨 Tab 保留；缓存实例经 :code/:period prop 更新换股刷新 -->
+          <KeepAlive>
+            <component :is="activeTabComponent" v-bind="activeTabProps" />
+          </KeepAlive>
         </div>
       </aside>
 
@@ -130,6 +137,9 @@
         <KLineChart ref="chartComp" :result="result" :code="code" :period="period" />
       </section>
     </div>
+
+    <!-- 均线配置弹窗 — kline-chart-change 1.4 -->
+    <MaConfigDialog v-model="maDialogVisible" />
   </div>
 </template>
 
@@ -137,17 +147,19 @@
 /**
  * KLineView.vue — K 线分析页
  * design.md D1：可折叠左侧面板（标的 / 股票信息 / 问答）+ 主图
+ * design.md D7 / 1.3：面板 Tab 内容缓存（KeepAlive 三槽，换股经 prop 刷新）
  * design.md D6：切换代码/周期触发命令式重载
  * kline-metadata-change D5/D6：搜索框 el-autocomplete 远程下拉 + Enter 语义 + 300ms 本地防抖
  */
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { Search, Star, ChatDotRound, Fold, Expand, ArrowDown } from '@element-plus/icons-vue'
+import { Search, Star, ChatDotRound, Fold, Expand, ArrowDown, TrendCharts } from '@element-plus/icons-vue'
 import { ElMessage, type AutocompleteInstance } from 'element-plus'
 import KLineChart from '@/components/charts/KLineChart.vue'
 import StockPanel from '@/components/kline/StockPanel.vue'
 import StockMetaPanel from '@/components/kline/StockMetaPanel.vue'
 import QaPanel from '@/components/kline/QaPanel.vue'
+import MaConfigDialog from '@/components/kline/MaConfigDialog.vue'
 import { getKLine } from '@/api/modules/kline'
 import { searchStocks } from '@/api/modules/stock'
 import type { ChanResult } from '@/api/types'
@@ -164,6 +176,8 @@ const subIndicators = ref<string[]>(['VOL', 'MACD'])
 
 // 副图指标多选（自定义缩略展示）
 const indicatorMenuVisible = ref(false)
+// 均线配置弹窗（kline-chart-change 1.4）
+const maDialogVisible = ref(false)
 const indicatorOptions = [
   { label: '成交量 VOL', value: 'VOL' },
   { label: 'MACD', value: 'MACD' },
@@ -186,6 +200,22 @@ const indicatorTooltip = computed(() =>
 // 左侧面板状态（默认仍为「标的」）
 const panelCollapsed = ref(false)
 const activeTab = ref<'stock' | 'meta' | 'qa'>('stock')
+
+// Tab → 组件映射（design D7 / 1.3）：KeepAlive 按组件类型各占一缓存槽
+const tabComponentMap = {
+  stock: StockPanel,
+  meta: StockMetaPanel,
+  qa: QaPanel,
+} as const
+
+const activeTabComponent = computed(() => tabComponentMap[activeTab.value])
+
+/** 各 Tab 所需 props：问答 Tab 携带 code/period 用于提问上下文（6.1 / design D8.4） */
+const activeTabProps = computed(() =>
+  activeTab.value === 'qa'
+    ? { code: code.value, period: period.value }
+    : { code: code.value },
+)
 
 const chartComp = ref<InstanceType<typeof KLineChart> | null>(null)
 
@@ -366,6 +396,25 @@ onMounted(() => {
   }
   load()
 })
+
+// 页面缓存（design.md D10）：本页被 KeepAlive 缓存后，onMounted 不再执行，
+// 带参跳入（自选 → kline?code=）需经此 watch 按新代码加载；
+// query 缺省（普通切回）或与当前一致时保持缓存原样，不触发重载
+watch(
+  () => route.query.code,
+  (q) => {
+    if (typeof q !== 'string') return
+    const c = q.trim()
+    if (!c) return
+    // 输入框始终同步为 URL 中的代码（即使与当前已加载代码一致）
+    if (c !== codeInput.value) codeInput.value = c
+    // 仅代码变化才触发重载；与当前一致时保持缓存数据原样
+    if (c !== code.value) {
+      code.value = c
+      load()
+    }
+  },
+)
 
 // 周期切换触发重载
 watch(period, () => load())
@@ -587,7 +636,7 @@ onBeforeUnmount(() => {
 .legend-row .sw--box2 {
   border-color: var(--accent-base);
   border-style: solid;
-  background: rgba(59, 130, 246, 0.12);
+  background: var(--accent-dim);
 }
 .legend-row .dot {
   width: 8px;

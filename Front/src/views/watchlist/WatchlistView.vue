@@ -10,6 +10,7 @@
         </button>
       </div>
       <div class="tree">
+        <!-- 「全部」虚拟节点：渲染在 draggable 容器外，固定首行，不参与拖拽/删除 -->
         <div
           class="tree__item"
           :class="{ 'is-active': activeKey === 'all' }"
@@ -19,23 +20,42 @@
           <span>全部</span>
           <span class="count">{{ totalCount }}</span>
         </div>
-        <div
-          v-for="f in folders"
-          :key="f.id"
-          class="tree__item"
-          :class="{ 'is-active': activeKey === String(f.id) }"
-          @click="selectFolder(String(f.id))"
+        <!-- 用户文件夹：长按 200ms 进入拖拽排序，短按仍为点击选中 -->
+        <draggable
+          :list="folders"
+          item-key="id"
+          tag="div"
+          class="tree__drag"
+          :delay="200"
+          :delay-on-touch-only="false"
+          :touch-start-threshold="4"
+          filter=".folder-edit, .folder-del"
+          :prevent-on-filter="false"
+          @start="onFolderDragStart"
+          @end="onFolderDragEnd"
         >
-          <el-icon class="tree__icon"><Folder /></el-icon>
-          <span class="folder-name" :title="f.name">{{ f.name }}</span>
-          <span class="count">{{ f.codes.length }}</span>
-          <el-icon
-            v-if="f.id !== 1"
-            class="folder-del"
-            title="删除文件夹"
-            @click.stop="onDeleteFolder(f)"
-          ><Close /></el-icon>
-        </div>
+          <template #item="{ element: f }">
+            <div
+              class="tree__item"
+              :class="{ 'is-active': activeKey === String(f.id) }"
+              @click="selectFolder(String(f.id))"
+            >
+              <el-icon class="tree__icon"><Folder /></el-icon>
+              <span class="folder-name" :title="f.name">{{ f.name }}</span>
+              <span class="count">{{ f.codes.length }}</span>
+              <el-icon
+                class="folder-edit"
+                title="重命名文件夹"
+                @click.stop="openRenameFolder(f)"
+              ><EditPen /></el-icon>
+              <el-icon
+                class="folder-del"
+                title="删除文件夹"
+                @click.stop="onDeleteFolder(f)"
+              ><Close /></el-icon>
+            </div>
+          </template>
+        </draggable>
       </div>
     </aside>
 
@@ -48,9 +68,11 @@
           <input
             v-model="keyword"
             placeholder="搜索名称 / 编码"
-            @input="onSearchInput"
+            @keyup.enter="onSearch"
           />
         </div>
+        <button class="btn btn--default" @click="onSearch">搜索</button>
+        <button class="btn btn--default" @click="onReset">重置</button>
         <span class="spacer"></span>
         <button class="btn btn--primary" @click="addDialogVisible = true">
           <span class="icon-plus"></span> 添加股票
@@ -62,20 +84,29 @@
 
       <!-- 股票表格 -->
       <div class="panel reveal reveal--3" v-loading="loading">
-        <div class="tbl-wrap">
+        <div class="tbl-wrap" ref="tblWrapRef">
           <el-table
             :data="pagedStocks"
             empty-text="该文件夹暂无股票"
             @selection-change="onSelectionChange"
             @row-dblclick="onRowDblClick"
+            @sort-change="onSortChange"
             row-key="code"
           >
             <el-table-column type="selection" width="44" reserve-selection />
             <el-table-column label="名称 / 编码" width="200">
               <template #default="{ row }">
                 <div class="cell-stock">
-                  <span class="nm">{{ row.name }}</span>
-                  <span class="cd mono">{{ row.code }}</span>
+                  <span
+                    class="row-drag-handle"
+                    :class="{ 'is-disabled': rowDragDisabled }"
+                    :data-code="row.code"
+                    :title="rowDragDisabled ? '列排序或「全部」视图下不支持拖拽' : '拖拽调整顺序'"
+                  ><el-icon><Rank /></el-icon></span>
+                  <div class="cell-stock-text">
+                    <span class="nm">{{ row.name }}</span>
+                    <span class="cd mono">{{ row.code }}</span>
+                  </div>
                 </div>
               </template>
             </el-table-column>
@@ -120,12 +151,12 @@
           </el-table>
         </div>
 
-        <!-- 分页 -->
-        <div class="pager" v-if="filteredStocks.length > 0">
+        <!-- 分页（数据源为服务端查询结果） -->
+        <div class="pager" v-if="folderStocks.length > 0">
           <el-pagination
             v-model:current-page="page"
             v-model:page-size="pageSize"
-            :total="filteredStocks.length"
+            :total="folderStocks.length"
             :page-sizes="[20]"
             layout="total, prev, pager, next, jumper"
             background
@@ -134,16 +165,21 @@
       </div>
     </div>
 
-    <!-- 新建文件夹弹窗 -->
-    <el-dialog v-model="createDialogVisible" title="新建文件夹" width="420px" append-to-body>
+    <!-- 文件夹弹窗：新建 / 重命名 复用同一对话框（D6） -->
+    <el-dialog
+      v-model="folderDialogVisible"
+      :title="folderDialogMode === 'create' ? '新建文件夹' : '重命名文件夹'"
+      width="420px"
+      append-to-body
+    >
       <el-form @submit.prevent>
         <el-form-item label="文件夹名">
-          <el-input v-model="newFolderName" placeholder="请输入文件夹名" autofocus />
+          <el-input v-model="folderName" placeholder="请输入文件夹名" autofocus />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="createDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="creating" @click="onCreateFolder">确认</el-button>
+        <el-button @click="folderDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="folderSaving" @click="onSubmitFolder">确认</el-button>
       </template>
     </el-dialog>
 
@@ -186,11 +222,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onActivated, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Folder, Search, Close } from '@element-plus/icons-vue'
-import { useDebounceFn } from '@vueuse/core'
+import { Folder, Search, Close, EditPen, Rank } from '@element-plus/icons-vue'
+import draggable from 'vuedraggable'
+import Sortable, { type SortableEvent } from 'sortablejs'
 import ChangeBadge from '@/components/ui/ChangeBadge.vue'
 import IndustryBadges from '@/components/ui/IndustryBadges.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
@@ -198,7 +235,10 @@ import {
   getFolders,
   createFolder,
   deleteFolder,
+  renameFolder,
   getFolderStocks,
+  reorderFolders,
+  reorderFolderStocks,
   addStock,
   removeStock,
   moveStock,
@@ -240,61 +280,75 @@ async function loadFolders() {
   }
 }
 
-function selectFolder(key: string) {
+async function selectFolder(key: string) {
   activeKey.value = key
   page.value = 1
   clearSelection()
+  // 切换即刷新：立即按所选文件夹重新请求后端（spec「文件夹切换即时刷新」）
+  await loadStocks()
 }
 
-// ---- 股票列表（客户端分页，mock 返回全量） ----
+// ---- 股票列表（服务端 q 过滤 + 前端分页） ----
 const folderStocks = ref<Stock[]>([])
+/** 输入框实时内容（不触发查询） */
 const keyword = ref('')
+/** 已生效的搜索关键字（由「搜索」按钮/回车写入，loadStocks/reload 均携带） */
+const activeQuery = ref('')
 const page = ref(1)
 const pageSize = ref(20)
 
-const filteredStocks = computed(() => {
-  const kw = keyword.value.trim().toLowerCase()
-  if (!kw) return folderStocks.value
-  return folderStocks.value.filter(
-    (s) => s.code.toLowerCase().includes(kw) || s.name.toLowerCase().includes(kw),
-  )
-})
-
 const pagedStocks = computed(() => {
   const start = (page.value - 1) * pageSize.value
-  return filteredStocks.value.slice(start, start + pageSize.value)
+  return folderStocks.value.slice(start, start + pageSize.value)
 })
 
 async function loadStocks() {
+  const q = activeQuery.value
   loading.value = true
   try {
     if (activeKey.value === 'all') {
-      // 全部 = 跨文件夹去重
+      // 全部 = 按同一关键字并发查询各文件夹后跨文件夹去重聚合
+      const results = await Promise.all(
+        folders.value.map((f) => getFolderStocks(f.id, q || undefined)),
+      )
       const set = new Map<string, Stock>()
-      for (const f of folders.value) {
-        const list = await getFolderStocks(f.id)
+      results.forEach((list) => {
         list.forEach((s) => {
           if (!set.has(s.code)) set.set(s.code, s)
         })
-      }
+      })
       folderStocks.value = Array.from(set.values())
     } else {
       const id = Number(activeKey.value)
-      folderStocks.value = await getFolderStocks(id)
+      folderStocks.value = await getFolderStocks(id, q || undefined)
     }
     page.value = 1
     clearSelection()
-  } catch {
+  } catch (e) {
+    // 失败已由拦截器提示；列表置空避免展示陈旧数据
+    console.warn('[WatchlistView.loadStocks] 加载股票列表失败', { activeKey: activeKey.value, q, error: e })
     folderStocks.value = []
   } finally {
     loading.value = false
+    // 首屏数据到位后 tbody 才可能出现/重建，确保 sortable 挂接
+    void nextTick().then(() => ensureStockSortable())
   }
 }
 
-// 搜索防抖 300ms
-const onSearchInput = useDebounceFn(() => {
+/** 显式触发服务端查询（按钮 + 回车）；清空关键字即恢复全量 */
+function onSearch() {
+  activeQuery.value = keyword.value.trim()
   page.value = 1
-}, 300)
+  void loadStocks()
+}
+
+/** 重置：清空输入框与已生效关键字，恢复当前视图全量列表（spec「服务端搜索-重置按钮」） */
+function onReset() {
+  keyword.value = ''
+  activeQuery.value = ''
+  page.value = 1
+  void loadStocks()
+}
 
 // ---- 多选 ----
 const selected = ref<Stock[]>([])
@@ -365,32 +419,60 @@ async function onMove(row: Stock, targetId: string) {
   }
 }
 
-// ---- 新建文件夹 ----
-const createDialogVisible = ref(false)
-const newFolderName = ref('')
-const creating = ref(false)
+// ---- 文件夹弹窗：新建 / 重命名（D6 模式化单 dialog） ----
+const folderDialogVisible = ref(false)
+const folderDialogMode = ref<'create' | 'rename'>('create')
+const editingFolderId = ref<number | null>(null)
+const folderName = ref('')
+const folderSaving = ref(false)
 
 function openCreateFolder() {
-  newFolderName.value = ''
-  createDialogVisible.value = true
+  folderDialogMode.value = 'create'
+  editingFolderId.value = null
+  folderName.value = ''
+  folderDialogVisible.value = true
 }
 
-async function onCreateFolder() {
-  const name = newFolderName.value.trim()
+function openRenameFolder(f: WatchFolder) {
+  folderDialogMode.value = 'rename'
+  editingFolderId.value = f.id
+  folderName.value = f.name
+  folderDialogVisible.value = true
+}
+
+async function onSubmitFolder() {
+  const name = folderName.value.trim()
   if (!name) {
+    // 空名拦截：不发请求
     ElMessage.warning('请输入文件夹名')
     return
   }
-  creating.value = true
+  folderSaving.value = true
   try {
-    await createFolder(name)
-    ElMessage.success('文件夹已创建')
-    createDialogVisible.value = false
+    if (folderDialogMode.value === 'rename') {
+      const id = editingFolderId.value
+      if (id == null) {
+        console.warn('[WatchlistView.onSubmitFolder] 重命名缺少 editingFolderId，取消提交', { name })
+        return
+      }
+      await renameFolder(id, name)
+      ElMessage.success('文件夹已重命名')
+    } else {
+      await createFolder(name)
+      ElMessage.success('文件夹已创建')
+    }
+    folderDialogVisible.value = false
     await loadFolders()
-  } catch {
-    // 失败已处理
+  } catch (e) {
+    // 失败已由拦截器提示
+    console.warn('[WatchlistView.onSubmitFolder] 保存文件夹失败', {
+      mode: folderDialogMode.value,
+      editingFolderId: editingFolderId.value,
+      name,
+      error: e,
+    })
   } finally {
-    creating.value = false
+    folderSaving.value = false
   }
 }
 
@@ -410,6 +492,127 @@ async function onDeleteFolder(f: WatchFolder) {
   } catch {
     // 取消
   }
+}
+
+// ---- 拖拽排序：文件夹树（vuedraggable / SortableJS，长按 200ms） ----
+/** 拖拽前快照：失败回滚用 */
+let folderSnapshot: WatchFolder[] = []
+
+function onFolderDragStart() {
+  folderSnapshot = folders.value.map((f) => ({ ...f, codes: [...f.codes] }))
+}
+
+async function onFolderDragEnd() {
+  // vuedraggable 已乐观重排 folders，这里负责持久化；失败回滚并提示
+  const ids = folders.value.map((f) => f.id)
+  try {
+    await reorderFolders(ids)
+  } catch (e) {
+    folders.value = folderSnapshot
+    console.warn('[WatchlistView.onFolderDragEnd] 文件夹顺序保存失败，已回滚', { ids, error: e })
+    ElMessage.error('文件夹顺序保存失败，已恢复原顺序')
+  }
+}
+
+// ---- 拖拽排序：股票表格行（sortablejs 挂 tbody，行首把手触发） ----
+const tblWrapRef = ref<HTMLElement | null>(null)
+const columnSortActive = ref(false)
+/** 行拖拽可用性：「全部」视图无法确定归属文件夹；列排序生效时拖拽与显示序冲突，均禁用 */
+const rowDragDisabled = computed(() => !currentFolderId.value || columnSortActive.value)
+let stockSortable: Sortable | null = null
+
+function onSortChange({ order }: { order: string | null }) {
+  columnSortActive.value = order !== null
+}
+
+function ensureStockSortable() {
+  const el = tblWrapRef.value?.querySelector('.el-table__body-wrapper tbody') as HTMLElement | null
+  if (!el) return
+  if (stockSortable && stockSortable.el === el && el.isConnected) return
+  stockSortable?.destroy()
+  stockSortable = Sortable.create(el, {
+    handle: '.row-drag-handle',
+    animation: 150,
+    disabled: rowDragDisabled.value,
+    onEnd: (evt: SortableEvent) => {
+      void onStockDragEnd(evt)
+    },
+  })
+}
+
+watch(rowDragDisabled, (disabled) => {
+  stockSortable?.option('disabled', disabled)
+})
+
+async function onStockDragEnd(evt: SortableEvent) {
+  const folderId = currentFolderId.value
+  if (!folderId) {
+    // 理论上 sortable 已禁用，兜底防御
+    console.warn('[WatchlistView.onStockDragEnd] 「全部」视图不支持行拖拽，忽略本次拖拽')
+    return
+  }
+  const handle = evt.item.querySelector('.row-drag-handle') as HTMLElement | null
+  const code = handle?.dataset.code
+  const prevStocks = folderStocks.value
+  const prevFolderCodes = folders.value.find((f) => f.id === folderId)?.codes ?? []
+  if (!code) {
+    console.warn('[WatchlistView.onStockDragEnd] 无法识别拖拽行编码，忽略本次拖拽', {
+      folderId,
+      newIndex: evt.newIndex,
+    })
+    return
+  }
+  // 全量序中的绝对下标：表格分页只展示切片，换算 offset
+  const offset = (page.value - 1) * pageSize.value
+  const arr = [...prevStocks]
+  const oldIdx = arr.findIndex((s) => s.code === code)
+  const newIdx = offset + (evt.newIndex ?? 0)
+  if (oldIdx < 0 || newIdx < 0 || newIdx >= arr.length) {
+    console.warn('[WatchlistView.onStockDragEnd] 拖拽下标越界，忽略本次拖拽', {
+      folderId,
+      code,
+      oldIdx,
+      newIdx,
+      length: arr.length,
+    })
+    return
+  }
+  // 乐观重排当前文件夹股票数组
+  arr.splice(newIdx, 0, arr.splice(oldIdx, 1)[0])
+  const newFullOrder = buildFullNewOrder(arr)
+  folderStocks.value = arr
+  // 同步左侧 codes 序（保持与拖拽结果一致）
+  const folder = folders.value.find((f) => f.id === folderId)
+  if (folder) folder.codes = newFullOrder
+  try {
+    await reorderFolderStocks(folderId, newFullOrder)
+  } catch (e) {
+    // 失败回滚本地序并提示
+    folderStocks.value = prevStocks
+    if (folder) folder.codes = prevFolderCodes
+    console.warn('[WatchlistView.onStockDragEnd] 股票顺序保存失败，已回滚', {
+      folderId,
+      code,
+      error: e,
+    })
+    ElMessage.error('股票顺序保存失败，已恢复原顺序')
+  }
+}
+
+/**
+ * 计算文件夹全量新序（reorder 接口为全量覆盖语义）：
+ * 无搜索时可见列表即全量；带搜索时把可见子集新序合并回文件夹全量码表（不可见项保持原槽位）
+ */
+function buildFullNewOrder(visibleOrdered: Stock[]): string[] {
+  const visibleCodes = visibleOrdered.map((s) => s.code)
+  if (!activeQuery.value) return visibleCodes
+  const folderId = currentFolderId.value
+  const base = folders.value.find((f) => f.id === folderId)?.codes ?? []
+  const listed = new Set(visibleCodes)
+  const queue = [...visibleCodes]
+  const merged = base.map((c) => (listed.has(c) ? (queue.shift() as string) : c))
+  queue.forEach((c) => merged.push(c))
+  return merged
 }
 
 // ---- 添加股票弹窗 ----
@@ -461,14 +664,34 @@ function formatPrice(v: number) {
   return v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
+/** 全量刷新：文件夹树 + 当前视图股票（loadStocks 自带 activeQuery，关键字随刷新重新生效） */
 async function reload() {
   await loadFolders()
   await loadStocks()
 }
 
+/** KeepAlive 首次激活与 onMounted 会同时触发，跳过首次避免双请求 */
+let isFirstActivate = true
+
 onMounted(async () => {
-  await loadFolders()
-  await loadStocks()
+  await nextTick()
+  ensureStockSortable()
+  await reload()
+})
+
+onActivated(async () => {
+  // KeepAlive 再次激活时全量刷新（D4：跨页变更在回到本页时可见）
+  ensureStockSortable()
+  if (isFirstActivate) {
+    isFirstActivate = false
+    return
+  }
+  await reload()
+})
+
+onBeforeUnmount(() => {
+  stockSortable?.destroy()
+  stockSortable = null
 })
 </script>
 
@@ -496,16 +719,29 @@ onMounted(async () => {
   white-space: nowrap;
   flex: 1;
 }
-.folder-del {
+.folder-del,
+.folder-edit {
   color: var(--text-disabled);
   width: 14px;
   height: 14px;
-  margin-left: 4px;
+  margin-left: 2px;
   border-radius: var(--r-sm);
+}
+.folder-edit:hover {
+  color: var(--accent-hover);
+  background: var(--accent-dim);
 }
 .folder-del:hover {
   color: var(--rise);
   background: var(--rise-dim);
+}
+/* 拖拽行时的视觉反馈 */
+:deep(.tree__drag .sortable-ghost) {
+  opacity: 0.45;
+  background: var(--accent-dim);
+}
+:deep(.tree__drag .sortable-chosen) {
+  background: var(--bg-surface-hover);
 }
 .main-panel {
   flex: 1;
@@ -516,8 +752,14 @@ onMounted(async () => {
 }
 .cell-stock {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  gap: 6px;
   line-height: 1.3;
+}
+.cell-stock-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 .cell-stock .nm {
   color: var(--text-primary);
@@ -526,6 +768,33 @@ onMounted(async () => {
 .cell-stock .cd {
   color: var(--text-disabled);
   font-size: 11px;
+}
+/* 行拖拽把手：行内双击跳转 / 按钮与拖拽隔离 */
+.row-drag-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--text-disabled);
+  cursor: grab;
+  border-radius: var(--r-sm);
+}
+.row-drag-handle:hover {
+  color: var(--accent-hover);
+  background: var(--accent-dim);
+}
+.row-drag-handle:active {
+  cursor: grabbing;
+}
+.row-drag-handle.is-disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.row-drag-handle.is-disabled:hover {
+  color: var(--text-disabled);
+  background: transparent;
 }
 .pager {
   display: flex;
