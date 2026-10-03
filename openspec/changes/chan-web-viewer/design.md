@@ -144,7 +144,7 @@ KLineChart 是命令式 Canvas 库。chart 实例放在**普通变量**（非 `r
 - **应用内页面切换不加过渡**：KeepAlive 换页直接完成，不套 `<transition>`。原因：滚动恢复要求「新页面 DOM 就位后再定位」，`out-in` 过渡会把入场推迟一个动画周期，`scrollBehavior`（`nextTick` 后执行）会落在空占位上导致定位被钳制；去掉页面级过渡后时序确定、零闪烁。登录↔应用的 App 级过渡保留（登录页为单屏，无恢复问题）。
 - **会话隔离**：登出 `push('/login')` 使 AppShell 卸载 → KeepAlive 缓存随之销毁；`to.name === 'login'` 时清空滚动位置记忆。重新登录后从干净状态开始。
 - **滚动位置**：`router.beforeEach` 顶部记录 `from.fullPath → window.scrollY`（守卫阶段旧页面 DOM 尚在）；`scrollBehavior` 依次取「本次会话记忆 → 浏览器 `savedPosition` → `top: 0`」。`vue-router` 的 `handleScroll` 在 `nextTick()` 后执行，晚于 KeepAlive 复活渲染，恢复时内容已就位。
-- **带参跳入兼容**：缓存键用 `route.name`（而非 `fullPath`，避免同一页面每个 query 变体各持一个含图表画布的缓存实例）。代价是 `watchlist → kline?code=`、`monitor → completed?code=` 这类跳转会命中已缓存实例、`onMounted` 不再执行 → 这两处补 `watch(() => route.query.code)`：code 非空且与上次已应用值不同才重载；query 缺省时保持缓存原样（正合需求语义）。
+- **带参跳入兼容**：缓存键用 `route.name`（而非 `fullPath`，避免同一页面每个 query 变体各持一个含图表画布的缓存实例）。代价是跨页带参跳转（如 `pageA → pageB?param=`）会命中已缓存实例、`onMounted` 不再执行 → 带参目标页补 `watch(() => route.query.*）`：参数非空且与上次已应用值不同才重载；query 缺省时保持缓存原样（正合需求语义）。
 - **图表尺寸自愈**：`useEcharts` 增加 `onActivated(resize)`——缓存期间组件脱离文档，`window resize` 监听读到的容器尺寸失真；复活后重设一次。KLineChart 侧不能仅靠 `ResizeObserver` 自愈（实测缺陷）：失活时容器被移入 `display:none` 缓存区，RO 观察到 0×0，若照常 `chart.resize()`，klinecharts 的 `_measurePaneHeight` 会在 0 高度下把副图 pane 的固定高度（130px）**永久改写为 0**，复活后只能钳回 `minHeight`（30px）、主图吞掉差值 → 主/副图排版错乱。故 RO 回调忽略 0 尺寸事件（隐藏期绝不测量），并加 `onActivated`：逐副图 `setPaneOptions({id, height:130})` 断言固定高度（任何隐藏期测量路径压扁后均可恢复）+ `chart.resize()` 按当前可见尺寸整体重排，VOL 配置按钮浮层同步重新定位。
 - **已知边界**：`append-to-body` 弹层（对话框/抽屉）Teleport 到 body，KeepAlive deactivate 不搬运 teleport 内容——但模态遮罩会挡住顶栏导航、非模态浮层在外部点击（即导航点击）时自动关闭，正常交互路径到不了「带着弹层切页」；若浏览器前进/后退 + 开启中抽屉出现残留，再单独处理。选股页运行中的进度定时器属任务语义，随组件保活继续运行，不算页面状态漂移。
 

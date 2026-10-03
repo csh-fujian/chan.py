@@ -2,7 +2,7 @@ import type { MonitorItem, CompletedItem, AttributionRecord } from '@/api/types'
 import { stocks } from './stocks'
 
 const bspTypes = ['1B', '2B', '3B', '1S', '2S', 'L2B']
-const klTypes = ['15m', '30m', '60m', 'D']
+const klTypes = ['30m', '60m', 'D', 'W', 'M']
 const attributions = [
   '本级别出现一买信号，次级别底背离确认，区间套共振明显，建议持有。',
   '二买点形成后价格突破中枢上沿，量能配合良好，趋势确立。',
@@ -34,6 +34,7 @@ const sz000001Monitoring: MonitorItem = {
   bsp_date: new Date('2026-08-18T09:45:00').getTime(),
   kl_type: 'D',
   change_pct: 1.23,
+  current_pnl_pct: +(((11.85 - 11.32) / 11.32) * 100).toFixed(2),
   max_profit: 4.68,
   max_drawdown: -1.12,
   status: 'monitoring',
@@ -51,6 +52,7 @@ const sz000001Completed: CompletedItem = {
   bsp_date: new Date('2026-07-25T14:30:00').getTime(),
   kl_type: 'D',
   change_pct: 0.86,
+  current_pnl_pct: 7.6,
   max_profit: 8.12,
   max_drawdown: -2.05,
   status: 'completed',
@@ -82,6 +84,8 @@ export const monitorItems: MonitorItem[] = [
       bsp_date: Date.now() - Math.floor(r * 20) * 86400000,
       kl_type: klTypes[i % klTypes.length],
       change_pct: +((r - 0.5) * 8).toFixed(2),
+      // 收益率（design D8）：与 max_profit 同口径（买卖点价 → 当前价累计涨跌）
+      current_pnl_pct: +(((stock.price - bspPrice) / bspPrice) * 100).toFixed(2),
       max_profit: +((stock.price - bspPrice) / bspPrice * 100).toFixed(2),
       max_drawdown: +(r * -5).toFixed(2),
       status: 'monitoring',
@@ -112,6 +116,7 @@ export const completedItems: CompletedItem[] = [
       bsp_date: Date.now() - Math.floor(r * 40 + 10) * 86400000,
       kl_type: klTypes[i % klTypes.length],
       change_pct: +((r - 0.5) * 6).toFixed(2),
+      current_pnl_pct: profit,
       max_profit: +(Math.abs(profit) + r * 3).toFixed(2),
       max_drawdown: +(r * -4).toFixed(2),
       status: 'completed',

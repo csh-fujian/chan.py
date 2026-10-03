@@ -239,7 +239,7 @@ def remove_stock(folder_id: int, code: str) -> bool:
 
 
 def get_folder_stocks(folder_id: int, q: str = "") -> list[dict]:
-    """获取分组内股票列表（含行业 top3 + DuckDB 最新收盘价），q 非空时按 code/name 子串过滤。"""
+    """获取分组内股票列表（含行业 top3 + DuckDB 最新收盘价），q 非空时按 code/name/name_py 子串过滤。"""
     _ensure_tables()
     conn = _get_pg_conn()
     if conn is None:
@@ -280,10 +280,10 @@ def move_stock(from_folder: int, to_folder: int, code: str) -> bool:
 
 
 def _get_folder_codes(folder_id: int, q: str = "") -> list[str]:
-    """内部：获取分组的 codes 列表（按 sort_order 排序；q 非空时按 code/name 子串过滤）。
+    """内部：获取分组的 codes 列表（按 sort_order 排序；q 非空时按 code/name/name_py 子串过滤）。
 
     q 过滤在 SQL 层做：LEFT JOIN stock（stock 表可能缺该 code，仅按 code 匹配的行不能丢），
-    条件为 code ILIKE 或 name ILIKE；q 为空时行为与旧版一致（全量）。
+    条件为 code ILIKE 或 name ILIKE 或 name_py ILIKE；q 为空时行为与旧版一致（全量）。
     """
     conn = _get_pg_conn()
     if conn is None:
@@ -296,10 +296,10 @@ def _get_folder_codes(folder_id: int, q: str = "") -> list[str]:
                     SELECT wi.code FROM watchlist_item wi
                     LEFT JOIN stock s ON s.code = wi.code
                     WHERE wi.folder_id = %s
-                      AND (wi.code ILIKE %s OR s.name ILIKE %s)
+                      AND (wi.code ILIKE %s OR s.name ILIKE %s OR s.name_py ILIKE %s)
                     ORDER BY wi.sort_order, wi.added_at, wi.code
                     """,
-                    (folder_id, f"%{q}%", f"%{q}%"),
+                    (folder_id, f"%{q}%", f"%{q}%", f"%{q}%"),
                 )
             else:
                 cur.execute(

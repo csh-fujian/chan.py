@@ -94,7 +94,7 @@ async def watchlist_remove_stock(folder_id: int, code: str):
 
 @router.get("/folders/{folder_id}/stocks")
 async def watchlist_folder_stocks(folder_id: int, q: str = Query("")):
-    """分组内股票列表（含行业 + DuckDB 最新收盘价）；q 按 code/name 子串过滤。"""
+    """分组内股票列表（含行业 + DuckDB 最新收盘价）；q 按 code/name/name_py 子串过滤。"""
     return get_folder_stocks(folder_id, q)
 
 

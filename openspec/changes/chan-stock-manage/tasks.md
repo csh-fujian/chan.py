@@ -31,20 +31,20 @@
 
 ## 7. 监控、卖点检测与 LLM 归因
 
-> 需求拆分（2026-10-01）：监控列表/盈利展示与 LLM 归因的需求已迁移至 `system-page-change`（`bsp-monitoring` 能力，归因接真为其任务 6.x）；本节保留卖点自动卖出（U4）与已完成的加入监控实现。
+> 需求拆分更新（2026-10-02）：`bsp-monitoring` 能力（含监控列表/盈利展示、LLM 归因、卖点自动卖出三需求）已整体迁移至 `monitor-page-change`；本变更不再持有该能力的需求与任务。以下为本变更保留的已实现监控基建（路由/加入监控端点等），监控功能的 spec 以 `monitor-page-change` 为准。
 
 - [x] 7.1 实现 `routers/monitor.py` 加入监控：记录周期、监控时间、买入价（买点 `klu.low`）；监控列表返回基本信息 + 盈利走势 + 总体盈利（百分比）；验证：加入监控后列表与盈利计算正确。
-- [ ] 7.2 卖点检测：续算时检查监控周期是否出现卖点（`is_buy=False`），任一卖点即自动卖出（卖出价 `klu.high`）→ 结算 `pnl_pct` → `status=completed`；验证：出现卖点的监控股票被自动结算并转完成页。**依赖 `bsp-page-change`：卖点检测挂在其补算入口（其 tasks 3.6/3.7）的续算回调上，需其先行落地。**
+- [ ] 7.2 卖点检测（需求已归 `monitor-page-change`，实现待其指引后再继续）：续算时检查监控周期是否出现卖点（`is_buy=False`），任一卖点即自动卖出（卖出价 `klu.high`）→ 结算 `pnl_pct` → `status=completed`。**依赖 `bsp-page-change`：卖点检测挂在其补算入口（其 tasks 3.6/3.7）的续算回调上，需其先行落地。**
 
 ## 8. 前端三 Tab + 监控完成页
 
 - [x] 8.1 建 `web/` 骨架 + 路由 `/watchlist`、`/bsp`、`/monitor`、`/monitor/completed` + Element Plus + ECharts；验证：`npm run dev` 后各路由可访问。
-- （8.2 自选页页面需求已随 Tab1 迁移至 `watchlist-page-change`，2026-10-01；8.3 历史买卖点页迁移至 `bsp-page-change` tasks 第 4 组；8.4 监控页+完成页迁移至 `system-page-change` tasks 第 9 组。）
+- （8.2 自选页页面需求已随 Tab1 迁移至 `watchlist-page-change`，2026-10-01；8.3 历史买卖点页迁移至 `bsp-page-change` tasks 第 4 组；8.4 监控页+完成页迁移至 `monitor-page-change`，2026-10-02。）
 
 ## 9. 初始化与端到端
 
 - [ ] 9.1 提供从 `Debug/ingest_config.all_stocks.json` 灌入初始股票池 + 行业填充的脚本；验证：股票池与 `stock_industry` 有数据。
-- [ ] 9.2 端到端冒烟：灌数 → 建买卖点索引 → 查买卖点 → 加自选 → 监控 → 卖点结算；验证：全链路无报错、数据在各表正确落地。（LLM 归因步骤随需求迁移至 `system-page-change` 任务 8 端到端覆盖。**依赖 `bsp-page-change`：「建买卖点索引」由其补算引擎产出（其 tasks 3.x），需其先行落地。**）
+- [ ] 9.2 端到端冒烟：灌数 → 建买卖点索引 → 查买卖点 → 加自选 → 监控 → 卖点结算；验证：全链路无报错、数据在各表正确落地。（LLM 归因步骤随需求迁移至 `monitor-page-change`，2026-10-02。**依赖 `bsp-page-change`：「建买卖点索引」由其补算引擎产出（其 tasks 3.x），需其先行落地。**）
 
 ## 10. 买卖点绩效统计
 

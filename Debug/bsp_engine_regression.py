@@ -183,13 +183,14 @@ def check_t3(codes, period) -> bool:
         conn = _conn()
         try:
             with conn.cursor() as cur:
-                # 篡改一行 + 删除一行
+                # 篡改一行 + 删除一行（限定 autype=QFQ：只破坏引擎词表内的行，
+                # 避免误伤其它 autype（如 HFQ）的遗留数据——引擎整套替换只重写 QFQ）
                 cur.execute(
-                    "UPDATE bsp_index SET price=99999 WHERE code=%s AND kl_type=%s AND time_key=%s",
+                    "UPDATE bsp_index SET price=99999 WHERE code=%s AND kl_type=%s AND autype='QFQ' AND time_key=%s",
                     (code, period, ref[0][4]),
                 )
                 cur.execute(
-                    "DELETE FROM bsp_index WHERE code=%s AND kl_type=%s AND time_key=%s",
+                    "DELETE FROM bsp_index WHERE code=%s AND kl_type=%s AND autype='QFQ' AND time_key=%s",
                     (code, period, ref[-1][4]),
                 )
             conn.commit()
@@ -313,20 +314,20 @@ def check_t7(codes, period) -> bool:
         d_total, d_rows = direct(where, params, limit=20)
         bsp_type = type_dir[0] if type_dir else ""
         is_buy = type_dir[1] if type_dir else None
-        r = query_bsp(kl_type=period, bsp_type=bsp_type, is_buy=is_buy, keyword=keyword or "", page=1, page_size=20)
+        r = query_bsp(kl_type=period, bsp_types=[bsp_type] if bsp_type else None, is_buy=is_buy, keyword=keyword or "", page=1, page_size=20)
         match = r["total"] == d_total and [tuple(x[k] for k in ("code", "bsp_type", "is_buy", "price", "time_key")) for x in r["items"]] == d_rows
         if name == "no match":
             match = r["total"] == 0 and r["items"] == [] and d_total == 0
         print(f"[{'PASS' if match else 'FAIL'}] T7.1 query pushdown [{name}]: total={r['total']} (direct={d_total})")
         ok = ok and match
 
-    # date 条件（2.6）：命中指定日期
+    # date_from/date_to 范围（2.6）：双端齐备 = 闭区间 [date_from, date_to]
     ref = _rows(code, period)
     day = str(ref[-1][0])
-    r = query_bsp(kl_type=period, date=day, page=1, page_size=50)
+    r = query_bsp(kl_type=period, date_from=day, date_to=day, page=1, page_size=50)
     d_total, _ = direct("WHERE b.kl_type=%s AND b.bsp_date=%s", [period, day])
     match = r["total"] == d_total and all(x["bsp_date"].startswith(day) for x in r["items"])
-    print(f"[{'PASS' if match else 'FAIL'}] T7.2 date filter: date={day} total={r['total']} (direct={d_total})")
+    print(f"[{'PASS' if match else 'FAIL'}] T7.2 date range filter: date={day} total={r['total']} (direct={d_total})")
     ok = ok and match
 
     # 分页：两页并集 = 直查前 2×page_size，total 恒为过滤后总数
@@ -342,7 +343,7 @@ def check_t7(codes, period) -> bool:
     # router 契约：PageRes<BspRecord>（asyncio 直接调用路由函数）
     from WebAPI.routers.bsp import bsp_list
 
-    res = asyncio.run(bsp_list(page=1, page_size=5, keyword=code[3:6], bsp_type="", direction="", kl_type=period, date=""))
+    res = asyncio.run(bsp_list(page=1, page_size=5, keyword=code[3:6], bsp_type="", direction="", kl_type=period, date_from="", date_to=""))
     shape_ok = set(res.keys()) == {"list", "total", "page", "page_size"}
     fields = {"id", "code", "name", "industries", "bsp_type", "direction", "bsp_price", "current_price", "bsp_date", "kl_type", "change_pct"}
     rec_ok = all(set(rec.keys()) == fields for rec in res["list"])
@@ -373,7 +374,7 @@ def check_t7(codes, period) -> bool:
 
     _KLS.KLineStore.execute = boom
     try:
-        res = asyncio.run(bsp_list(page=1, page_size=3, keyword=code[3:6], bsp_type="", direction="", kl_type=period, date=""))
+        res = asyncio.run(bsp_list(page=1, page_size=3, keyword=code[3:6], bsp_type="", direction="", kl_type=period, date_from="", date_to=""))
         degrade_ok = len(res["list"]) > 0 and all(
             rec["current_price"] == 0.0 and rec["change_pct"] == 0.0 for rec in res["list"]
         )

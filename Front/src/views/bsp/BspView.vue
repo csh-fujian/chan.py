@@ -56,38 +56,58 @@
     <!-- 右侧主面板 -->
     <div class="main-panel">
       <div class="bsp-page">
-        <!-- 查询筛选区（design D8：周期 | 日期 | 买卖点类型 | 方向 | 关键词） -->
+        <!-- 查询筛选区：股票搜索（模糊下拉选 code）| 周期 | 日期 | 买卖点类型 | 方向 -->
         <div class="toolbar reveal reveal--1">
-          <el-select v-model="query.kl_type" placeholder="周期" style="width: 130px" @change="onQueryChange">
+          <!-- 股票搜索（最前）：输入模糊匹配下拉，选中后锁定精确 code，点「查询」才触发 -->
+          <el-autocomplete
+            ref="acRef"
+            v-model="keywordInput"
+            :fetch-suggestions="queryStocks"
+            :trigger-on-focus="false"
+            :debounce="300"
+            placeholder="代码 / 名称 / 拼音"
+            :prefix-icon="Search"
+            clearable
+            style="width: 180px"
+            @select="onSelectSuggestion"
+            @clear="onKeywordClear"
+          >
+            <template #default="{ item }">
+              <div class="sug-item" :class="{ 'sug-item--empty': item.placeholder }">
+                <template v-if="item.placeholder">
+                  <span class="sug-item__empty">{{ item.name }}</span>
+                </template>
+                <template v-else>
+                  <span class="sug-item__code mono">{{ item.code }}</span>
+                  <span class="sug-item__name">{{ item.name }}</span>
+                </template>
+              </div>
+            </template>
+          </el-autocomplete>
+          <el-select v-model="query.kl_type" placeholder="周期" style="width: 110px" @change="onQueryChange">
             <el-option v-for="kl in klOptions" :key="kl.value" :label="kl.label" :value="kl.value" />
           </el-select>
-          <!-- 日期条件（U6）：单日选择，可清空；命中买卖点日期等于所选日期 -->
+          <!-- 日期范围条件（D7/D9）：默认最近三个交易日；双端齐备按闭区间过滤，清空后恢复全期 -->
           <el-date-picker
-            v-model="query.date"
-            type="date"
+            v-model="dateRange"
+            type="daterange"
             value-format="YYYY-MM-DD"
-            placeholder="买卖点日期"
+            start-placeholder="开始日期"
+            end-placeholder="结束日期"
+            unlink-panels
             clearable
-            style="width: 150px"
+            style="width: 220px"
             @change="onQueryChange"
           />
-          <el-select v-model="query.bsp_type" placeholder="买卖点类型" style="width: 150px" @change="onQueryChange">
+          <el-select v-model="query.bsp_type" placeholder="买卖点类型" style="width: 130px" @change="onQueryChange">
             <el-option label="全部类型" value="" />
             <el-option v-for="t in ALL_BSP_LABELS" :key="t" :label="t" :value="t" />
           </el-select>
-          <el-select v-model="query.direction" placeholder="方向" style="width: 120px" @change="onQueryChange">
+          <el-select v-model="query.direction" placeholder="方向" style="width: 100px" @change="onQueryChange">
             <el-option label="全部方向" value="" />
             <el-option label="买" value="buy" />
             <el-option label="卖" value="sell" />
           </el-select>
-          <el-input
-            v-model="query.keyword"
-            placeholder="名称 / 编码"
-            style="width: 180px"
-            clearable
-            @input="onSearchInput"
-            :prefix-icon="Search"
-          />
           <button class="btn btn--primary" @click="onQuery">查询</button>
           <button class="btn btn--default" @click="onReset">重置</button>
         </div>
@@ -115,6 +135,7 @@
                   :data="records"
                   empty-text="暂无买卖点记录"
                   @selection-change="onSelectionChange"
+                  @row-dblclick="onRowDblClick"
                   row-key="id"
                 >
                   <el-table-column type="selection" width="44" reserve-selection />
@@ -146,14 +167,7 @@
                   <el-table-column label="买卖点类型" width="110">
                     <template #default="{ row }">
                       <span class="badge" :class="row.direction === 'buy' ? 'badge--rise' : 'badge--fall'">
-                        {{ row.bsp_type }}
-                      </span>
-                    </template>
-                  </el-table-column>
-                  <el-table-column label="方向" width="80">
-                    <template #default="{ row }">
-                      <span class="badge" :class="row.direction === 'buy' ? 'badge--rise' : 'badge--fall'">
-                        {{ row.direction === 'buy' ? '买' : '卖' }}
+                        {{ bspLabel(row.bsp_type, row.direction === 'buy') }}
                       </span>
                     </template>
                   </el-table-column>
@@ -167,9 +181,9 @@
                       <span class="num">{{ formatPrice(row.current_price) }}</span>
                     </template>
                   </el-table-column>
-                  <el-table-column label="买卖点日期" width="120">
+                  <el-table-column label="买卖点时间" width="140">
                     <template #default="{ row }">
-                      <span class="num">{{ formatDate(row.bsp_date) }}</span>
+                      <span class="num">{{ formatBspTime(row) }}</span>
                     </template>
                   </el-table-column>
                   <el-table-column label="周期" width="90">
@@ -177,9 +191,10 @@
                       <span class="num">{{ klLabel(row.kl_type) }}</span>
                     </template>
                   </el-table-column>
-                  <el-table-column label="操作" width="100" align="right">
+                  <el-table-column label="操作" width="150" align="right">
                     <template #default="{ row }">
                       <button class="row-action" @click="openNesting(row)">区间套</button>
+                      <button class="row-action" @click="openMonitorDialog(row)">加入监控</button>
                     </template>
                   </el-table-column>
                   <template #empty>
@@ -258,21 +273,74 @@
         <el-button type="primary" :loading="addingWatch" @click="confirmBatchWatchlist">确认加入</el-button>
       </template>
     </el-dialog>
+
+    <!-- 行级加入监控弹窗（design D8 修订，任务 4.5）：
+         只读上下文（股票/周期/买卖点价格）+ 买点时间（默认 = 该行买卖点时间，
+         可编辑，「此刻」按钮取当前时间），提交 POST /api/monitor -->
+    <el-dialog v-model="monitorDialogVisible" title="加入监控" width="440px" append-to-body>
+      <div class="add-dialog-body" v-if="monitorRow">
+        <div class="monitor-ctx">
+          <div class="form-row">
+            <label>股票</label>
+            <span class="ctx-value">
+              {{ monitorRow.name }}
+              <span class="mono ctx-code">{{ monitorRow.code }}</span>
+            </span>
+          </div>
+          <div class="form-row">
+            <label>周期</label>
+            <span class="ctx-value">{{ klLabel(monitorRow.kl_type) }}</span>
+          </div>
+          <div class="form-row">
+            <label>买卖点价格</label>
+            <span class="ctx-value num" :class="{ 'price-stale': priceLoading }">
+              {{ formatPrice(monitorPrice) }}
+            </span>
+          </div>
+        </div>
+        <div class="form-row">
+          <label>买点时间</label>
+          <div class="monitor-time-row">
+            <el-date-picker
+              v-model="monitorStartTime"
+              type="datetime"
+              value-format="YYYY-MM-DD HH:mm:ss"
+              format="YYYY-MM-DD HH:mm:ss"
+              placeholder="选择买点时间"
+              clearable
+              style="flex: 1"
+              @change="onMonitorTimeChange"
+            />
+            <el-button @click="setMonitorTimeNow">此刻</el-button>
+          </div>
+        </div>
+        <p class="dialog-hint">
+          提交后将以所选买点时间对应的股票价格作为入场价，自买点时间起对该股票进行监控。
+        </p>
+      </div>
+      <template #footer>
+        <el-button @click="monitorDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="addingMonitor" @click="confirmAddMonitor">确认加入</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, onActivated } from 'vue'
+import type { AutocompleteInstance } from 'element-plus'
 import { ElMessage } from 'element-plus'
+import { useRouter } from 'vue-router'
 import { TrendCharts, Top, Bottom, Calendar, Search } from '@element-plus/icons-vue'
-import { useDebounceFn } from '@vueuse/core'
 import IndustryBadges from '@/components/ui/IndustryBadges.vue'
 import ChangeBadge from '@/components/ui/ChangeBadge.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import NestingDrawer from './NestingDrawer.vue'
-import { getBspList, getBspAggregate, type BspQuery } from '@/api/modules/bsp'
+import { getBspList, getBspAggregate, getPriceAt, type BspQuery } from '@/api/modules/bsp'
 import { getFolders, addStock, type WatchFolder } from '@/api/modules/watchlist'
-import { ALL_BSP_LABELS } from '@/utils/bsp'
+import { createMonitor } from '@/api/modules/monitor'
+import { searchStocks } from '@/api/modules/stock'
+import { ALL_BSP_LABELS, bspLabel } from '@/utils/bsp'
 import type { BspRecord, BspAggregate } from '@/api/types'
 
 // 周期词表（design D1）：30分 → 60分 → 日线 → 周线 → 月线，无 1/5/15 分钟
@@ -290,6 +358,21 @@ function klLabel(v: string) {
 }
 
 // ---- 查询 ----
+// 日期范围默认值 = 最近三个交易日（design D9）：前端跳周末近似（节假日不跳，范围过滤语义下可接受）
+// date_to = 今天，date_from = 自今天向前数第 3 个工作日（周内）
+function recentThreeWorkdays(): [string, string] {
+  const fmt = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  const to = new Date()
+  let n = 0
+  let cur = new Date(to)
+  // 向前找 2 个更早的工作日（含今天共 3 个工作日）
+  while (n < 2) {
+    cur = new Date(cur.getFullYear(), cur.getMonth(), cur.getDate() - 1)
+    if (cur.getDay() !== 0 && cur.getDay() !== 6) n++
+  }
+  return [fmt(cur), fmt(to)]
+}
+
 const query = reactive<BspQuery>({
   page: 1,
   page_size: 20,
@@ -297,8 +380,19 @@ const query = reactive<BspQuery>({
   bsp_type: '',
   direction: '',
   kl_type: '',
-  date: '',
+  date_from: '',
+  date_to: '',
 })
+
+// 日期范围控件本地状态（daterange 绑定 [start, end]，空为 null）
+const dateRange = ref<[string, string] | null>(recentThreeWorkdays())
+
+// 发请求前把 dateRange 同步进 query（null/空时两端都置 ''，即不过滤）
+function syncDateRangeToQuery() {
+  query.date_from = dateRange.value?.[0] || ''
+  query.date_to = dateRange.value?.[1] || ''
+}
+syncDateRangeToQuery()
 
 const activeTab = ref<'list' | 'sector'>('list')
 const loading = ref(false)
@@ -310,18 +404,27 @@ const stats = reactive({ total: 0, buy: 0, sell: 0 })
 
 async function loadList() {
   loading.value = true
+  // 每次请求前同步日期范围（控件可能被用户改写/清空）
+  syncDateRangeToQuery()
   try {
     const res = await getBspList(query)
     records.value = res.list
     total.value = res.total
-    // 粗略统计（基于当前查询条件下的总数）
-    stats.total = res.total
-    // 买/卖数需额外查询，这里用当前页近似
-    stats.buy = res.list.filter((r) => r.direction === 'buy').length
-    stats.sell = res.list.filter((r) => r.direction === 'sell').length
+    // 统计（侧栏 count）：buy/sell = 同一条件下（不含方向）按方向拆分的总数
+    // total = buy + sell，确保三个统计值口径一致（不受当前 direction 筛选影响）
+    const [buyRes, sellRes] = await Promise.all([
+      getBspList({ ...query, page: 1, page_size: 1, direction: 'buy' }),
+      getBspList({ ...query, page: 1, page_size: 1, direction: 'sell' }),
+    ])
+    stats.buy = buyRes.total
+    stats.sell = sellRes.total
+    stats.total = buyRes.total + sellRes.total
   } catch {
     records.value = []
     total.value = 0
+    stats.total = 0
+    stats.buy = 0
+    stats.sell = 0
   } finally {
     loading.value = false
   }
@@ -341,11 +444,57 @@ async function loadAggregate() {
   }
 }
 
-// 搜索防抖 300ms
-const onSearchInput = useDebounceFn(() => {
-  query.page = 1
-  loadList()
-}, 300)
+// ---- 股票搜索（el-autocomplete：模糊下拉选 code，点「查询」才触发请求）----
+interface StockSuggestion {
+  value: string
+  code: string
+  name: string
+  /** 无匹配候选的空态提示项，不参与查询 */
+  placeholder?: boolean
+}
+const acRef = ref<AutocompleteInstance | null>(null)
+/** 输入框绑定值（自由文本）；选中候选后回填为精确 code */
+const keywordInput = ref('')
+/** 选中候选后的精确查询 code（'' = 未选中，查询退化为关键词模糊匹配） */
+const selectedCode = ref('')
+
+/** 远程模糊搜索候选（searchStocks 已含防抖语义，此处仅做空输入短路） */
+async function queryStocks(q: string, cb: (items: StockSuggestion[]) => void) {
+  const query = q.trim()
+  if (!query) {
+    cb([])
+    return
+  }
+  try {
+    const list = await searchStocks(query)
+    if (!list.length) {
+      cb([{ value: query, code: '', name: '无匹配候选', placeholder: true }])
+      return
+    }
+    cb(list.map((s) => ({ value: s.code, code: s.code, name: s.name })))
+  } catch {
+    cb([])
+  }
+}
+
+/** 点选候选：输入框回填精确 code，锁定 selectedCode（不触发查询） */
+function onSelectSuggestion(item: StockSuggestion) {
+  if (item.placeholder) return
+  selectedCode.value = item.code
+  keywordInput.value = item.code
+  acRef.value?.close()
+}
+
+/** 手动清空/修改输入后，解除已锁定的精确 code（退回模糊语义） */
+function onKeywordClear() {
+  selectedCode.value = ''
+}
+
+// 点「查询」时才把搜索框内容同步进 query：
+// 选中过候选 → 精确 code；否则用输入文本做关键词模糊匹配
+function syncKeywordToQuery() {
+  query.keyword = selectedCode.value || keywordInput.value.trim()
+}
 
 function onQueryChange() {
   query.page = 1
@@ -353,16 +502,21 @@ function onQueryChange() {
 }
 
 function onQuery() {
+  syncKeywordToQuery()
   query.page = 1
   loadList()
 }
 
 function onReset() {
+  keywordInput.value = ''
+  selectedCode.value = ''
   query.keyword = ''
   query.bsp_type = ''
   query.direction = ''
   query.kl_type = ''
-  query.date = ''
+  // 日期范围恢复默认：最近三个交易日（spec「默认日期范围为最近三个交易日」）
+  dateRange.value = recentThreeWorkdays()
+  syncDateRangeToQuery()
   query.page = 1
   loadList()
 }
@@ -374,6 +528,25 @@ function setDirection(d: 'buy' | 'sell' | '') {
 function setKlType(v: string) {
   query.kl_type = v
   onQueryChange()
+}
+
+// ---- 双击行跳转 K 线页（任务 4.3）----
+// bsp 周期词表（D1：D/W/M/30m/60m）→ K 线页词表（1d/1w/1M/30m/60m），
+// 30m/60m 两页同值；空周期（全部）不带 period，K 线页保持其默认日线
+const KL_TO_KLINE_PERIOD: Record<string, string> = {
+  D: '1d',
+  W: '1w',
+  M: '1M',
+  '30m': '30m',
+  '60m': '60m',
+}
+const router = useRouter()
+
+function onRowDblClick(row: BspRecord) {
+  const q: { code: string; period?: string } = { code: row.code }
+  const period = row.kl_type ? KL_TO_KLINE_PERIOD[row.kl_type] : undefined
+  if (period) q.period = period
+  router.push({ name: 'kline', query: q })
 }
 
 // ---- 多选 ----
@@ -436,6 +609,97 @@ function onBatchMonitor() {
   ElMessage.success(`已将 ${selectedCount.value} 条记录加入监控（演示）`)
 }
 
+// ---- 行级加入监控（design D8 修订 + D12 价格联动，任务 4.5/4.9）----
+// 弹窗：股票/周期只读 + 买点时间（默认 = 该行买卖点时间，可编辑，「此刻」置当前时间）
+// + 买卖点价格随买点时间联动（GET /bsp/price-at：所选时间点监控周期最近收盘价）；
+// 提交 POST /api/monitor（entry_price = 联动后价格）。
+// monitor_start_time 传 'YYYY-MM-DD HH:mm:ss'：monitor 表存 VARCHAR，
+// 消费方（DuckDB time_key 字符串比较 / LLM prompt 文本）均兼容该格式。
+const monitorDialogVisible = ref(false)
+const monitorRow = ref<BspRecord | null>(null)
+const monitorStartTime = ref<string>('')
+const addingMonitor = ref(false)
+// D12 价格联动：弹窗内显示与提交用的价格（初始 = 行买卖点价格，随时间变化更新）
+const monitorPrice = ref<number>(0)
+const priceLoading = ref(false)
+let priceSeq = 0
+let priceTimer: ReturnType<typeof setTimeout> | null = null
+
+/** ms 时间戳 → 'YYYY-MM-DD HH:mm:ss'（含秒，与提交格式一致） */
+function toDateTimeStr(ts: number) {
+  const d = new Date(ts)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
+/** 按买点时间取价（design D12）：失败/404 保留原价格并提示 */
+async function fetchMonitorPrice(time: string) {
+  const row = monitorRow.value
+  if (!row || !time) return
+  const seq = ++priceSeq
+  priceLoading.value = true
+  try {
+    const r = await getPriceAt(row.code, row.kl_type, time)
+    if (seq !== priceSeq) return // 过期响应丢弃
+    monitorPrice.value = r.price
+  } catch {
+    if (seq !== priceSeq) return
+    ElMessage.warning('所选时间无 K 线数据，保留原买卖点价格')
+  } finally {
+    if (seq === priceSeq) priceLoading.value = false
+  }
+}
+
+/** 买点时间变化 → 300ms 防抖取价（design D12） */
+function onMonitorTimeChange() {
+  if (priceTimer) clearTimeout(priceTimer)
+  if (!monitorStartTime.value) return
+  priceTimer = setTimeout(() => fetchMonitorPrice(monitorStartTime.value), 300)
+}
+
+function openMonitorDialog(row: BspRecord) {
+  monitorRow.value = row
+  // 默认值 = 该行买卖点时间（bsp_date 为 ms 时间戳，已含时分秒）
+  monitorStartTime.value = toDateTimeStr(row.bsp_date)
+  monitorPrice.value = row.bsp_price
+  monitorDialogVisible.value = true
+  // 默认时间也触发一次联动（语义统一：价格 = 所选时间点收盘价）
+  fetchMonitorPrice(monitorStartTime.value)
+}
+
+/** 「此刻」按钮：买点时间置为当前时间（经 date-picker change 事件触发联动） */
+function setMonitorTimeNow() {
+  monitorStartTime.value = toDateTimeStr(Date.now())
+  onMonitorTimeChange()
+}
+
+async function confirmAddMonitor() {
+  const row = monitorRow.value
+  if (!row) {
+    console.warn('[confirmAddMonitor] 无上下文行，忽略提交', { dialogVisible: monitorDialogVisible.value })
+    return
+  }
+  if (!monitorStartTime.value) {
+    ElMessage.warning('请设置买点时间')
+    return
+  }
+  addingMonitor.value = true
+  try {
+    await createMonitor({
+      code: row.code,
+      kl_type: row.kl_type,
+      entry_price: monitorPrice.value, // D12：联动后的所选时间点价格
+      monitor_start_time: monitorStartTime.value,
+    })
+    ElMessage.success(`已将「${row.name}」加入监控`)
+    monitorDialogVisible.value = false
+  } catch {
+    // 失败已由 axios 拦截器统一 ElMessage.error（含后端 detail），此处仅保留弹窗供重试
+  } finally {
+    addingMonitor.value = false
+  }
+}
+
 // ---- 工具 ----
 function formatPrice(v: number) {
   return v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -448,7 +712,27 @@ function formatDate(ts: number) {
   return `${y}-${m}-${day}`
 }
 
+// ---- 买卖点时间格式化（design D10，任务 4.4）----
+// bsp_date 是 ms 时间戳（后端已按 time_key 转出，携带时分秒）。
+// 按行周期区分：分钟级（30m/60m）显示日期+时分；日线及以上（D/W/M）只显示日期
+// （time_key 为 00:00，显示时分是冗余噪音）。与 NestingDrawer 共用同一语义。
+const MINUTE_KL_TYPES = new Set(['30m', '60m'])
+function formatBspTime(row: { bsp_date: number; kl_type: string }) {
+  const d = new Date(row.bsp_date)
+  const date = formatDate(row.bsp_date)
+  if (!MINUTE_KL_TYPES.has(row.kl_type)) return date
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mm = String(d.getMinutes()).padStart(2, '0')
+  return `${date} ${hh}:${mm}`
+}
+
 onMounted(() => {
+  loadList()
+  loadAggregate()
+})
+
+// keep-alive 缓存后再次进入时，重新查询以确保数据时效性
+onActivated(() => {
   loadList()
   loadAggregate()
 })
@@ -492,9 +776,69 @@ onMounted(() => {
   flex-direction: column;
   gap: var(--sp-lg);
 }
+.monitor-ctx {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-md);
+  padding: var(--sp-md);
+  border: 1px solid var(--border-base);
+  border-radius: var(--r-md);
+}
+.monitor-ctx .form-row {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--sp-md);
+}
+.monitor-ctx .form-row label {
+  width: 90px;
+  flex-shrink: 0;
+}
+.ctx-value {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+/* D12 价格联动取价中的弱化显示 */
+.ctx-value.price-stale {
+  opacity: 0.5;
+}
+.ctx-code {
+  margin-left: 6px;
+  font-size: 12px;
+  color: var(--text-disabled);
+}
+.monitor-time-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+}
 .dialog-hint {
   font-size: 12px;
   color: var(--text-disabled);
   margin: 0;
+}
+.sug-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+  padding: 2px 0;
+}
+.sug-item__code {
+  width: 84px;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: var(--accent-hover);
+}
+.sug-item__name {
+  font-size: 13px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sug-item__empty {
+  font-size: 12px;
+  color: var(--text-disabled);
 }
 </style>

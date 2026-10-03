@@ -1,0 +1,1 @@
+- '.venv\Scripts\python.exe' Data\download_kl.py --code sh.600026 --kl-type K_MON --autype QFQ --sleep 0.5

@@ -48,12 +48,6 @@ export const routes: RouteRecordRaw[] = [
         meta: { title: '监控', perm: 'menu:monitor', navKey: 'monitor' },
       },
       {
-        path: 'monitor/completed',
-        name: 'monitor-completed',
-        component: () => import('@/views/monitor/CompletedView.vue'),
-        meta: { title: '监控完成', perm: 'menu:monitor', navKey: 'monitor-completed' },
-      },
-      {
         path: 'performance',
         name: 'performance',
         component: () => import('@/views/performance/PerformanceView.vue'),

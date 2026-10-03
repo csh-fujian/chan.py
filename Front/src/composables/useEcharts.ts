@@ -6,12 +6,14 @@ import {
   TooltipComponent,
   LegendComponent,
   DataZoomComponent,
+  VisualMapComponent,
 } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import { useThemeStore } from '@/stores/theme'
 import type { ThemeName } from '@/stores/theme'
 
-echarts.use([LineChart, BarChart, GridComponent, TooltipComponent, LegendComponent, DataZoomComponent, CanvasRenderer])
+// VisualMapComponent：ProfitChart splitColor 分段着色（monitor-page-change D8）所需
+echarts.use([LineChart, BarChart, GridComponent, TooltipComponent, LegendComponent, DataZoomComponent, VisualMapComponent, CanvasRenderer])
 
 /**
  * ECharts composable — 实例非响应式（design.md D6 同款策略）

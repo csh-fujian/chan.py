@@ -40,7 +40,7 @@
 ## 7. 页面缓存（KeepAlive，后续新增需求）
 
 - [x] 7.1 `AppShell.vue` 的 router-view 接入 `<KeepAlive>`（子组件 key = `route.name`），`App.vue` 移除 `:key="route.path"`；验证在 K 线页操作（搜索股票/切周期/折叠左侧面板/添加副图）→ 切自选 → 切回，页面排版与数据保持原样、不重新加载
-- [x] 7.2 跨页带参跳转兼容：`KLineView` / `CompletedView` 补 `watch(() => route.query.code)`；验证 自选 → K线（`?code=`）、监控 → 完成（`?code=`）仍按参数进入，无参切回保持缓存原样
+- [x] 7.2 跨页带参跳转兼容：带参目标页补 `watch(() => route.query.*)`；验证 各跳转入口 → 目标页（`?param=`）仍按参数进入，无参切回保持缓存原样
 - [x] 7.3 返回滚动位置恢复：`router.beforeEach` 记录离开时 `scrollY` + `scrollBehavior` 按记忆恢复（登出清记忆）；验证切回长页面滚动位置不变、首次进入仍在顶部
 - [x] 7.4 图表复活尺寸自愈：`useEcharts` 增加 `onActivated(resize)`；`KLineChart` 的 ResizeObserver 忽略 0 尺寸事件（失活隐藏期 `resize()` 经 `_measurePaneHeight` 把副图 pane 固定高度永久压成 0、复活钳到 minHeight 30px → 主/副图排版错乱），并加 `onActivated` 逐副图 `setPaneOptions({id,height:130})` 断言 + `resize()` 重排；验证绩效页与 K 线页缓存复活后尺寸均正确（复现脚本往返前后 canvas 度量一致 209/130/130/23）
 - [x] 7.5 验证：`npm run build`（vue-tsc 类型检查 + 打包）通过，浏览器实测 7.1~7.4 行为

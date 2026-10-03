@@ -28,24 +28,18 @@
 
 （U6 `GET /api/bsp` 日期条件已随 `bsp-index` 裁定迁移至 `bsp-page-change` tasks 第 2 组/第 1 组，2026-10-01；本变更无此任务。）
 
-## 6. U5 大模型归因接真
+## 6. openspec 工件同步裁剪（design D4 映射表）
 
-- [x] 6.1 `llm_prompts.py` 新增归因 prompt；`POST /monitor/{id}/analyze` 接 `resolve_llm_config` + `llm_client.complete`：盈利 ≥5% → 400、LLM 未配置 → 400、调用失败 → 错误透传且不落库，成功才 `save_attribution`——验证：三种失败场景返回对应错误且无占位记录；配置 LLM 后返回真实归因并持久化。
-- [x] 6.2 `CompletedView` 归因动作对接真实返回与错误提示，mock `analyze` 同步（未配置/失败不再返回占位成功）——验证：页面触发分析展示真实结果，失败展示明确错误。
+- [x] 6.1 chan-stock-manage specs 裁剪：删 `specs/bsp-performance/`；`specs/bsp-monitoring/` 整体删除（2026-10-02 整体迁至 `monitor-page-change`）；`specs/bsp-index/` 整体删除（2026-10-01 裁定：能力已整体归 `bsp-page-change`）；`specs/auth/` 删「用户与角色管理」——验证：`openspec validate --change chan-stock-manage` 通过。
+- [x] 6.2 chan-stock-manage 正文同步：proposal Capabilities 收窄、design D16 `/system` 表格加"由 system-page-change 维护"指向注记、tasks 移除/标注迁出条目（8.4/10.x 页面任务迁出至本 change 或 `monitor-page-change`，8.3/12.x 归 `bsp-page-change`，14.2/14.3 标注数据模型按 B 套）——验证：grep `openspec/changes/chan-stock-manage` 无指向已迁需求的残留描述。
+- [x] 6.3 watchlist 底层 3 条需求迁 `watchlist-page-change`（其 spec 补入文件夹分类/字段展示/批量加入三条、proposal 更新"不修改底层需求"声明），并从 chan-stock-manage 删 `specs/watchlist/` 及 proposal/tasks 对应条目——验证：两 change 合并视角下 watchlist 需求不重不漏，`openspec validate` 两 change 均通过。
 
-## 7. openspec 工件同步裁剪（design D4 映射表）
+## 7. 端到端验证
 
-- [x] 7.1 chan-stock-manage specs 裁剪：删 `specs/bsp-performance/`；`specs/bsp-monitoring/` 仅留「卖点自动卖出与结算」；`specs/bsp-index/` 整体删除（2026-10-01 裁定：能力已整体归 `bsp-page-change`，由该变更的迁移任务负责执行）；`specs/auth/` 删「用户与角色管理」——验证：`openspec validate --change chan-stock-manage` 通过，剩余 requirement 名集合与 D4 映射表一致。
-- [x] 7.2 chan-stock-manage 正文同步：proposal Capabilities 收窄、design D16 `/system` 表格加"由 system-page-change 维护"指向注记、tasks 移除/标注迁出条目（8.4/10.x 页面任务迁出至本 change，8.3/12.x 归 `bsp-page-change`，14.2/14.3 标注数据模型按 B 套）——验证：grep `openspec/changes/chan-stock-manage` 无指向已迁需求的残留描述。
-- [x] 7.3 watchlist 底层 3 条需求迁 `watchlist-page-change`（其 spec 补入文件夹分类/字段展示/批量加入三条、proposal 更新"不修改底层需求"声明），并从 chan-stock-manage 删 `specs/watchlist/` 及 proposal/tasks 对应条目——验证：两 change 合并视角下 watchlist 需求不重不漏，`openspec validate` 两 change 均通过。
+- [ ] 7.1 真后端冒烟（`VITE_USE_MOCK=false`）：admin 登录 → 四条件查询 → 新建用户并分配角色 → 该用户登录（权限随角色）→ 角色绑定/权限配置保存即生效（菜单显隐与写接口 403/放行随之变化）——验证：全流程无报错、权限变化即时可观察。
+- [ ] 7.2 mock 对齐验证（`VITE_USE_MOCK=true`）：7.1 同场景在 mock 下行为一致——验证：契约级行为无分叉。
 
-## 8. 端到端验证
+## 8. 迁移承接的已落地页面任务（自 chan-stock-manage 迁入，仅存验证记录）
 
-- [ ] 8.1 真后端冒烟（`VITE_USE_MOCK=false`）：admin 登录 → 四条件查询 → 新建用户并分配角色 → 该用户登录（权限随角色）→ 角色绑定/权限配置保存即生效（菜单显隐与写接口 403/放行随之变化）→ 归因走一遍——验证：全流程无报错、权限变化即时可观察。
-- [ ] 8.2 mock 对齐验证（`VITE_USE_MOCK=true`）：8.1 同场景在 mock 下行为一致——验证：契约级行为无分叉。
-
-## 9. 迁移承接的已落地页面任务（自 chan-stock-manage 迁入，仅存验证记录）
-
-- [x] 9.1 历史买卖点页（原 cSM 8.3；页面需求已归 `bsp-page-change`，此处仅存历史验证记录）：查询表单 + 结果表多选 + 加入自选/监控；验证：查询→加入自选→加入监控全流程可用。（板块聚合按冲突裁定不再验收；日期查询控件由 `bsp-page-change` 承接。）
-- [x] 9.2 监控页 + 完成页（原 cSM 8.4）：监控列表 + 盈利走势折线 + 总体盈利 + 归因按钮 + 失败原因列表/详情；验证：监控→结算→归因全流程可用。（归因由占位改为真实生成见任务 6.x。）
-- [x] 9.3 买卖点绩效统计（原 cSM 10.1/10.2）：`GET /api/bsp/performance` 聚合胜率/盈亏比/样本数 + 样本明细下钻；验证：统计结果与样本明细吻合。
+- [x] 8.1 历史买卖点页（原 cSM 8.3；页面需求已归 `bsp-page-change`，此处仅存历史验证记录）：查询表单 + 结果表多选 + 加入自选/监控；验证：查询→加入自选→加入监控全流程可用。（板块聚合按冲突裁定不再验收；日期查询控件由 `bsp-page-change` 承接。）
+- [x] 8.2 买卖点绩效统计（原 cSM 10.1/10.2）：`GET /api/bsp/performance` 聚合胜率/盈亏比/样本数 + 样本明细下钻；验证：统计结果与样本明细吻合。

@@ -68,7 +68,7 @@ const visible = computed({
 
 const klTypeLabel = computed(() => {
   if (!props.item) return ''
-  const m: Record<string, string> = { D: '日线', '60m': '60分钟', '30m': '30分钟', '15m': '15分钟' }
+  const m: Record<string, string> = { '30m': '30分钟', '60m': '60分钟', D: '日线', W: '周线', M: '月线' }
   return m[props.item.kl_type] || props.item.kl_type
 })
 

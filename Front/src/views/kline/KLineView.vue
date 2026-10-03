@@ -227,6 +227,11 @@ const periodLabel = computed(() => {
   return m[period.value] ?? period.value
 })
 
+/** URL query 合法周期集合（任务 4.3）：词表外值（如 bsp 词表 D/W/M 未映射前）回退默认，不触发误加载 */
+const PERIOD_MAP: Record<string, boolean> = {
+  '5m': true, '15m': true, '30m': true, '60m': true, '1d': true, '1w': true, '1M': true,
+}
+
 /** 快捷入口：切到指定 Tab 并展开面板 */
 function jumpTo(tab: 'stock' | 'qa'): void {
   activeTab.value = tab
@@ -388,11 +393,15 @@ function toggleIndicator(value: string): void {
 }
 
 onMounted(() => {
-  // 从 URL query 参数读取股票代码（从其他页面跳转）
+  // 从 URL query 参数读取股票代码与周期（从其他页面跳转，如买卖点页双击行）
   const qCode = route.query.code
   if (qCode && typeof qCode === 'string' && qCode.trim()) {
     code.value = qCode.trim()
     codeInput.value = code.value
+  }
+  const qPeriod = route.query.period
+  if (qPeriod && typeof qPeriod === 'string' && PERIOD_MAP[qPeriod]) {
+    period.value = qPeriod
   }
   load()
 })
@@ -401,17 +410,23 @@ onMounted(() => {
 // 带参跳入（自选 → kline?code=）需经此 watch 按新代码加载；
 // query 缺省（普通切回）或与当前一致时保持缓存原样，不触发重载
 watch(
-  () => route.query.code,
+  () => route.query,
   (q) => {
-    if (typeof q !== 'string') return
-    const c = q.trim()
-    if (!c) return
-    // 输入框始终同步为 URL 中的代码（即使与当前已加载代码一致）
-    if (c !== codeInput.value) codeInput.value = c
-    // 仅代码变化才触发重载；与当前一致时保持缓存数据原样
-    if (c !== code.value) {
-      code.value = c
-      load()
+    const qCode = q.code
+    if (typeof qCode === 'string' && qCode.trim()) {
+      const c = qCode.trim()
+      // 输入框始终同步为 URL 中的代码（即使与当前已加载代码一致）
+      if (c !== codeInput.value) codeInput.value = c
+      // 仅代码变化才触发重载；与当前一致时保持缓存数据原样
+      if (c !== code.value) {
+        code.value = c
+        load()
+      }
+    }
+    // 周期变化（如买卖点页双击行带 period 跳入）：合法才应用，经 watch(period) 触发重载
+    const qPeriod = q.period
+    if (typeof qPeriod === 'string' && PERIOD_MAP[qPeriod] && qPeriod !== period.value) {
+      period.value = qPeriod
     }
   },
 )

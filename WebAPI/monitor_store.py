@@ -136,7 +136,8 @@ def list_monitoring(
     finally:
         conn.close()
     result = [_row_to_dict(row, stock_name=row[10]) for row in rows]
-    # 补充实时盈利（通过 DuckDB 最新价计算）
+    # 补齐契约字段（买卖点上下文/行业，design D5）+ 实时盈利/极值（DuckDB）
+    _fill_bsp_context(result)
     _enrich_with_real_time_pnl(result)
     return result
 
@@ -171,7 +172,17 @@ def list_completed(
             rows = cur.fetchall()
     finally:
         conn.close()
-    return [_row_to_dict(row, stock_name=row[10]) for row in rows]
+    result = [_row_to_dict(row, stock_name=row[10]) for row in rows]
+    # 完成页与监控中列表消费同一套字段（design D5）；结算价/盈亏由 sold_price/pnl_pct 映射
+    _fill_bsp_context(result)
+    _enrich_with_real_time_pnl(result)
+    for it in result:
+        it["end_price"] = it.get("sold_price") or 0
+        it["profit"] = it.get("pnl_pct") or 0
+        it["end_date"] = _to_ms(it["sold_at"]) if it.get("sold_at") else 0
+        it["attribution"] = ""
+        it["ai_analyzed"] = False
+    return result
 
 
 def settle_monitor(monitor_id: int, sold_price: float, sold_at: str, pnl_pct: float) -> Optional[dict]:
@@ -411,12 +422,105 @@ def _row_to_dict(row, stock_name: Optional[str] = None) -> dict:
     }
 
 
+def _to_ms(time_str: str) -> int:
+    """时间字符串 → 毫秒时间戳（失败返回 0）。"""
+    try:
+        return int(datetime.fromisoformat(time_str).timestamp() * 1000)
+    except Exception:
+        return 0
+
+
+def _fill_bsp_context(items: list[dict]) -> None:
+    """补齐前端 MonitorItem 契约字段（monitor-page-change design D5）。
+
+    monitor 表只存监控本体（code/kl_type/entry_price/...），前端列表还需要
+    买卖点上下文与行业/极值列。字段来源：
+    - bsp_price ← entry_price（监控以买卖点价格入场，同值换名）
+    - bsp_type/direction/bsp_date ← bsp_index 按 (code,kl_type) 回查监控开始前
+      最近一条买卖点（监控的语义起点）；查不到给兜底值
+    - industries ← stock_industry 批量查（rank≤3 名称数组）
+    - current_price/change_pct/max_profit/max_drawdown ← DuckDB（_enrich_with_real_time_pnl）
+    """
+    if not items:
+        return
+
+    # bsp_index 回查：每 (code, kl_type) 取 monitor_start_time 前最近一条
+    try:
+        conn = _get_pg_conn()
+        if conn is not None:
+            try:
+                with conn.cursor() as cur:
+                    for it in items:
+                        cur.execute(
+                            """
+                            SELECT bsp_type, is_buy, bsp_date
+                            FROM bsp_index
+                            WHERE code = %s AND kl_type = %s AND time_key <= %s
+                            ORDER BY time_key DESC
+                            LIMIT 1
+                            """,
+                            (it["code"], it["kl_type"], it["monitor_start_time"]),
+                        )
+                        row = cur.fetchone()
+                        if row:
+                            it["bsp_type"] = row[0]
+                            it["direction"] = "buy" if row[1] else "sell"
+                            it["bsp_date"] = _to_ms(row[2].isoformat() if hasattr(row[2], "isoformat") else str(row[2]))
+                        else:
+                            it["bsp_type"] = ""
+                            it["direction"] = "buy"
+                            it["bsp_date"] = _to_ms(it["monitor_start_time"])
+            finally:
+                conn.close()
+        else:
+            for it in items:
+                it["bsp_type"] = ""
+                it["direction"] = "buy"
+                it["bsp_date"] = _to_ms(it["monitor_start_time"])
+    except Exception:
+        log.exception("补齐买卖点上下文失败，使用兜底值")
+        for it in items:
+            it.setdefault("bsp_type", "")
+            it.setdefault("direction", "buy")
+            it.setdefault("bsp_date", _to_ms(it["monitor_start_time"]))
+
+    # 行业（rank≤3）批量单条 SQL
+    try:
+        from .bsp_store import get_industries_for_codes
+
+        ind_map = get_industries_for_codes(list({it["code"] for it in items}))
+        for it in items:
+            it["industries"] = ind_map.get(it["code"], [])
+    except Exception:
+        for it in items:
+            it["industries"] = []
+
+    # 入场价即买卖点价格（同值换名）
+    for it in items:
+        it["bsp_price"] = it["entry_price"]
+
+
 def _enrich_with_real_time_pnl(items: list[dict]) -> None:
-    """用 DuckDB 最新收盘价计算实时浮盈。"""
+    """用 DuckDB 最新收盘价计算实时浮盈 + 涨跌幅 + 监控期间极值（design D5）。
+
+    - current_price：最新日线收盘价
+    - current_pnl_pct：(当前价 − 入场价) / 入场价 × 100，自买卖点起持有至当前的
+      模拟买入累计涨跌（monitor-page-change design D8 收益率列）
+    - change_pct：(最新 - 前收) / 前收 * 100
+    - max_profit/max_drawdown：自 monitor_start_time 起日线收盘价相对 entry_price
+      的最大上行/最大下行百分比（监控期间浮盈极值口径）
+    DuckDB 不可用时降级 current_price=None、change_pct=0、极值 0，不阻塞列表。
+    """
     from .config import DUCKDB_PATH
     import os
 
     if not items or not os.path.exists(DUCKDB_PATH):
+        for it in items:
+            it.setdefault("current_price", None)
+            it.setdefault("current_pnl_pct", None)
+            it.setdefault("change_pct", 0)
+            it.setdefault("max_profit", 0)
+            it.setdefault("max_drawdown", 0)
         return
 
     codes = list({i["code"] for i in items})
@@ -431,7 +535,7 @@ def _enrich_with_real_time_pnl(items: list[dict]) -> None:
             code_list = ", ".join(f"'{c}'" for c in codes)
             rows = conn.execute(
                 f"""
-                SELECT code, close
+                SELECT code, time_key, close
                 FROM kline
                 WHERE code IN ({code_list})
                   AND kl_type = 'K_DAY'
@@ -442,23 +546,51 @@ def _enrich_with_real_time_pnl(items: list[dict]) -> None:
         finally:
             conn.close()
 
-        latest_prices: dict[str, float] = {}
-        for code, close in rows:
-            if code not in latest_prices and close:
-                latest_prices[code] = close
+        # 最新两根 → 现价/涨跌幅；全量序列 → 监控期间极值
+        latest_two: dict[str, list[float]] = {}
+        series: dict[str, list[tuple[str, float]]] = {}
+        for code, time_key, close in rows:
+            if close is None:
+                continue
+            series.setdefault(code, []).append((str(time_key), float(close)))
+            two = latest_two.setdefault(code, [])
+            if len(two) < 2:
+                two.append(float(close))
 
         for item in items:
             code = item["code"]
-            if code in latest_prices and item["entry_price"] and item["entry_price"] != 0:
-                item["current_price"] = latest_prices[code]
-                item["current_pnl_pct"] = round(
-                    (latest_prices[code] - item["entry_price"]) / item["entry_price"] * 100, 2
-                )
+            entry = item.get("entry_price") or 0
+            two = latest_two.get(code, [])
+            item["current_price"] = two[0] if two else None
+            # 收益率：自买卖点（入场价）起持有至今的累计涨跌
+            if two and entry:
+                item["current_pnl_pct"] = round((two[0] - entry) / entry * 100, 2)
             else:
-                item["current_price"] = None
                 item["current_pnl_pct"] = None
+            if len(two) == 2 and two[1]:
+                item["change_pct"] = round((two[0] - two[1]) / two[1] * 100, 2)
+            else:
+                item["change_pct"] = 0
+
+            # 监控期间极值（series 为时间降序；只取 monitor_start_time 之后的行）
+            start = item.get("monitor_start_time") or ""
+            highs = [
+                c for tk, c in series.get(code, [])
+                if c and entry and tk >= start
+            ]
+            if highs and entry:
+                item["max_profit"] = round((max(highs) - entry) / entry * 100, 2)
+                item["max_drawdown"] = round((min(highs) - entry) / entry * 100, 2)
+            else:
+                item["max_profit"] = 0
+                item["max_drawdown"] = 0
     except Exception:
-        pass
+        for it in items:
+            it.setdefault("current_price", None)
+            it.setdefault("current_pnl_pct", None)
+            it.setdefault("change_pct", 0)
+            it.setdefault("max_profit", 0)
+            it.setdefault("max_drawdown", 0)
 
 
 # 模块加载时自动建表

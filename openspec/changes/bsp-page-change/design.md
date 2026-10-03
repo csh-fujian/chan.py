@@ -78,7 +78,7 @@
 
 ### D5. `GET /api/bsp` 查询与契约
 
-- **过滤下推**：`keyword`（编码/名称，`ILIKE` 匹配 `code`/`stock.name`）、`kl_type`、`bsp_type`、`direction`（`is_buy`）、可选 `date`（自 `system-page-change` U6 吸收：页面日期控件 + `BspQuery.date` 随请求发送，store 层 `query_bsp(date=)` 已支持直通透传）全部进同一 WHERE；`COUNT` 与分页共用它；`total` = 过滤后总数。
+- **过滤下推**：`keyword`（编码/名称，`ILIKE` 匹配 `code`/`stock.name`）、`kl_type`、`bsp_type`、`direction`（`is_buy`）、可选 `date_from`/`date_to`（自 `system-page-change` U6 吸收并升级为范围语义：页面日期范围控件 + `BspQuery.date_from/date_to` 随请求发送，store 层 `query_bsp(date_from=, date_to=)` 半开区间 `bsp_date >= date_from AND bsp_date < date_to + 1 day`，只传一端则单边过滤，全空则不过滤）全部进同一 WHERE；`COUNT` 与分页共用它；`total` = 过滤后总数。
 - **契约适配放 router 层**（store 返回原始行，router 映射为 `BspRecord`）：`bsp_price←price`、`direction←is_buy?'buy':'sell'`、`bsp_date→ms 时间戳`、`industries←stock_industry rank≤3 的名称数组`（单条 `array_agg`/窗口查询替代 N+1）、`id` 用行号或主键序号补位。
 - **`current_price`/`change_pct`**：取该页股票在 DuckDB 的最新两根 K 线收盘价，按页批量一次查询（每页 ≤ page_size 只）；DuckDB 被灌数锁住打不开时降级为 `0`（前端显示 `--`），不阻塞列表。
 - **`GET /api/bsp/{code}`**：`kl_types IN` 改为参数化占位符，消除拼接。
@@ -90,15 +90,46 @@
 
 ### D7. 页面查询参数与词表对齐
 
-页面 `BspQuery` 为 `page/page_size/keyword/bsp_type/direction/kl_type/date`，其中 `kl_type` 取 D1 词表值（含空串 = 全部）；`direction` 空串不参与过滤；`date` 为空串/undefined 时不参与过滤（日期控件自 `system-page-change` U6 吸收）。mock handlers 与 `VITE_USE_MOCK` 场景同步新契约（含 `date` 过滤），保证无后端时页面字段仍正确。
+页面 `BspQuery` 为 `page/page_size/keyword/bsp_type/direction/kl_type/date_from/date_to`，其中 `kl_type` 取 D1 词表值（含空串 = 全部）；`direction` 空串不参与过滤；`date_from`/`date_to`（YYYY-MM-DD）空值不参与过滤，只传一端则单边过滤，双端齐备时按半开区间 `[date_from, date_to + 1)` 匹配。**默认值 = 最近三个交易日**：页面初始化与「重置」时 `date_from` = 第 3 个前交易日、`date_to` = 最近交易日（含当日），由前端本地计算（交易日历不可用时的降级见 D9）；清空日期范围后查询全期。mock handlers 与 `VITE_USE_MOCK` 场景同步新契约（含 `date_from`/`date_to` 过滤），保证无后端时页面字段仍正确。
 
 ### D8. `/bsp` 页面布局与操作归属（自 chan-stock-manage D13/D14/D15 迁入）
 
-- **查询表单**：`周期 | 日期 | 买卖点类型 | 方向 | 关键词` +「查询」「重置」按钮；与结果表同页，服务端分页。
+- **查询表单**：`周期 | 日期范围 | 买卖点类型 | 方向 | 关键词` +「查询」「重置」按钮；与结果表同页，服务端分页。日期范围默认最近三个交易日（D7/D9）。
 - **结果表**（一行 = 一条买卖点记录，多选框驱动批量操作）：`选择框 | 编码 | 名称 | 股价 | 涨跌幅 | 行业(≤3) | 买卖点类型 | 方向 | 买卖点价格 | 当前价格 | 买卖点日期 | 周期 | 操作(区间套)`。
 - **工具条操作归属**：「批量加入自选」归 `watchlist-page-change`（弹窗选择目标文件夹，按 code 去重）；「加入监控」归 `chan-stock-manage`（弹窗周期默认 = 查询周期、监控时间可设，落 `monitor` 表）——本变更只负责把查询结果列表做对，两个按钮的既有实现不动。
 - **区间套 Drawer**（`NestingDrawer.vue`）：行内「区间套」按钮/双击打开，按周期子 tab 展示该股票多级别买卖点；周期子集与 `klOptions` 对齐（D1），标签兜底修复一并验收。
+- **行级「加入监控」（2026-10-02 修订，原裁定调整）**：结果表每行操作列增「加入监控」按钮，归本变更——弹窗展示只读上下文（股票/周期/买卖点价格）+ 买点时间（默认 = 该行买卖点时间，可编辑，「此刻」按钮取当前时间），提交 `POST /api/monitor`（`code/kl_type/entry_price/monitor_start_time`，后端已就绪）。原「加入监控归 chan-stock-manage」的裁定收窄为仅指**工具条批量**按钮——多选批量语义仍归 chan-stock-manage、保持演示现状不动；行级单条监控的交互与落库由本变更承接。
 - **板块聚合 Tab**：按 D6 冻结现状，不进验收。
+
+### D9. 「最近三个交易日」的计算与降级（日期范围默认值）
+
+- **前端正则**：默认日期范围由前端在页面初始化/重置时计算并显示在控件上（`date_from`/`date_to` 可被用户改写或清空）。
+- **计算方式**：优先用交易日历；不可用时降级为「跳过周六日」的自然日近似——`date_to` = 今天，`date_from` = 自今天起向前数第 3 个工作日（周内）。交易日历引入方式（当前无全市场 K 线日历 API）：本变更**不新增后端交易日历端点**，前端用跳周末近似（A 股节假日不跳会包含非交易日，但查询语义是「范围过滤」而非「逐日点查」，多包含一天只影响检索范围不影响正确性）。
+- **备选（否决）**：后端加 `GET /api/bsp/trade-days` 端点用 `IngestUtil.get_calendar()`——默认值是纯展示层关注点，为它加一个网络往返与端点不划算；真实节假日误差由清空/手改范围覆盖。
+- **后端语义**：`date_from`/`date_to` 只做 SQL 范围过滤（`bsp_date >= date_from AND bsp_date < date_to + 1 day`），不假设交易日历——两端正交，前端近似不影响后端正确性。
+
+### D10. 买卖点时间列显示（2026-10-02 修订：日期 → 时间）
+
+- **数据事实**：`bsp_index` 每行本就存有两个时间字段——`bsp_date`（DATE，日期）与 `time_key`（完整时间，分钟级如 `2020-04-30 10:00:00`）；router 层 `_to_ms` 已用 `time_key`（非日期）转 ms 时间戳，即前端拿到的 `bsp_date` 字段**已携带时分秒**。**计算与后端无需改动**，本修订纯前端展示层。
+- **显示格式按周期区分**：分钟级（30m/60m）显示 `YYYY-MM-DD HH:mm`；日线及以上（D/W/M）显示 `YYYY-MM-DD`（其 time_key 为 00:00，显示时分是冗余噪音）。列名「买卖点日期」→「买卖点时间」。
+- **备选（否决）**：统一显示日期+时间——日线行出现 00:00 噪音；改后端/计算层补时间——数据已存在，无必要。
+- **同步点**：`BspView.vue` 结果列与 `NestingDrawer.vue` 买卖点列表的日期格式化函数共用同一按周期区分逻辑。
+
+### D11. 买卖点类型列合并 + 方向化标签词表（2026-10-02 修订）
+
+- **列合并**：结果表原「买卖点类型」（显示原始值 `2`/`2s`）与「方向」（买/卖）两列合并为单一「买卖点类型」列，值 = 带方向语义的标签（`1B/1S/2B/2S/L2B/L2S/3B/3S/PZ-B/PZ-S`），红涨绿跌着色保留（颜色即方向语义，不再有独立方向列）。
+- **词表统一**：展示与查询条件共用同一「方向化标签」词表。前端 `utils/bsp.ts` 的 `TYPE_MAP` 已定义原始枚举 ↔ 标签的双向映射（`'2'+buy→'2B'`、`'2s'+sell→'L2S'`、`'3a'/'3b'+buy→'3B'` 等），复用之，不新增第二套映射。
+- **后端过滤语义**：`GET /api/bsp` 的 `bsp_type` 参数接受方向化标签，router 层解析为 `(原始枚举集合, is_buy)` 组合条件下推 SQL——如 `2B → bsp_type IN ('2') AND is_buy=true`、`3B → bsp_type IN ('3a','3b') AND is_buy=true`、`PZ-S → bsp_type IN ('1p') AND is_buy=false`；同时兼容原始枚举值直传（如 `2`，仅按类型匹配、不带方向约束，行为同现状）。**顺带修复既有 bug**：查询下拉本就传标签值，而后端 `b.bsp_type = %s` 匹配原始枚举，导致选任何标签都查不到记录。
+- **前端**：结果表删「方向」列、「买卖点类型」列改显示 `bspLabel(row.bsp_type, row.direction==='buy')`；查询下拉维持 `ALL_BSP_LABELS` 标签值不变（修复后端解析后即正确工作）；`NestingDrawer`、`MonitorView`/`CompletedView` 等其他显示 `bsp_type` 原始值的消费点同步改用 `bspLabel`（方向信息来自各自行的 direction 字段）。
+- **备选（否决）**：DB 存标签值——`bsp_index` 词表改动牵动唯一键与引擎写入，展示层映射已够；查询下拉改传原始枚举+独立方向参数——两控件语义割裂，与「值与查询条件一致」的需求相悖。
+
+### D12. 监控弹窗价格随买点时间联动（2026-10-02 修订）
+
+- **需求**：弹窗中买点时间变更后，买卖点价格（即提交的 `entry_price`）联动更新为所选时间点的股票价格——加入监控即加入「所选时间点的价格」，而非行上原买卖点价格。
+- **价格语义**：该股票**监控周期**（`kl_type`）上不晚于所选时间的最近一根 K 线收盘价（如 30m 记录选 `2026-09-24 14:00` → 取 14:00 那根 30 分钟 K 线收盘；日线取不晚于该日的日线收盘）。
+- **后端**：新增 `GET /api/bsp/price-at?code=&kl_type=&time=` → `{price, time_key}`；DuckDB `time_key <= 所选时间` 最近一根（词表桥接复用 `resolve_period`，bsp 词表 → DuckDB 枚举名）；该时间早于全部 K 线时返回 404。轻量只读查询，不走缠论计算。
+- **前端**：弹窗 watch 买点时间变化（300ms 防抖）→ 调 `price-at` → 更新弹窗价格显示与提交值；打开弹窗时对默认时间也触发一次（默认时间=行买卖点时间，通常与行价格一致，联动保证语义统一）；请求失败/404 保留原价格并 `ElMessage.warning` 提示；提交 `entry_price` 用联动后价格。
+- **备选（否决）**：复用 `/api/klines` 取价——为取一个价格跑完整缠论计算，过重；前端本地算——/bsp 页无 K 线数据。
 
 ## Risks / Trade-offs
 

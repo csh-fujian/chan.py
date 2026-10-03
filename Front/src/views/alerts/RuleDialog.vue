@@ -17,7 +17,7 @@
           filterable
           remote
           :remote-method="onSearch"
-          placeholder="输入代码或名称搜索"
+          placeholder="输入代码 / 名称 / 拼音搜索"
           style="width: 100%"
           @change="onStockChange"
         >

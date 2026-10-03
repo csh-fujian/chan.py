@@ -7,11 +7,11 @@
 **Goals:**
 - `/system` 三模块（用户/角色/权限配置）从 stub 变为挂鉴权的真实现，落在 B 套 RBAC 表上。
 - 权限配置"保存即生效"：运行时权限读取从 A 套切到 B 套。
-- 买卖点页面需求按审计结论迁入本 change（监控/绩效部分），并补完 U5（归因接真 LLM）页面闭环。
+- 买卖点页面需求按审计结论迁入本 change（绩效部分）。（监控部分已于 2026-10-02 整体迁至 `monitor-page-change`。）
 - chan-stock-manage 与实现脱节的需求按迁移映射表裁剪。
 
 **Non-Goals:**
-- `bsp-index` 能力（查询/多级别/引擎，含 U6 日期条件）——2026-10-01 裁定整体归 `bsp-page-change`；卖点自动卖出（U4）——留 chan-stock-manage。
+- `bsp-index` 能力（查询/多级别/引擎，含 U6 日期条件）——2026-10-01 裁定整体归 `bsp-page-change`；`bsp-monitoring`（监控/归因/卖点自动卖出）——2026-10-02 整体迁至 `monitor-page-change`。
 - 登录/JWT 签发机制本身（chan-stock-manage 任务 14.2 的机制部分）；本 change 只改其数据源与权限读取。
 - 菜单权限控制、管理权限控制的前端守卫逻辑（`v-permission`/路由守卫已存在，属 chan-stock-manage `auth` 运行时需求）。
 - 分页用户/角色列表（数据量为管理页级别，全量返回 + 前端条件过滤，量级增长后再引入分页）。
@@ -60,19 +60,16 @@
 | `auth` | 用户与角色管理 | **迁**：细化为 `system-management` 多条需求；chan-stock-manage 的 delta 删除该条 |
 | `auth` | 用户认证 / 菜单权限控制 / 管理权限控制 / admin 绝对权限 | **留**（运行时行为）；本 change 不重复，仅在 `system-management` 承接其页面侧（admin 保护、管理接口校验） |
 | `bsp-index` | 全部六条（持久化/增量续算/日终索引/历史查询/板块聚合/多级别） | **归 `bsp-page-change`**（2026-10-01 裁定整体迁出；板块聚合按冲突裁定删除，U6 日期条件随迁） |
-| `bsp-monitoring` | 监控列表与盈利走势 | **迁**，口径修正：总体盈利点数 → 百分比（与实现一致，旧口径删除） |
-| `bsp-monitoring` | 监控完成与归因 | **迁**，强化 U5：归因须真实生成、失败显式报错、盈利<5% 限定（覆盖原占位实现） |
-| `bsp-monitoring` | 卖点自动卖出与结算（U4，未实现） | **留** chan-stock-manage |
 | `bsp-performance` | 两条件 | **迁**（均已实现） |
-| proposal Tab3 页面描述、tasks 8.4/10.x | 监控页/绩效页任务（已完成） | **迁** 至本 change tasks（标记已落地的验证项）；tasks 7.2、3.x、2.x 留 |
+| proposal Tab3 页面描述、tasks 8.4/10.x | 监控页/绩效页任务（已完成） | 绩效部分**迁**至本 change tasks（标记已落地的验证项）；监控部分 2026-10-02 整体迁至 `monitor-page-change`；tasks 7.2、3.x、2.x 留 |
 | proposal Tab2 页面描述、tasks 8.3/12.x | `/bsp` 页面任务（历史买卖点页/区间套） | **归 `bsp-page-change`**（2026-10-01 裁定） |
 | design D16 `/system` 页面表格 | 系统页字段/模块描述 | **迁**：以本 change 的 `system-management` spec + 本 design D2 为准；D16 处加指向注记 |
 | `watchlist` | 底层 3 条（文件夹分类/字段展示/批量加入） | **不属本 change**：按既定方案迁 `watchlist-page-change`，由其承接 |
 
-### D5. U5 归因接真（U6 日期条件已迁 `bsp-page-change`）
+### D5. 已迁出
 
-- **U5**：`POST /monitor/{id}/analyze` 替换占位逻辑——读取已激活 LLM 供应商配置（`llm_store.resolve_llm_config`），组装归因 prompt 调 `llm_client.complete`，结果经 `save_attribution` 持久化；未配置 → 400「LLM 未配置」；供应商调用失败 → 502/错误透传，**不写占位记录**。后端校验标的最终盈利 < 5% 才执行（否则 400），与前端过滤双侧一致。归因 prompt 独立定义（复用 `llm_prompts.py` 机制，新增归因模板）。
-- **U6**（原）：`GET /api/bsp` 日期参数与 `BspView` 日期控件已随 `bsp-index` 裁定迁移至 `bsp-page-change`（其 design D5/D7 与 tasks 第 1/2 组），本 change 不实现。
+- **U5**（`POST /monitor/{id}/analyze` 大模型归因接真）已于 2026-10-02 随 `bsp-monitoring` 整体迁移至 `monitor-page-change`。
+- **U6**（原 `GET /api/bsp` 日期参数）已随 `bsp-index` 裁定迁移至 `bsp-page-change`。
 
 ### D6. Schema 与种子修正（随本 change 落地）
 
@@ -83,7 +80,7 @@
 
 ### D7. Mock 与前端同步
 
-- `Front/src/mock/data|handlers/system.ts`：`getUsers` 支持四条件过滤、`getRoles` 支持 `name` 过滤、新增 `GET /roles/{id}/users` 与 `PUT /roles/{id}/users` handler、`Permission.category` 与后端映射一致；`bsp`/`monitor` mock 同步 D5 行为。
+- `Front/src/mock/data|handlers/system.ts`：`getUsers` 支持四条件过滤、`getRoles` 支持 `name` 过滤、新增 `GET /roles/{id}/users` 与 `PUT /roles/{id}/users` handler、`Permission.category` 与后端映射一致。
 - `SystemView.vue`：用户表上方加查询条（用户名输入、角色下拉、状态下拉、创建时间日期区间、查询/重置）；角色表加角色名查询；角色行加"用户"操作开抽屉（成员列表 + 待绑定用户多选 + 绑定提交）；移除"最后登录"列；重置密码改为输入新密码的对话框。
 - `api/modules/system.ts`：`getUsers/getRoles` 增加查询参数；新增 `getRoleUsers/bindRoleUsers`。
 
@@ -94,7 +91,7 @@
 - [角色删除的 FK 行为：`app_user.role_id REFERENCES role(id)` 无级联] → 业务层先查 `user_count` 返回 409，不依赖数据库报错。
 - [归因接真引入外部 LLM 依赖（成本/稳定性）] → 仅手动触发、失败显式报错不落库、结果为参考信息不进交易决策（沿用 chan-stock-manage 既有风险结论）。
 - [用户查询无分页] → 管理页数据量小（三用户种子 + 增长缓慢）；接口契约为数组，若量级增长需引入分页属破坏性变更，届时走新 delta。
-- [两个 change 向同一 capability（`bsp-monitoring`）贡献 delta] → 本 change 与 chan-stock-manage 的 requirement 名称集合互斥（映射表 D4 已切分）；Purpose 文本两边保持一致，任一先归档不产生 Purpose 冲突。`bsp-index` 已整体归 `bsp-page-change`，本 change 不再与其重叠。
+- [两个 change 向同一 capability 贡献 delta] → ~~本 change 与 chan-stock-manage 的 `bsp-monitoring` requirement 名称互斥~~；`bsp-monitoring` 已于 2026-10-02 整体迁至 `monitor-page-change`，无冲突。`bsp-index` 已整体归 `bsp-page-change`。
 
 ## Migration Plan
 

@@ -179,6 +179,9 @@ export interface MonitorItem {
   bsp_date: number
   kl_type: string
   change_pct: number
+  /** 收益率：(当前价 − 买卖点价) / 买卖点价 × 100，自买卖点时间起累计涨跌；
+   *  后端 DuckDB 不可用或 entry_price=0 时为 null（design D5/D8 容错） */
+  current_pnl_pct: number | null
   max_profit: number
   max_drawdown: number
   status: 'monitoring' | 'completed'

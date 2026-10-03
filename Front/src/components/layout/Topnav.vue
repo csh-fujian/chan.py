@@ -72,7 +72,6 @@ const allMenus: MenuItem[] = [
   { key: 'watchlist', label: '自选', to: '/watchlist' },
   { key: 'bsp', label: '买卖点', to: '/bsp' },
   { key: 'monitor', label: '监控', to: '/monitor' },
-  { key: 'monitor-completed', label: '完成', to: '/monitor/completed' },
   { key: 'performance', label: '绩效', to: '/performance' },
   { key: 'screener', label: '选股', to: '/screener' },
   { key: 'alerts', label: '预警', to: '/alerts' },

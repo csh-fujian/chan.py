@@ -6,6 +6,8 @@ BSP DAO — chan_structure / bsp_index / chan_snapshot 表的 PG 持久化。
 import json
 import logging
 import os
+from datetime import date as _date
+from datetime import timedelta
 from typing import Any, Optional
 
 import psycopg2
@@ -162,10 +164,27 @@ def upsert_bsp_index(
         conn.close()
 
 
+def _date_range_conditions(
+    date_from: str, date_to: str, conditions: list[str], params: list[Any]
+) -> None:
+    """日期范围条件追加（bsp-page-change 2.6/D5/D7）：半开区间 `[date_from, date_to + 1)`。
+
+    只传一端单边过滤、双空不过滤；date_to 含当日（闭区间语义），实现为
+    Python 侧 `date.fromisoformat(date_to) + 1 day` 后与 bsp_date（DATE 列）比较。
+    """
+    if date_from:
+        conditions.append("b.bsp_date >= %s")
+        params.append(_date.fromisoformat(date_from))
+    if date_to:
+        conditions.append("b.bsp_date < %s")
+        params.append(_date.fromisoformat(date_to) + timedelta(days=1))
+
+
 def query_bsp(
     kl_type: str = "",
-    date: str = "",
-    bsp_type: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    bsp_types: Optional[list[str]] = None,
     is_buy: Optional[bool] = None,
     keyword: str = "",
     page: int = 1,
@@ -173,9 +192,13 @@ def query_bsp(
 ) -> dict:
     """条件查询买卖点，返回 {items, total, page, page_size}。
 
-    bsp-page-change 2.3/2.6：keyword（code/name ILIKE）与 kl_type/bsp_type/is_buy/date
-    全部下推进同一 WHERE，COUNT 与分页共用该条件，total = 过滤后总数；无命中返回
+    bsp-page-change 2.3/2.6：keyword（code/name/name_py ILIKE）与
+    kl_type/is_buy/date_from~date_to（半开区间范围，D7）全部下推进
+    同一 WHERE，COUNT 与分页共用该条件，total = 过滤后总数；无命中返回
     list=[] 且 total=0。行业信息不再逐行查询（N+1），由 router 层按页批量取。
+
+    bsp_types（design D11）：原始枚举集合（如 ['2'] 或 ['3a','3b']），IN 匹配；
+    方向语义由 is_buy 承载（router 层从方向化标签解析）。空列表不过滤。
     """
     _ensure_tables()
     conn = _get_pg_conn()
@@ -188,19 +211,18 @@ def query_bsp(
     if kl_type:
         conditions.append("b.kl_type = %s")
         params.append(kl_type)
-    if date:
-        conditions.append("b.bsp_date = %s")
-        params.append(date)
-    if bsp_type:
-        conditions.append("b.bsp_type = %s")
-        params.append(bsp_type)
+    _date_range_conditions(date_from, date_to, conditions, params)
+    if bsp_types:
+        ph = ", ".join(["%s"] * len(bsp_types))
+        conditions.append(f"b.bsp_type IN ({ph})")
+        params.extend(bsp_types)
     if is_buy is not None:
         conditions.append("b.is_buy = %s")
         params.append(is_buy)
     if keyword:
         kw = f"%{keyword}%"
-        conditions.append("(b.code ILIKE %s OR s.name ILIKE %s)")
-        params.extend([kw, kw])
+        conditions.append("(b.code ILIKE %s OR s.name ILIKE %s OR s.name_py ILIKE %s)")
+        params.extend([kw, kw, kw])
 
     where_clause = ""
     if conditions:
@@ -258,11 +280,16 @@ def query_bsp(
 
 def query_bsp_aggregate(
     kl_type: str = "",
-    date: str = "",
+    date_from: str = "",
+    date_to: str = "",
     bsp_type: str = "",
     is_buy: Optional[bool] = None,
 ) -> list[dict]:
-    """GROUP BY 主行业聚合买卖点。"""
+    """GROUP BY 主行业聚合买卖点。
+
+    bsp-page-change 2.6：date 参数连带升级为 date_from/date_to（半开区间
+    `[date_from, date_to + 1)`），与主查询 query_bsp 语义保持一致，避免契约漂移。
+    """
     _ensure_tables()
     conn = _get_pg_conn()
     if conn is None:
@@ -274,9 +301,7 @@ def query_bsp_aggregate(
     if kl_type:
         conditions.append("b.kl_type = %s")
         params.append(kl_type)
-    if date:
-        conditions.append("b.bsp_date = %s")
-        params.append(date)
+    _date_range_conditions(date_from, date_to, conditions, params)
     if bsp_type:
         conditions.append("b.bsp_type = %s")
         params.append(bsp_type)
@@ -493,6 +518,39 @@ def fetch_current_prices(keys: list[tuple[str, str]]) -> dict[tuple[str, str], t
             change_pct = 0.0
         result[(code, period)] = (cur_close, round(change_pct, 2))
     return result
+
+
+def get_price_at(code: str, kl_type: str, time_key: str) -> Optional[dict]:
+    """取该股票指定周期上不晚于 time_key 的最近一根 K 线收盘价（bsp-page-change D12）。
+
+    监控弹窗价格联动用：加入监控即加入「所选时间点的价格」。kl_type 为 bsp 词表值
+    （D/W/M/30m/60m），经 PERIOD_MAP 桥接为 DuckDB 枚举名。无数据返回 None（调用方 404）。
+    """
+    from ChanAnalyse.DataAPI.KLineStore import DEFAULT_DB_PATH, KLineStore
+
+    from .config import DUCKDB_PATH
+
+    kl_name = PERIOD_MAP.get(kl_type)
+    if kl_name is None:
+        return None
+    db_path = DUCKDB_PATH if os.path.exists(DUCKDB_PATH) else DEFAULT_DB_PATH
+    try:
+        with KLineStore(db_path, read_only=True) as store:
+            rows = store.execute(
+                """
+                SELECT time_key, close FROM kline
+                WHERE code = ? AND kl_type = ? AND autype = 'QFQ' AND time_key <= ?
+                ORDER BY time_key DESC LIMIT 1
+                """,
+                [code, kl_name.name, time_key],
+            )
+    except Exception as e:  # 锁冲突/文件缺失：与 fetch_current_prices 同口径降级
+        log.warning("price-at 查询失败: %s %s %s: %s", code, kl_type, time_key, e)
+        return None
+    if not rows:
+        return None
+    tk, close = rows[0]
+    return {"price": float(close), "time_key": str(tk)}
 
 
 # ---- 整套替换写入（幂等层 2+3，bsp-page-change D4）----

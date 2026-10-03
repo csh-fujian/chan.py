@@ -1,6 +1,7 @@
 import { http, HttpResponse, delay } from 'msw'
 import { monitorItems, completedItems, getProfitSeries, generateAttribution } from '../data/monitor'
 import { activeLlmProvider } from '../data/system'
+import { stocks } from '../data/stocks'
 
 export const monitorHandlers = [
   http.get('/api/monitor', async ({ request }) => {
@@ -10,6 +11,65 @@ export const monitorHandlers = [
     let list = monitorItems
     if (keyword) list = list.filter((r) => r.code.includes(keyword) || r.name.includes(keyword))
     return HttpResponse.json(list)
+  }),
+
+  // 行级加入监控（bsp-page-change 4.5）：与真后端 POST /api/monitor 语义一致——
+  // code 缺失 / entry_price 为 0 → 422；成功插入 mock 列表并返回创建结果
+  http.post('/api/monitor', async ({ request }) => {
+    await delay(300)
+    let body: { code?: string; kl_type?: string; entry_price?: number; monitor_start_time?: string } | undefined
+    try {
+      const parsed: unknown = await request.json()
+      if (parsed && typeof parsed === 'object') body = parsed as typeof body
+    } catch {
+      return HttpResponse.json({ detail: '请求体不是合法 JSON' }, { status: 422 })
+    }
+    const code = (body?.code || '').trim()
+    const entryPrice = Number(body?.entry_price) || 0
+    if (!code) {
+      return HttpResponse.json({ detail: 'code is required' }, { status: 422 })
+    }
+    if (!entryPrice) {
+      return HttpResponse.json({ detail: 'entry_price is required' }, { status: 422 })
+    }
+    const klType = body?.kl_type || 'K_DAY'
+    const startTime = body?.monitor_start_time || ''
+    const stock = stocks.find((s) => s.code === code)
+    // mock 侧维护自增 id（与真后端 RETURNING id 语义一致）
+    const id = mockNextId++
+    const item = {
+      id,
+      code,
+      name: stock?.name || code,
+      industries: stock?.industries || [],
+      bsp_type: '',
+      direction: 'buy' as const,
+      bsp_price: entryPrice,
+      current_price: stock?.price || 0,
+      bsp_date: Date.parse(startTime) || Date.now(),
+      kl_type: klType,
+      change_pct: 0,
+      // 新建监控尚无收益率（D8：current_pnl_pct 可空，渲染兜底 --）
+      current_pnl_pct: null,
+      max_profit: 0,
+      max_drawdown: 0,
+      status: 'monitoring' as const,
+    }
+    monitorItems.push(item)
+    // 返回真后端 create_monitor 的行结构（_row_to_dict）
+    return HttpResponse.json({
+      id,
+      code,
+      kl_type: klType,
+      monitor_start_time: startTime,
+      entry_price: entryPrice,
+      status: 'monitoring',
+      sold_price: null,
+      sold_at: null,
+      pnl_pct: null,
+      created_at: new Date().toISOString(),
+      name: item.name,
+    })
   }),
 
   http.get('/api/monitor/completed', async ({ request }) => {
@@ -57,3 +117,6 @@ export const monitorHandlers = [
     return HttpResponse.json({ success: true, id: item.id, attribution: [record] })
   }),
 ]
+
+/** mock 侧自增 id（避开 data/monitor.ts 现有 id 1..7/9001 段） */
+let mockNextId = 10001

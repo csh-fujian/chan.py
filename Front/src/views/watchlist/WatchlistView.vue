@@ -63,14 +63,31 @@
     <div class="main-panel">
       <!-- 工具条 -->
       <div class="toolbar reveal reveal--2">
-        <div class="field" style="width: 240px">
-          <el-icon class="field-icon"><Search /></el-icon>
-          <input
-            v-model="keyword"
-            placeholder="搜索名称 / 编码"
-            @keyup.enter="onSearch"
-          />
-        </div>
+        <!-- 股票搜索：模糊下拉选 code，点「搜索」才触发查询 -->
+        <el-autocomplete
+          ref="acRef"
+          v-model="keyword"
+          :fetch-suggestions="queryStocks"
+          :trigger-on-focus="false"
+          :debounce="300"
+          placeholder="搜索代码 / 名称 / 拼音"
+          :prefix-icon="Search"
+          clearable
+          style="width: 240px"
+          @select="onSelectSuggestion"
+        >
+          <template #default="{ item }">
+            <div class="sug-item" :class="{ 'sug-item--empty': item.placeholder }">
+              <template v-if="item.placeholder">
+                <span class="sug-item__empty">{{ item.name }}</span>
+              </template>
+              <template v-else>
+                <span class="sug-item__code mono">{{ item.code }}</span>
+                <span class="sug-item__name">{{ item.name }}</span>
+              </template>
+            </div>
+          </template>
+        </el-autocomplete>
         <button class="btn btn--default" @click="onSearch">搜索</button>
         <button class="btn btn--default" @click="onReset">重置</button>
         <span class="spacer"></span>
@@ -199,7 +216,7 @@
             filterable
             remote
             :remote-method="searchStock"
-            placeholder="输入名称或编码搜索"
+            placeholder="输入代码 / 名称 / 拼音搜索"
             style="width: 100%"
             :loading="stockSearching"
           >
@@ -246,8 +263,45 @@ import {
 } from '@/api/modules/watchlist'
 import { searchStocks } from '@/api/modules/stock'
 import type { Stock } from '@/api/types'
+import type { AutocompleteInstance } from 'element-plus'
 
 const router = useRouter()
+
+// ---- 股票搜索下拉（el-autocomplete：模糊下拉选 code，点「搜索」才触发查询）----
+interface StockSuggestion {
+  value: string
+  code: string
+  name: string
+  /** 无匹配候选的空态提示项，不参与查询 */
+  placeholder?: boolean
+}
+const acRef = ref<AutocompleteInstance | null>(null)
+
+/** 远程模糊搜索候选（searchStocks 已含防抖语义，此处仅做空输入短路） */
+async function queryStocks(q: string, cb: (items: StockSuggestion[]) => void) {
+  const query = q.trim()
+  if (!query) {
+    cb([])
+    return
+  }
+  try {
+    const list = await searchStocks(query)
+    if (!list.length) {
+      cb([{ value: query, code: '', name: '无匹配候选', placeholder: true }])
+      return
+    }
+    cb(list.map((s) => ({ value: s.code, code: s.code, name: s.name })))
+  } catch {
+    cb([])
+  }
+}
+
+/** 点选候选：输入框回填精确 code（不触发查询，点「搜索」才查） */
+function onSelectSuggestion(item: StockSuggestion) {
+  if (item.placeholder) return
+  keyword.value = item.code
+  acRef.value?.close()
+}
 
 // 股票搜索缓存
 const stockCache = ref<Stock[]>([])
@@ -811,6 +865,31 @@ onBeforeUnmount(() => {
   font-size: 12px;
   color: var(--text-disabled);
   margin: 0;
+}
+.sug-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+  padding: 2px 0;
+}
+.sug-item__code {
+  width: 84px;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: var(--accent-hover);
+}
+.sug-item__name {
+  font-size: 13px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sug-item__empty {
+  font-size: 12px;
+  color: var(--text-disabled);
 }
 
 /* 表格行双击可点击提示 */

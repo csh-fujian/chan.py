@@ -5,10 +5,12 @@
 ## What Changes
 
 - **周期列表改造**：`BspView.vue` 单一 `klOptions` 源同时驱动左侧周期列表与工具栏下拉，统一为 `30分 → 60分 → 日 → 周 → 月` 顺序；**删除 1、5、15 分钟**（DuckDB 从未灌入 1 分钟数据）；**新增月线**（`K_MON` 已随全市场配置灌数）。mock 数据 `klTypes` 同步。
-- **`GET /api/bsp` 可用化**：关键词过滤下推到 SQL（分页前、参与 `total` 计数）；补 `date` 日期条件（接口参数 + 页面日期控件，自 `system-page-change` U6 吸收）；修复前后端契约（响应 `items` → `list`、`BspRecord` 字段映射 `bsp_price`/`direction`/`bsp_date`(ms)/`industries: string[]`、补 `current_price`/`change_pct`）；行业信息由 N+1 查询改为单条 SQL；`GET /api/bsp/{code}` 的 `kl_types IN` 拼接改为参数化。
+- **`GET /api/bsp` 可用化**：关键词过滤下推到 SQL（分页前、参与 `total` 计数）；补 `date_from`/`date_to` 日期范围条件（接口参数 + 页面日期范围控件，页面默认值为最近三个交易日；自 `system-page-change` U6 吸收后由单日精确匹配升级为范围匹配）；修复前后端契约（响应 `items` → `list`、`BspRecord` 字段映射 `bsp_price`/`direction`/`bsp_date`(ms)/`industries: string[]`、补 `current_price`/`change_pct`）；行业信息由 N+1 查询改为单条 SQL；`GET /api/bsp/{code}` 的 `kl_types IN` 拼接改为参数化。
 - **方案 C：水位驱动的幂等补算**：以 DuckDB `max(time_key)` 为源水位、PG `RecomputeCursor` 为处理水位，按 `(code, kl_type, autype)` 逐只对比触发补算；触发点 = 服务启动 / 定时 tick / 灌数后通知 / 手动 API（level-triggered，漏掉的调度自愈）。计算不进灌数进程（避开 DuckDB 单写锁），日终批量为主、盘中 `recompute_fn` 钩子预留。三层幂等：唯一键 + `ON CONFLICT DO NOTHING`；每股票事务内 `DELETE → INSERT` 整套替换（撤销被追溯修正的旧行）；`RecomputeCursor` 同事务推进。
 - **增量续算引擎（自 `chan-stock-manage` 迁入）**：pickle 快照（`chan_dump_pickle`/`chan_load_pickle`）+ `trigger_load` 续算未确认尾部。spike 硬门已实测：续算 == 全量重算 10/10 PASS（7 合成种子 + 3 只真实日线）、pickle 往返稳定、零新 K 线重入幂等；「sure 前缀绝对不变」按字面连全量重算都无法满足，硬门重述为「续算的已确认前缀 == 全量重算的已确认前缀」，并保留按股票全量重算回退作保险。
 - **结果列表 = 计算结果列表**：`/bsp` 结果表直接由 `bsp_index` 查询驱动，不做二次加工。
+- **买卖点时间列（2026-10-02 增补）**：结果表「买卖点日期」列升级为「买卖点时间」——分钟级周期（30m/60m）显示日期+时分，日线及以上仅显示日期；数据侧 `bsp_index.time_key` 已含完整时间，纯前端展示层改动（design D10）。
+- **行级加入监控（2026-10-02 增补）**：结果表每行操作列增「加入监控」按钮——弹窗展示股票/周期/买卖点价格（只读）与买点时间（默认 = 该行买卖点时间、可编辑、「此刻」按钮取当前时间），提交 `POST /api/monitor`；原「加入监控归 chan-stock-manage」裁定收窄为仅指工具条批量按钮（design D8 修订）。
 - **板块聚合暂缓**：`GET /api/bsp/aggregate` 端点与前端「板块聚合」Tab 保留现状、不开发不验收；`chan-stock-manage` 中「板块买卖点聚合」需求按冲突裁定删除，后续另行立项。
 - **需求迁移**：`chan-stock-manage` 的 `bsp-index` 能力（除板块聚合）、增量续算引擎 D3/D4、`GET /api/bsp`/`/api/bsp/{code}`/历史买卖点页任务迁入本变更统一维护；同时清理该变更中残留的自选页面需求内容（需求本体已归 `watchlist-page-change`）。`system-page-change` 原占用的 `bsp-index` 三条（历史查询/板块聚合/多级别）与其 U6 日期条件按 2026-10-01 裁定撤回并并入本变更。
 
