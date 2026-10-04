@@ -35,3 +35,11 @@
 
 - [x] 6.1 迁移 `specs/watchlist` 三项需求至本变更（批量加入按实现改写为「选择目标文件夹」，冲突的「默认日期作文件夹名」条款删除），同步更新 proposal/design/tasks
 - [x] 6.2 删除 chan-stock-manage 的自选页面需求内容（`specs/watchlist/`、proposal 能力声明与 Tab1/Tab2 冲突表述、design 冲突交互描述、任务 6.1 失实括注），两变更均通过 `openspec validate`
+
+## 7. 自选加入监控（行级 + 批量，来源「自选」）
+
+- [x] 7.1 `WebAPI/monitor_store.py`：`create_monitor` 的 `source_type` 白名单放行 `'watchlist'`（纯校验放行，无 DDL）；`WebAPI/routers/monitor.py`：`POST /monitor` body 的 `source_type` 同步放行（非白名单值落 `'chan'` 现状不变）；验证：带 `source_type='watchlist'` 提交后 monitor 行 source_type 落 'watchlist'，不传仍落 'chan'，'xxx' 非法值仍落 'chan'，`GET /monitor` 返回该字段
+- [x] 7.2 `Front/src/api/modules/monitor.ts`：`CreateMonitorPayload` 增加可选 `source_type?: 'chan' | 'strategy' | 'watchlist'`；`Front/src/views/monitor/MonitorView.vue`：来源列 `watchlist` → 显示「自选」（`src-tag` 样式，`strategy_label` 逻辑不动）；`Front/src/mock/handlers|data/monitor.ts`：`source_type` 落库与返回同步支持；验证：`npm run build` 通过，mock 模式下 watchlist 来源记录显示「自选」
+- [x] 7.3 `Front/src/views/watchlist/WatchlistView.vue`：行级「加入监控」按钮 + 弹窗（级别下拉 30m/60m/D/W/M 默认日线、时间默认「此刻」+「此刻」按钮、分组选择/快速新建同 BspView、价格初始 = 行股价 + `getPriceAt` 防抖联动、取价失败保留当前价并提示）；提交携带 `source_type='watchlist'`；验证：行级加入后监控页对应分组下可见、来源列「自选」
+- [x] 7.4 `Front/src/views/watchlist/WatchlistView.vue`：多选批量「加入监控」（弹窗统一参数，提交前端循环 `POST /monitor` 逐只 `getPriceAt`、取价失败按行股价提交并计入提示、单只失败不中断、汇总「成功 X / 失败 Y」）；验证：mock 下批量 3 只（含 1 只取价失败路径）提交后全部入监控、汇总提示正确
+- [x] 7.5 端到端验证（双模式）：mock 全链路（行级/批量/分组新建/默认日线/取价失败兜底）+ 真后端（PG 可达时）同链路，重点核对 `source_type='watchlist'` 落库与监控页来源列显示；`npm run build` 无类型错误

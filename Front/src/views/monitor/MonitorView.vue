@@ -8,8 +8,74 @@
         :active-key="tabMode"
         @update:active-key="onTabChange"
       />
-      <!-- 监控中 tab：盈利 / 周期过滤 -->
+      <!-- 监控中 tab：盈利 / 周期 / 分组过滤 -->
       <template v-if="tabMode === 'monitoring'">
+        <!-- 分组过滤树（monitor-group-change 4.1/4.2/4.3）：
+             全部/未分组虚拟节点 + 各分组按 sort_order；选中即带 group_id 重查；
+             hover 重命名/删除图标 + 新建按钮 + 拖拽排序（虚拟节点不参与拖拽） -->
+        <div class="sidebar__group">
+          <div class="sidebar__group-label">
+            分组
+            <span class="spacer"></span>
+            <button
+              class="btn btn--ghost btn--sm group-create-btn"
+              title="新建分组"
+              @click="openCreateGroup"
+            >
+              <el-icon><Plus /></el-icon> 新建
+            </button>
+          </div>
+          <div
+            class="tree__item"
+            :class="{ 'is-active': activeMonitorGroup === 'all' }"
+            @click="onMonitorGroupChange('all')"
+          >
+            <span class="group-name">全部</span>
+            <span class="count">{{ monitorList.length }}</span>
+          </div>
+          <div
+            class="tree__item"
+            :class="{ 'is-active': activeMonitorGroup === 'ungrouped' }"
+            @click="onMonitorGroupChange('ungrouped')"
+          >
+            <span class="group-name">未分组</span>
+            <span class="count">{{ ungroupedMonitoringCount }}</span>
+          </div>
+          <draggable
+            :list="monitorGroups"
+            item-key="id"
+            tag="div"
+            class="group-drag"
+            :delay="200"
+            :delay-on-touch-only="false"
+            :touch-start-threshold="4"
+            filter=".group-edit, .group-del"
+            :prevent-on-filter="false"
+            @start="onGroupDragStart"
+            @end="onGroupDragEnd"
+          >
+            <template #item="{ element: g }">
+              <div
+                class="tree__item"
+                :class="{ 'is-active': activeMonitorGroup === String(g.id) }"
+                @click="onMonitorGroupChange(String(g.id))"
+              >
+                <span class="group-name" :title="g.name">{{ g.name }}</span>
+                <span class="count">{{ g.monitoring_count }}</span>
+                <el-icon
+                  class="group-edit"
+                  title="重命名分组"
+                  @click.stop="openRenameGroup(g)"
+                  ><EditPen /></el-icon>
+                <el-icon
+                  class="group-del"
+                  title="删除分组"
+                  @click.stop="onDeleteGroup(g)"
+                  ><Close /></el-icon>
+              </div>
+            </template>
+          </draggable>
+        </div>
         <TreeList
           group-label="盈利"
           :items="profitItems"
@@ -23,8 +89,38 @@
           @update:active-key="onKlChange"
         />
       </template>
-      <!-- 已完成 tab：归因 / 失败原因过滤 -->
+      <!-- 已完成 tab：归因 / 失败原因 / 只读分组过滤 -->
       <template v-else>
+        <!-- 已完成 tab 分组树（4.4：只读过滤，无管理动作；选中带 group_id 调 getCompletedList） -->
+        <div class="sidebar__group">
+          <div class="sidebar__group-label">分组</div>
+          <div
+            class="tree__item"
+            :class="{ 'is-active': activeCompletedGroup === 'all' }"
+            @click="onCompletedGroupChange('all')"
+          >
+            <span class="group-name">全部</span>
+            <span class="count">{{ completedList.length }}</span>
+          </div>
+          <div
+            class="tree__item"
+            :class="{ 'is-active': activeCompletedGroup === 'ungrouped' }"
+            @click="onCompletedGroupChange('ungrouped')"
+          >
+            <span class="group-name">未分组</span>
+            <span class="count">{{ ungroupedCompletedCount }}</span>
+          </div>
+          <div
+            v-for="g in monitorGroups"
+            :key="g.id"
+            class="tree__item"
+            :class="{ 'is-active': activeCompletedGroup === String(g.id) }"
+            @click="onCompletedGroupChange(String(g.id))"
+          >
+            <span class="group-name" :title="g.name">{{ g.name }}</span>
+            <span class="count">{{ g.completed_count }}</span>
+          </div>
+        </div>
         <TreeList
           group-label="归因"
           :items="attrItems"
@@ -40,6 +136,24 @@
       </template>
     </Sidebar>
 
+    <!-- 分组弹窗：新建 / 重命名 复用同一对话框（对齐 WatchlistView D6 模式，任务 4.2） -->
+    <el-dialog
+      v-model="groupDialogVisible"
+      :title="groupDialogMode === 'create' ? '新建分组' : '重命名分组'"
+      width="420px"
+      append-to-body
+    >
+      <el-form @submit.prevent>
+        <el-form-item label="分组名">
+          <el-input v-model="groupName" placeholder="请输入分组名" autofocus />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="groupDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="groupSaving" @click="onSubmitGroup">确认</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 右侧主面板 -->
     <div class="main-panel">
       <div class="monitor-page">
@@ -52,7 +166,9 @@
         </div>
 
         <!-- ==================== 监控中 tab ==================== -->
-        <template v-if="tabMode === 'monitoring'">
+        <!-- key 强制分支整体重建：两个 tab 结构相似，unkeyed diff 会原地复用 el-table-column
+             组件实例，列组件 inject 到已卸载旧 table 的 store 上导致列注册丢失（表格塌陷 bug） -->
+        <div v-if="tabMode === 'monitoring'" key="tab-monitoring">
           <!-- 汇总卡（design D11：总体盈利=收益率求和；新增当前胜率/涨幅最大） -->
           <div class="stat-row">
             <StatCard
@@ -116,16 +232,31 @@
               </el-autocomplete>
             </div>
             <el-button type="primary" @click="mSearch.apply">查询</el-button>
-            <el-button @click="mSearch.reset">重置</el-button>
+            <el-button @click="onResetMonitoringFilters">重置</el-button>
+            <!-- 来源下拉（design D14）：字典来自 GET /monitor/sources，与标的查询叠加过滤 -->
+            <el-select
+              v-model="mSourceValue"
+              placeholder="全部来源"
+              clearable
+              style="width: 200px"
+            >
+              <el-option
+                v-for="s in monitorSources"
+                :key="s.value"
+                :label="s.label"
+                :value="s.value"
+              />
+            </el-select>
           </div>
 
           <Panel flush>
             <el-table
+              key="monitor-table"
+              ref="monitorTableRef"
               v-loading="loading"
               :data="pagedList"
               style="width: 100%"
               row-key="id"
-              @row-dblclick="onViewDetail"
             >
               <el-table-column label="名称 / 编码" min-width="150">
                 <template #default="{ row }">
@@ -142,6 +273,18 @@
               <el-table-column label="行业" min-width="120">
                 <template #default="{ row }">
                   <IndustryBadges :industries="row.industries" />
+                </template>
+              </el-table-column>
+              <!-- 来源列（strategy-signal-page 任务 6.1 + D14 + watchlist-page-change 7.2）：strategy 显示
+                   「策略名·实例名·状态」小号标签；watchlist 显示「自选」（src-tag 同款样式）；
+                   chan（含缺省）显示「缠论」次要文本。位置在买卖点类型列之前 -->
+              <el-table-column label="来源" width="100" align="center">
+                <template #default="{ row }">
+                  <span v-if="row.source_type === 'strategy' && row.strategy_label" class="src-tag" :title="row.strategy_label">
+                    {{ row.strategy_label }}
+                  </span>
+                  <span v-else-if="row.source_type === 'watchlist'" class="src-tag">自选</span>
+                  <span v-else class="src-chan">缠论</span>
                 </template>
               </el-table-column>
               <!-- 买卖点类型（design D9：原「买卖点」+「方向」两列合并，展示 bsp_type 值，B 系红 / S 系绿） -->
@@ -185,7 +328,7 @@
                   <span class="num">{{ klLabel(row.kl_type) }}</span>
                 </template>
               </el-table-column>
-              <el-table-column label="操作" width="140" align="right" fixed="right">
+              <el-table-column label="操作" width="100" align="right" fixed="right">
                 <template #default="{ row }">
                   <el-button
                     v-if="row.status === 'monitoring'"
@@ -196,9 +339,6 @@
                     @click="onEnd(row)"
                   >
                     手动结束
-                  </el-button>
-                  <el-button link type="primary" size="small" @click="onViewDetail(row)">
-                    查看详情
                   </el-button>
                 </template>
               </el-table-column>
@@ -250,10 +390,10 @@
               </template>
             </div>
           </Panel>
-        </template>
+        </div>
 
         <!-- ==================== 已完成 tab（原 CompletedView 并入，design D6） ==================== -->
-        <template v-else>
+        <div v-else key="tab-completed">
           <!-- 顶部统计卡片行 -->
           <div class="stat-row">
             <StatCard label="完成总数" :value="String(completedList.length)" foot="历史已结算" />
@@ -306,7 +446,21 @@
               </el-autocomplete>
             </div>
             <el-button type="primary" @click="cSearch.apply">查询</el-button>
-            <el-button @click="cSearch.reset">重置</el-button>
+            <el-button @click="onResetCompletedFilters">重置</el-button>
+            <!-- 来源下拉（design D14）：字典来自 GET /monitor/sources，与标的查询叠加过滤 -->
+            <el-select
+              v-model="cSourceValue"
+              placeholder="全部来源"
+              clearable
+              style="width: 200px"
+            >
+              <el-option
+                v-for="s in monitorSources"
+                :key="s.value"
+                :label="s.label"
+                :value="s.value"
+              />
+            </el-select>
             <span class="spacer"></span>
             <el-button
               type="primary"
@@ -327,11 +481,12 @@
           <!-- 完成列表表格 -->
           <Panel title="监控完成记录" sub="已结算卖出" flush>
             <el-table
+              key="completed-table"
+              ref="completedTableRef"
               v-loading="loading"
               :data="pagedCompletedList"
               style="width: 100%"
               row-key="id"
-              :row-class-name="completedRowClass"
             >
               <el-table-column label="名称 / 编码" min-width="150">
                 <template #default="{ row }">
@@ -343,6 +498,18 @@
                     <span class="nm">{{ row.name }}</span>
                     <span class="cd mono">{{ row.code }}</span>
                   </div>
+                </template>
+              </el-table-column>
+              <!-- 来源列（strategy-signal-page 任务 6.1 + D14 + watchlist-page-change 7.2，语义同监控中表格）：
+                   strategy 策略标签小号标签；watchlist 显示「自选」（src-tag 同款样式）；
+                   chan（含缺省）显示「缠论」次要文本 -->
+              <el-table-column label="来源" width="100" align="center">
+                <template #default="{ row }">
+                  <span v-if="row.source_type === 'strategy' && row.strategy_label" class="src-tag" :title="row.strategy_label">
+                    {{ row.strategy_label }}
+                  </span>
+                  <span v-else-if="row.source_type === 'watchlist'" class="src-tag">自选</span>
+                  <span v-else class="src-chan">缠论</span>
                 </template>
               </el-table-column>
               <!-- 买卖点类型（design D9：原「买卖点」+「方向」两列合并，展示 bsp_type 值，B 系红 / S 系绿） -->
@@ -445,7 +612,7 @@
               <EmptyState v-if="lossItems.length === 0" description="暂无亏损归因记录" />
             </div>
           </Panel>
-        </template>
+        </div>
       </div>
     </div>
 
@@ -458,18 +625,19 @@
 /**
  * MonitorView.vue — 监控单页（design D6/D7/D8，monitor-page-change 任务组 7）
  * - D6：CompletedView 并入为「已完成」tab，顶部 el-radio-group 整体切换内容区，
- *   不走路由；归因抽屉/批量分析随迁；原 route.query.code 带参逻辑改为页内
- *   「查看详情」切 tab 并定位高亮行。
+ *   不走路由；归因抽屉/批量分析随迁；已完成 tab 仅由顶部 tab 手动切换到达
+ *   （原「查看详情」切 tab 定位链路已随 D13 删除）。
  * - D7：搜索框对齐 K 线页（el-autocomplete + searchStocks 远程候选 +
  *   300ms setTimeout 本地防抖 + 后发覆盖 + Enter 语义），点选/回车按 code 精确过滤。
  * - D8：监控中列表新增「买卖点时间」（bsp_date）与「收益率」（current_pnl_pct）
  *   两列；盈利走势改为由列表各标的收益率前端聚合（替换 mock profit-series
  *   随机游走），曲线 >0 红 / <0 绿分段着色 + 0 轴参考线。
  */
-import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox, type AutocompleteInstance } from 'element-plus'
-import { Search } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox, type AutocompleteInstance, type TableInstance } from 'element-plus'
+import { Search, Plus, EditPen, Close } from '@element-plus/icons-vue'
+import draggable from 'vuedraggable'
 import Sidebar from '@/components/layout/Sidebar.vue'
 import TreeList from '@/components/ui/TreeList.vue'
 import Panel from '@/components/ui/Panel.vue'
@@ -481,7 +649,20 @@ import EmptyState from '@/components/ui/EmptyState.vue'
 import ProfitChart from '@/components/charts/ProfitChart.vue'
 import SampleDrawer from './SampleDrawer.vue'
 import { usePagination } from '@/composables/usePagination'
-import { getMonitorList, getCompletedList, endMonitor, analyzeMonitor } from '@/api/modules/monitor'
+import {
+  getMonitorList,
+  getCompletedList,
+  getMonitorSources,
+  endMonitor,
+  analyzeMonitor,
+  getMonitorGroups,
+  createMonitorGroup,
+  renameMonitorGroup,
+  deleteMonitorGroup,
+  reorderMonitorGroups,
+  type MonitorGroup,
+  type MonitorSource,
+} from '@/api/modules/monitor'
 import { searchStocks } from '@/api/modules/stock'
 import { bspLabel } from '@/utils/bsp'
 import type { MonitorItem, CompletedItem, AnalyzeResult } from '@/api/types'
@@ -495,6 +676,10 @@ const completedCount = ref(0)
 // ---- 顶部 tab（design D6：单页双 tab，不走路由） ----
 const tabMode = ref<'monitoring' | 'completed'>('monitoring')
 
+/** 两个 tab 的 el-table ref — v-if 切换重建后修复列注册派生（ElementPlus 2.8 表格塌陷修复） */
+const monitorTableRef = ref<TableInstance | null>(null)
+const completedTableRef = ref<TableInstance | null>(null)
+
 function onTabChange(v: string | number | boolean) {
   const val = String(v)
   if (val !== 'monitoring' && val !== 'completed') return
@@ -502,6 +687,36 @@ function onTabChange(v: string | number | boolean) {
   if (val === 'monitoring') page.value = 1
   else cPage.value = 1
 }
+
+/**
+ * tab 切换后修复 el-table 列派生（ElementPlus 2.8 bug）：
+ * v-if 重建 table 时列组件重新注册进 _columns，但内部派生 originColumns 的
+ * watcher 被列复用/时序竞态吞掉，originColumns/columns 停留为 0 → colgroup 空、
+ * 表格塌陷。手动调 store.updateColumns() 重跑派生，再强制 ElTableBody 重渲。
+ */
+async function fixTableColumns(tableRef: typeof monitorTableRef) {
+  await nextTick()
+  const table = tableRef.value as unknown as { store?: { updateColumns?: () => void } } | null
+  table?.store?.updateColumns?.()
+  // ElTableBody 是独立组件，其渲染快照需要单独强制更新
+  const tableEl = (tableRef.value as unknown as { $el?: HTMLElement } | null)?.$el
+  const tbody = tableEl?.querySelector('.el-table__body tbody') as (Element & { __vueParentComponent?: unknown }) | null
+  type Comp = { type?: { name?: string }; update?: () => void; parent?: Comp } | undefined
+  let cur = tbody?.__vueParentComponent as Comp
+  while (cur) {
+    if (cur.type?.name === 'ElTableBody') { cur.update?.(); break }
+    cur = cur.parent
+  }
+  tableRef.value?.doLayout()
+}
+
+watch(tabMode, (val) => {
+  if (val === 'monitoring') {
+    fixTableColumns(monitorTableRef)
+  } else {
+    fixTableColumns(completedTableRef)
+  }
+})
 
 // ---- 监控中 tab 侧栏过滤 ----
 const activeProfit = ref('all')
@@ -534,10 +749,163 @@ function onKlChange(k: string) {
   page.value = 1
 }
 
+// ---------------------------------------------------------------------------
+// 分组（monitor-group-change 任务组 4）：两个 tab 各自维护分组过滤状态，
+// 跨 tab 切回选择保持（与 activeKl/activeProfit 一致，组件内状态不重置）
+// ---------------------------------------------------------------------------
+/** 分组树选中 key：'all' / 'ungrouped' / 数值 id 字符串 */
+const activeMonitorGroup = ref('all')
+const activeCompletedGroup = ref('all')
+
+/** 分组列表（按 sort_order 升序，含组内计数） */
+const monitorGroups = ref<MonitorGroup[]>([])
+
+/** 未分组虚拟节点计数（左栏 count 展示用；从两组列表全量统计） */
+const ungroupedMonitoringCount = computed(
+  () => monitorList.value.filter((r) => r.group_id === null).length,
+)
+const ungroupedCompletedCount = computed(
+  () => completedList.value.filter((r) => r.group_id === null).length,
+)
+
+async function loadMonitorGroups() {
+  try {
+    monitorGroups.value = await getMonitorGroups()
+  } catch (e) {
+    // 失败已由拦截器提示；保留现有分组树避免清空交互入口
+    console.warn('[MonitorView.loadMonitorGroups] 加载监控分组失败', { error: e })
+  }
+}
+
+/** 选中分组节点即带 group_id 重查（'all' 不传参，design D3）；两个 tab 各自处理 */
+async function onMonitorGroupChange(k: string) {
+  activeMonitorGroup.value = k
+  page.value = 1
+  await loadMonitorList()
+}
+
+async function onCompletedGroupChange(k: string) {
+  activeCompletedGroup.value = k
+  cPage.value = 1
+  await loadCompletedList()
+}
+
+/** 当前选中分组 → API 查询参数（'all' → undefined） */
+function toGroupParam(k: string): string | undefined {
+  return k === 'all' ? undefined : k
+}
+
+// ---------------------------------------------------------------------------
+// 分组树管理动作（对齐 WatchlistView 模式，任务 4.2/4.3）：
+// hover 重命名/删除图标 + 模式化新建/重命名弹窗 + 删除确认（含组内记录数）+ 拖拽排序
+// ---------------------------------------------------------------------------
+const groupDialogVisible = ref(false)
+const groupDialogMode = ref<'create' | 'rename'>('create')
+const editingGroupId = ref<number | null>(null)
+const groupName = ref('')
+const groupSaving = ref(false)
+
+function openCreateGroup() {
+  groupDialogMode.value = 'create'
+  editingGroupId.value = null
+  groupName.value = ''
+  groupDialogVisible.value = true
+}
+
+function openRenameGroup(g: MonitorGroup) {
+  groupDialogMode.value = 'rename'
+  editingGroupId.value = g.id
+  groupName.value = g.name
+  groupDialogVisible.value = true
+}
+
+async function onSubmitGroup() {
+  const name = groupName.value.trim()
+  if (!name) {
+    // 空名拦截：不发请求
+    ElMessage.warning('请输入分组名')
+    return
+  }
+  groupSaving.value = true
+  try {
+    if (groupDialogMode.value === 'rename') {
+      const id = editingGroupId.value
+      if (id == null) {
+        console.warn('[MonitorView.onSubmitGroup] 重命名缺少 editingGroupId，取消提交', { name })
+        return
+      }
+      await renameMonitorGroup(id, name)
+      ElMessage.success('分组已重命名')
+    } else {
+      await createMonitorGroup(name)
+      ElMessage.success('分组已创建')
+    }
+    groupDialogVisible.value = false
+    // 管理操作完成后刷新分组树（重命名/新建后名称与计数同步）
+    await loadMonitorGroups()
+  } catch (e) {
+    // 失败（重名/空名 4xx detail）已由拦截器提示
+    console.warn('[MonitorView.onSubmitGroup] 保存分组失败', {
+      mode: groupDialogMode.value,
+      editingGroupId: editingGroupId.value,
+      name,
+      error: e,
+    })
+  } finally {
+    groupSaving.value = false
+  }
+}
+
+async function onDeleteGroup(g: MonitorGroup) {
+  const total = g.monitoring_count + g.completed_count
+  try {
+    await ElMessageBox.confirm(
+      `确定删除分组「${g.name}」吗？` +
+        (total > 0 ? `组内 ${g.monitoring_count} 条监控中、${g.completed_count} 条已完成记录将归入「未分组」，不会被删除。` : ''),
+      '删除分组',
+      { type: 'warning' },
+    )
+  } catch {
+    return // 用户取消
+  }
+  try {
+    await deleteMonitorGroup(g.id)
+    ElMessage.success('分组已删除')
+    // 选中项被删 → 回退「全部」；无论选中何值都重查列表
+    //（选中「未分组」/「全部」时被删组的记录已归未分组，服务端需重取）
+    if (activeMonitorGroup.value === String(g.id)) activeMonitorGroup.value = 'all'
+    if (activeCompletedGroup.value === String(g.id)) activeCompletedGroup.value = 'all'
+    await Promise.all([loadMonitorList(), loadCompletedList()])
+    await loadMonitorGroups()
+  } catch (e) {
+    console.warn('[MonitorView.onDeleteGroup] 删除分组失败', { id: g.id, error: e })
+  }
+}
+
+// ---- 分组拖拽排序（复用 WatchlistView draggable 实现，虚拟节点不参与） ----
+/** 拖拽前快照：失败回滚用 */
+let groupSnapshot: MonitorGroup[] = []
+
+function onGroupDragStart() {
+  groupSnapshot = monitorGroups.value.map((g) => ({ ...g }))
+}
+
+async function onGroupDragEnd() {
+  // vuedraggable 已乐观重排 monitorGroups，这里负责持久化；失败回滚并提示
+  const ids = monitorGroups.value.map((g) => g.id)
+  try {
+    await reorderMonitorGroups(ids)
+    // 拖拽后本地顺序已是新序（groups 接口按 sort_order 返回，服务端已全量覆盖）
+  } catch (e) {
+    monitorGroups.value = groupSnapshot
+    console.warn('[MonitorView.onGroupDragEnd] 分组顺序保存失败，已回滚', { ids, error: e })
+    ElMessage.error('分组顺序保存失败，已恢复原顺序')
+  }
+}
+
 // ---- 已完成 tab 侧栏过滤 ----
 const activeAttr = ref('all')
 const activeReason = ref('all')
-
 const attrItems = [
   { key: 'all', label: '全部' },
   { key: 'analyzed', label: '已归因' },
@@ -732,11 +1100,51 @@ const cSearch = createStockSearch(() => {
   cPage.value = 1
 })
 
-// ---- 监控中过滤（D7：keyword 条件改为所选 code 精确匹配） ----
+// ---- 来源下拉（design D14：字典来自后端，两 tab 共用选项、独立选中） ----
+const monitorSources = ref<MonitorSource[]>([])
+const mSourceValue = ref<string>('') // 监控中 tab 选中来源（'' = 全部）
+const cSourceValue = ref<string>('') // 已完成 tab 选中来源（'' = 全部）
+
+/** 来源字典项匹配行：'chan'/'watchlist' 按 source_type；'strategy:<id>' 加 instance_id */
+function matchSource(row: MonitorItem, value: string): boolean {
+  if (!value) return true
+  if (value === 'chan') return (row.source_type ?? 'chan') === 'chan'
+  if (value === 'watchlist') return row.source_type === 'watchlist'
+  if (value.startsWith('strategy:')) {
+    const id = Number(value.slice('strategy:'.length))
+    return row.source_type === 'strategy' && row.instance_id === id
+  }
+  return true
+}
+
+async function loadMonitorSources() {
+  try {
+    monitorSources.value = await getMonitorSources()
+  } catch {
+    // 失败已由拦截器提示；下拉保持空选项，不影响列表展示
+  }
+}
+
+/** 重置（monitoring tab）：清空搜索 + 来源选择（D14：重置语义扩展） */
+function onResetMonitoringFilters() {
+  mSearch.reset()
+  mSourceValue.value = ''
+}
+
+/** 重置（completed tab）：清空搜索 + 来源选择 */
+function onResetCompletedFilters() {
+  cSearch.reset()
+  cSourceValue.value = ''
+}
+
+// ---- 监控中过滤（D7：keyword 条件改为所选 code 精确匹配；D14：来源过滤叠加） ----
 const filteredList = computed<MonitorItem[]>(() => {
   let list = monitorList.value
   if (mSearch.selectedCode.value) {
     list = list.filter((r) => r.code === mSearch.selectedCode.value)
+  }
+  if (mSourceValue.value) {
+    list = list.filter((r) => matchSource(r, mSourceValue.value))
   }
   if (activeKl.value !== 'all') {
     list = list.filter((r) => r.kl_type === activeKl.value)
@@ -754,11 +1162,14 @@ const pagedList = computed(() => {
   return filteredList.value.slice(start, start + pageSize.value)
 })
 
-// ---- 已完成过滤（D7 增补：与监控中同款，按所选 code 精确匹配） ----
+// ---- 已完成过滤（D7 增补：与监控中同款，按所选 code 精确匹配；D14：来源过滤叠加） ----
 const filteredCompletedList = computed(() => {
   let list = completedList.value
   if (cSearch.selectedCode.value) {
     list = list.filter((r) => r.code === cSearch.selectedCode.value)
+  }
+  if (cSourceValue.value) {
+    list = list.filter((r) => matchSource(r, cSourceValue.value))
   }
   if (activeAttr.value === 'analyzed') {
     list = list.filter((r) => r.ai_analyzed)
@@ -776,20 +1187,20 @@ const pagedCompletedList = computed(() => {
   return filteredCompletedList.value.slice(start, start + cPageSize.value)
 })
 
-// ---- 汇总（监控中 tab，design D11：收益率求和 + 当前胜率 + 涨幅最大） ----
+// ---- 汇总（监控中 tab，design D11：收益率求和 + 当前胜率 + 涨幅最大；D14：消费来源过滤后列表） ----
 const totalProfit = computed(() => {
   // 收益率列求和（null 行跳过）
-  const sum = monitorList.value.reduce((acc, r) => acc + (r.current_pnl_pct ?? 0), 0)
+  const sum = filteredList.value.reduce((acc, r) => acc + (r.current_pnl_pct ?? 0), 0)
   return +sum.toFixed(2)
 })
 const totalProfitStr = computed(() => `${totalProfit.value >= 0 ? '+' : ''}${totalProfit.value.toFixed(2)}%`)
 
 /** 当前胜率（D11）：current_price > bsp_price 计胜；两者任一缺失的行不计入分母 */
 const winCount = computed(() =>
-  monitorList.value.filter((r) => r.current_price != null && r.bsp_price != null && r.current_price > r.bsp_price).length,
+  filteredList.value.filter((r) => r.current_price != null && r.bsp_price != null && r.current_price > r.bsp_price).length,
 )
 const winTotal = computed(() =>
-  monitorList.value.filter((r) => r.current_price != null && r.bsp_price != null).length,
+  filteredList.value.filter((r) => r.current_price != null && r.bsp_price != null).length,
 )
 const winRate = computed(() => {
   if (winTotal.value === 0) return 0
@@ -799,7 +1210,7 @@ const winRateStr = computed(() => `${winRate.value.toFixed(1)}%`)
 
 /** 涨幅最大（D11）：当日涨跌幅（change_pct）最高值，含标的与级别 */
 const maxChange = computed<MonitorItem | null>(() => {
-  const rows = monitorList.value.filter((r) => r.change_pct != null)
+  const rows = filteredList.value.filter((r) => r.change_pct != null)
   if (rows.length === 0) return null
   return rows.reduce((best, r) => (r.change_pct > best.change_pct ? r : best))
 })
@@ -807,9 +1218,9 @@ const maxChangeStr = computed(() =>
   maxChange.value ? `${maxChange.value.change_pct >= 0 ? '+' : ''}${maxChange.value.change_pct.toFixed(2)}%` : '--',
 )
 
-// ---- 已完成统计（改名 c 前缀，与监控中 D11 统计区分） ----
+// ---- 已完成统计（改名 c 前缀，与监控中 D11 统计区分；D14：消费来源过滤后列表） ----
 const cWinRate = computed(() => {
-  const list = completedList.value
+  const list = filteredCompletedList.value
   if (list.length === 0) return 0
   const wins = list.filter((r) => r.profit > 0).length
   return +((wins / list.length) * 100).toFixed(1)
@@ -817,7 +1228,7 @@ const cWinRate = computed(() => {
 const cWinRateStr = computed(() => `${cWinRate.value.toFixed(1)}%`)
 
 const avgProfit = computed(() => {
-  const list = completedList.value
+  const list = filteredCompletedList.value
   if (list.length === 0) return 0
   const sum = list.reduce((acc, r) => acc + r.profit, 0)
   return +(sum / list.length).toFixed(2)
@@ -825,7 +1236,7 @@ const avgProfit = computed(() => {
 const avgProfitStr = computed(() => `${avgProfit.value >= 0 ? '+' : ''}${avgProfit.value.toFixed(2)}%`)
 
 const profitRatio = computed(() => {
-  const list = completedList.value
+  const list = filteredCompletedList.value
   const wins = list.filter((r) => r.profit > 0)
   const losses = list.filter((r) => r.profit < 0)
   if (wins.length === 0 || losses.length === 0) return wins.length / (losses.length || 1)
@@ -979,31 +1390,6 @@ function onGoKline(row: { code: string; kl_type: string }) {
   router.push({ name: 'kline', query: q })
 }
 
-// ---- 查看详情（design D6：页内切到已完成 tab 并定位/高亮对应标的行，不走路由） ----
-/** 已完成列表中待高亮的标的 code（切 tab 定位行用） */
-const highlightCode = ref('')
-
-function completedRowClass({ row }: { row: CompletedItem }): string {
-  return row.code === highlightCode.value ? 'row--hl' : ''
-}
-
-async function onViewDetail(row: MonitorItem) {
-  highlightCode.value = row.code
-  tabMode.value = 'completed'
-  cPage.value = 1
-  cSearch.reset()
-  await nextTick()
-  const idx = filteredCompletedList.value.findIndex((r) => r.code === row.code)
-  if (idx < 0) {
-    // 该标的尚无完成记录（仍在监控中）：切到已完成 tab 不定位，给出提示
-    console.warn('[MonitorView.onViewDetail] 标的无完成记录，跳过定位', { code: row.code })
-    ElMessage.info(`「${row.name}」暂无完成记录`)
-    highlightCode.value = ''
-    return
-  }
-  cPage.value = Math.floor(idx / cPageSize.value) + 1
-}
-
 // ---- 归因详情抽屉（design D6：状态随内容并入，SampleDrawer 复用） ----
 const drawerVisible = ref(false)
 const drawerItem = ref<CompletedItem | null>(null)
@@ -1076,12 +1462,38 @@ async function onBatchAnalyze() {
 }
 
 // ---- 加载 ----
+/** 按当前选中分组拉监控中列表（group_id 服务端过滤，monitor-group-change D3/D6） */
+async function loadMonitorList() {
+  loading.value = true
+  try {
+    const ml = await getMonitorList(undefined, toGroupParam(activeMonitorGroup.value))
+    monitorList.value = ml
+    statusItems[0].count = ml.length
+    setTotal(ml.length)
+  } finally {
+    loading.value = false
+  }
+}
+
+/** 按当前选中分组拉已完成列表（语义同上） */
+async function loadCompletedList() {
+  loading.value = true
+  try {
+    const cl = await getCompletedList(undefined, toGroupParam(activeCompletedGroup.value))
+    completedList.value = cl
+    completedCount.value = cl.length
+    statusItems[1].count = cl.length
+  } finally {
+    loading.value = false
+  }
+}
+
 async function loadAll() {
   loading.value = true
   try {
     const [ml, cl] = await Promise.all([
-      getMonitorList(),
-      getCompletedList(),
+      getMonitorList(undefined, toGroupParam(activeMonitorGroup.value)),
+      getCompletedList(undefined, toGroupParam(activeCompletedGroup.value)),
     ])
     monitorList.value = ml
     completedList.value = cl
@@ -1094,7 +1506,13 @@ async function loadAll() {
   }
 }
 
-onMounted(loadAll)
+onMounted(async () => {
+  // 分组树先于列表加载（列表带分组过滤参数依赖选中态，默认 'all' 不传参）；
+  // 来源字典并行加载（D14，失败不阻塞列表）
+  await loadMonitorGroups()
+  void loadMonitorSources()
+  await loadAll()
+})
 
 onBeforeUnmount(() => {
   mSearch.dispose()
@@ -1106,14 +1524,57 @@ onBeforeUnmount(() => {
 .monitor-page {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-lg);
+  gap: var(--sp-2xl);           /* 24px — 统计卡/搜索/表格/图表之间更明确的层级间隔 */
   flex: 1;
+}
+/* ---- 分组树（monitor-group-change 任务组 4，对齐 WatchlistView 样式模式） ---- */
+.group-create-btn {
+  padding: 2px 6px;
+}
+.group-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.sidebar__group-label {
+  display: flex;
+  align-items: center;
+}
+.sidebar__group-label .spacer {
+  flex: 1;
+}
+.group-del,
+.group-edit {
+  color: var(--text-disabled);
+  width: 14px;
+  height: 14px;
+  margin-left: 2px;
+  border-radius: var(--r-sm);
+  flex-shrink: 0;
+}
+.group-edit:hover {
+  color: var(--accent-hover);
+  background: var(--accent-dim);
+}
+.group-del:hover {
+  color: var(--rise);
+  background: var(--rise-dim);
+}
+/* 拖拽分组时的视觉反馈（同 WatchlistView tree__drag） */
+:deep(.group-drag .sortable-ghost) {
+  opacity: 0.45;
+  background: var(--accent-dim);
+}
+:deep(.group-drag .sortable-chosen) {
+  background: var(--bg-surface-hover);
 }
 /* 顶部 tab（design D6）：显著位置整体切换内容区 */
 .tabbar {
   display: flex;
   align-items: center;
   gap: var(--sp-md);
+  margin-bottom: 0;             /* tabbar 不额外下移，靠 flex gap 统一控制 */
 }
 .stat-row {
   display: flex;
@@ -1122,10 +1583,33 @@ onBeforeUnmount(() => {
 .stat-row > * {
   flex: 1;
 }
+/* 工具栏（搜索栏）：与上方统计卡增加额外呼吸间距 */
+.toolbar {
+  margin-top: var(--sp-sm);     /* +8px above — 统计卡 → 搜索栏视觉落差 */
+  margin-bottom: var(--sp-sm);  /* +8px below — 搜索栏 → 表格视觉落差 */
+}
 .cell-stock {
   display: flex;
   flex-direction: column;
   line-height: 1.3;
+}
+/* 来源列（strategy-signal-page 任务 6.1）：策略来源小号标签 + 缠论次要文本 */
+.src-tag {
+  display: inline-block;
+  max-width: 100%;
+  padding: 1px 6px;
+  font-size: 10px;
+  line-height: 16px;
+  border-radius: var(--r-full);
+  background: var(--accent-dim);
+  color: var(--accent-hover);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.src-chan {
+  font-size: 12px;
+  color: var(--text-disabled);
 }
 .cell-stock .nm {
   color: var(--text-primary);
@@ -1184,10 +1668,6 @@ onBeforeUnmount(() => {
 .sug-item__empty {
   font-size: 12px;
   color: var(--text-disabled);
-}
-/* 查看详情定位高亮行（design D6） */
-:deep(.el-table .row--hl) {
-  background: var(--accent-dim);
 }
 .progress-hint {
   display: flex;

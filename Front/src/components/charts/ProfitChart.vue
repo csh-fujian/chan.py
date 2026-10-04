@@ -105,13 +105,19 @@ function render() {
     series: [seriesOption],
   }
   if (split) {
-    // visualMap piecewise 分段着色（D8）：>0 红、<0 绿（=0 归入红段边界，不单独成段）
+    // visualMap piecewise 分段着色（D8）：>0 红、<0 绿（=0 归入红段边界，不单独成段）。
+    // 注意：必须含一个有限 value 段（value: 0）。echarts 5.6 的 piecewise 若 pieces
+    // 仅有 gt/lte 两段（边界均为 ±Infinity），getVisualMeta 产出的 stops 为空数组，
+    // LineView 渲染时 getVisualGradient 内 colorStopsInRange[0] 越界，
+    // 抛 "Cannot read properties of undefined (reading 'coord')" 且中断整个
+    // mounted flush 队列（同页 ElTable/ElTableHeader 连带渲染失败 → 表格空白）。
     option.visualMap = {
       show: false,
       type: 'piecewise',
       pieces: [
+        { lt: 0, color: p.fall },
+        { value: 0, color: p.fall },
         { gt: 0, color: p.rise },
-        { lte: 0, color: p.fall },
       ],
     }
   }

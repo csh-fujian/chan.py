@@ -8,7 +8,7 @@ chan.py 已经能计算分型、笔、线段、笔中枢、线段中枢、买卖
 - 新增 Web 前端（Vue3 + Vite + TypeScript + KLineChart）：主图 K 线（红涨绿跌，蜡烛/复权走默认配置）+ 缠论 overlay（灰色笔 / 蓝色线段 / 灰色框笔中枢 / 蓝色框线段中枢 / 买卖点 marker，买卖点买=红、卖=绿，标签 1B/2B/L2B/3B 等），副图指标（成交量/MACD/BOLL/RSI/KDJ，最多 5 个，可折叠）。
 - 交互：滚轮缩放、拖拽平移、十字光标（KLineChart 默认行为）；拖到历史最左时经 `getBars('backward')` 向后端增量拉取更早 K 线。
 - 周期切换：单级别切换（1 分钟/5 分钟/1 小时/日线等），切换即重算重绘。
-- 页面缓存：应用内页面切换以 KeepAlive 缓存页面组件，切回时排版、数据与滚动位置保持离开时原样；跨页带参跳转（如 `kline?code=`）仍按参数进入。
+- 页面缓存：仅 K 线页以 KeepAlive 缓存页面组件，切回时排版、数据与滚动位置保持离开时原样；其余应用内页面不缓存，切回重新加载。跨页带参跳转（如 `kline?code=`）仍按参数进入。
 - chan.py 的**计算逻辑不变**（`CBiList`/`CSegListChan`/`CZSList`/`CBSPointList` 均无感知）；仅在 `CChan` 上**新增序列化方法**（纯读取导出、不触碰计算）。
 
 ## Capabilities

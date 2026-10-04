@@ -21,12 +21,14 @@ from .routers import (
     qa,
     screener,
     stocks,
+    strategy,
     system,
     watchlist,
 )
 
 log = logging.getLogger("meta_sync_scheduler")
 bsp_log = logging.getLogger("bsp_scheduler")
+strategy_log = logging.getLogger("strategy_scheduler")
 
 # 到期检查间隔（秒）：默认 3600（小时级），可用环境变量覆盖（可测试性）
 META_SYNC_INTERVAL_SECONDS = int(os.environ.get("META_SYNC_INTERVAL_SECONDS", "3600"))
@@ -41,6 +43,10 @@ BSP_CATCHUP_ENABLED = os.environ.get("BSP_CATCHUP_ENABLED", "1") != "0"
 BSP_CATCHUP_TICK_SECONDS = int(os.environ.get("BSP_CATCHUP_TICK_SECONDS", "3600"))
 BSP_CATCHUP_BATCH = int(os.environ.get("BSP_CATCHUP_BATCH", "20"))
 BSP_EOD_AT = os.environ.get("BSP_EOD_AT", "16:30")
+
+# ---- 策略信号扫描调度（strategy-signal-page design D4：EOD 复用 + 独立游标表）----
+# STRATEGY_SCAN_ENABLED=0 关闭策略扫描（回滚手段：关调度即可）
+STRATEGY_SCAN_ENABLED = os.environ.get("STRATEGY_SCAN_ENABLED", "1") != "0"
 
 
 async def _meta_sync_scheduler(interval_seconds: Optional[int] = None) -> None:
@@ -136,6 +142,49 @@ async def _bsp_eod_loop() -> None:
             bsp_log.exception("bsp eod pipeline failed")
 
 
+def _run_strategy_eod() -> dict:
+    """策略日终扫描（strategy-signal-page 任务 3.2）：全部 enabled 实例增量扫描。
+
+    对全部启用实例跑 scan_all_enabled（水位门：无新 K 线的 code 不重扫；
+    幂等：唯一键 + ON CONFLICT ... WHERE frozen = FALSE）。返回汇总摘要
+    {instances, scanned, updated, failed}。
+    """
+    from .strategy_engines.scheduler import scan_all_enabled
+
+    summaries = scan_all_enabled()
+    scanned = sum(s.get("scanned", 0) for s in summaries)
+    updated = sum(s.get("updated", 0) for s in summaries)
+    failed = sum(len(s.get("failed", [])) for s in summaries)
+    return {
+        "instances": len(summaries),
+        "scanned": scanned,
+        "updated": updated,
+        "failed": failed,
+    }
+
+
+async def _strategy_eod_loop() -> None:
+    """策略信号日终调度（strategy-signal-page design D4）。
+
+    在 _bsp_eod_loop 触发点之后顺序执行（同一 BSP_EOD_AT 时刻，策略阶段在
+    bsp 阶段之后追加），独立 try/except、独立 logger——策略扫描失败互不影响
+    bsp 日终流水线（设计 D4「失败互不影响」）。
+    """
+    while True:
+        await asyncio.sleep(_seconds_until(BSP_EOD_AT))
+        try:
+            result = await asyncio.to_thread(_run_strategy_eod)
+            strategy_log.info(
+                "strategy eod: instances=%s scanned=%s updated=%s failed=%s",
+                result["instances"], result["scanned"], result["updated"], result["failed"],
+            )
+        except asyncio.CancelledError:
+            strategy_log.info("strategy eod loop cancelled")
+            raise
+        except Exception:
+            strategy_log.exception("strategy eod scan failed")
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     tasks = [asyncio.create_task(_meta_sync_scheduler())]
@@ -144,6 +193,11 @@ async def _lifespan(app: FastAPI):
         tasks.append(asyncio.create_task(_bsp_eod_loop()))
     else:
         bsp_log.info("bsp catch-up scheduler disabled (BSP_CATCHUP_ENABLED=0)")
+    # 策略扫描日终调度（strategy-signal-page design D4）：独立开关，bsp 关闭不影响
+    if STRATEGY_SCAN_ENABLED:
+        tasks.append(asyncio.create_task(_strategy_eod_loop()))
+    else:
+        strategy_log.info("strategy scan scheduler disabled (STRATEGY_SCAN_ENABLED=0)")
     try:
         yield
     finally:
@@ -183,6 +237,7 @@ app.include_router(stocks.router)
 app.include_router(watchlist.router)
 app.include_router(bsp.router)
 app.include_router(monitor.router)
+app.include_router(strategy.router)
 app.include_router(performance.router)
 app.include_router(screener.router)
 app.include_router(alerts.router)

@@ -94,6 +94,9 @@
         <button class="btn btn--primary" @click="addDialogVisible = true">
           <span class="icon-plus"></span> 添加股票
         </button>
+        <button class="btn btn--default" :disabled="!hasSelected" @click="onBatchMonitor">
+          批量加入监控
+        </button>
         <button class="btn btn--default" :disabled="!hasSelected" @click="onBatchRemove">
           批量移出
         </button>
@@ -142,7 +145,7 @@
                 <IndustryBadges :industries="row.industries" />
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="180" align="right">
+            <el-table-column label="操作" width="220" align="right">
               <template #default="{ row }">
                 <el-dropdown trigger="click" @command="(cmd: string) => onMove(row, cmd)">
                   <button class="row-action">移动</button>
@@ -159,6 +162,7 @@
                     </el-dropdown-menu>
                   </template>
                 </el-dropdown>
+                <button class="row-action" @click="openMonitorDialog(row)">加入监控</button>
                 <button class="row-action row-action--danger" @click="onRemove(row)">移出</button>
               </template>
             </el-table-column>
@@ -235,14 +239,103 @@
         <el-button type="primary" :loading="adding" @click="onAddStock">确认加入</el-button>
       </template>
     </el-dialog>
+
+    <!-- 加入监控弹窗（design D9/D10，任务 7.3/7.4）：复用 BspView 弹窗模式，
+         级别下拉（默认日线）/监控起始时间（默认「此刻」+「此刻」按钮）/分组（含行内新建）；
+         单只模式价格初始 = 行股价并随级别/时间 300ms 防抖联动取价；
+         批量模式统一参数、不逐只展示价格；提交携带 source_type='watchlist' -->
+    <el-dialog v-model="monitorDialogVisible" :title="monitorDialogTitle" width="440px" append-to-body>
+      <div class="add-dialog-body" v-if="monitorTargets.length > 0" v-loading="addingMonitor">
+        <div class="monitor-ctx">
+          <div class="form-row">
+            <label>股票</label>
+            <span v-if="monitorMode === 'single'" class="ctx-value">
+              {{ monitorTargets[0].name }}
+              <span class="mono ctx-code">{{ monitorTargets[0].code }}</span>
+            </span>
+            <span v-else class="ctx-value">已选 {{ monitorTargets.length }} 只股票（统一参数）</span>
+          </div>
+          <div class="form-row">
+            <label>级别</label>
+            <el-select v-model="monitorKlType" style="width: 100%" @change="onMonitorTimeChange">
+              <el-option v-for="it in klTypeItems" :key="it.value" :label="it.label" :value="it.value" />
+            </el-select>
+          </div>
+          <div v-if="monitorMode === 'single'" class="form-row">
+            <label>入场价格</label>
+            <span class="ctx-value num" :class="{ 'price-stale': priceLoading }">
+              {{ formatPrice(monitorPrice) }}
+            </span>
+          </div>
+        </div>
+        <div class="form-row">
+          <label>监控起始时间</label>
+          <div class="monitor-time-row">
+            <el-date-picker
+              v-model="monitorStartTime"
+              type="datetime"
+              value-format="YYYY-MM-DD HH:mm:ss"
+              format="YYYY-MM-DD HH:mm:ss"
+              placeholder="选择监控起始时间"
+              clearable
+              :disabled="addingMonitor"
+              style="flex: 1"
+              @change="onMonitorTimeChange"
+            />
+            <el-button :disabled="addingMonitor" @click="setMonitorTimeNow">此刻</el-button>
+          </div>
+        </div>
+        <!-- 分组选择（同 BspView 弹窗）：可选，默认「未分组」，下拉尾部「新增分组」行内输入 -->
+        <div class="form-row">
+          <label>分组</label>
+          <el-select
+            v-model="monitorGroupId"
+            placeholder="未分组"
+            :disabled="addingMonitor"
+            style="width: 100%"
+            @visible-change="onGroupSelectVisible"
+          >
+            <el-option label="未分组" :value="null" />
+            <el-option v-for="g in monitorGroups" :key="g.id" :label="g.name" :value="g.id" />
+            <template #footer>
+              <div v-if="!groupCreating" class="group-add-entry" @click="groupCreating = true">
+                <el-icon><Plus /></el-icon>
+                <span>新增分组</span>
+              </div>
+              <div v-else class="group-add-form">
+                <el-input
+                  v-model="newGroupName"
+                  size="small"
+                  placeholder="输入分组名"
+                  maxlength="20"
+                  @keyup.enter="onCreateGroup"
+                />
+                <el-button size="small" :loading="groupSaving" @click="onCreateGroup">确定</el-button>
+              </div>
+            </template>
+          </el-select>
+        </div>
+        <p class="dialog-hint">
+          {{
+            monitorMode === 'single'
+              ? '提交后自监控起始时间起对该股票进行监控，入场价格取所选时间点收盘价，来源标记为「自选」。'
+              : '提交后逐只按统一级别/时间/分组加入监控（价格按各股所选时间点收盘价，取价失败按列表行股价），来源标记为「自选」。'
+          }}
+        </p>
+      </div>
+      <template #footer>
+        <el-button @click="monitorDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="addingMonitor" @click="confirmAddMonitor">确认加入</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onActivated, onBeforeUnmount, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Folder, Search, Close, EditPen, Rank } from '@element-plus/icons-vue'
+import { Folder, Search, Close, EditPen, Rank, Plus } from '@element-plus/icons-vue'
 import draggable from 'vuedraggable'
 import Sortable, { type SortableEvent } from 'sortablejs'
 import ChangeBadge from '@/components/ui/ChangeBadge.vue'
@@ -262,6 +355,13 @@ import {
   type WatchFolder,
 } from '@/api/modules/watchlist'
 import { searchStocks } from '@/api/modules/stock'
+import { getPriceAt } from '@/api/modules/bsp'
+import {
+  createMonitor,
+  createMonitorGroup,
+  getMonitorGroups,
+  type MonitorGroup,
+} from '@/api/modules/monitor'
 import type { Stock } from '@/api/types'
 import type { AutocompleteInstance } from 'element-plus'
 
@@ -713,6 +813,226 @@ async function onAddStock() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 加入监控（design D9/D10，任务 7.3/7.4）：行级 + 批量复用同一弹窗。
+// 级别可选（词表同 BspView klOptions，默认日线 D）；时间默认「此刻」；
+// 价格初始 = 行股价（Stock.price），级别/时间变化 → 300ms 防抖 getPriceAt
+// 联动（失败保留当前价格并提示，语义对齐 BspView）；分组选择 + 下拉尾部
+// 行内新建（成功即选中）。提交携带 source_type='watchlist'。
+// ---------------------------------------------------------------------------
+/** 级别词表（同 BspView klOptions / MonitorView klTypeItems）：30分/60分/日线/周线/月线 */
+const klTypeItems = [
+  { label: '30分', value: '30m' },
+  { label: '60分', value: '60m' },
+  { label: '日线', value: 'D' },
+  { label: '周线', value: 'W' },
+  { label: '月线', value: 'M' },
+]
+
+const monitorDialogVisible = ref(false)
+/** 弹窗模式：'single' 行级（上下文行）| 'batch' 批量（selected 多选数组） */
+const monitorMode = ref<'single' | 'batch'>('single')
+/** 弹窗目标股票：单只 → [行]；批量 → selected 列表 */
+const monitorTargets = ref<Stock[]>([])
+/** 级别（默认日线：自选页无买卖点上下文，spec「级别默认值」） */
+const monitorKlType = ref('D')
+const monitorStartTime = ref('')
+const monitorPrice = ref(0)
+const priceLoading = ref(false)
+const addingMonitor = ref(false)
+
+const monitorDialogTitle = computed(() =>
+  monitorMode.value === 'batch'
+    ? `批量加入监控（${monitorTargets.value.length} 只）`
+    : '加入监控',
+)
+
+// ---- 弹窗分组选择（同 BspView，monitor-group-change D5）----
+const monitorGroups = ref<MonitorGroup[]>([])
+const monitorGroupId = ref<number | null>(null)
+const groupCreating = ref(false)
+const newGroupName = ref('')
+const groupSaving = ref(false)
+
+/** 下拉展开时拉分组列表（每次展开都刷新，与 BspView 保持数据一致） */
+async function onGroupSelectVisible(visible: boolean) {
+  if (!visible) return
+  try {
+    monitorGroups.value = await getMonitorGroups()
+  } catch {
+    // 失败已由拦截器提示；保留现有选项
+  }
+}
+
+/** 行内新建分组：成功即自动选中新组（交互与 BspView 弹窗一致） */
+async function onCreateGroup() {
+  const name = newGroupName.value.trim()
+  if (!name) {
+    ElMessage.warning('请输入分组名')
+    return
+  }
+  groupSaving.value = true
+  try {
+    const g = await createMonitorGroup(name)
+    monitorGroups.value = await getMonitorGroups()
+    monitorGroupId.value = g.id
+    newGroupName.value = ''
+    groupCreating.value = false
+  } catch {
+    // 重名/非法：后端 detail 已由拦截器提示，保留输入供修改重试
+  } finally {
+    groupSaving.value = false
+  }
+}
+
+// ---- 价格联动（复制自 BspView，自持一份保持改动最小）----
+let priceSeq = 0
+let priceTimer: ReturnType<typeof setTimeout> | null = null
+
+/** ms 时间戳 → 'YYYY-MM-DD HH:mm:ss'（含秒，与提交格式一致） */
+function toDateTimeStr(ts: number) {
+  const d = new Date(ts)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
+/** 按级别与时间取价（design D9）：失败/404 保留当前价格并提示（初始 = 行股价） */
+async function fetchMonitorPrice(time: string) {
+  const targets = monitorTargets.value
+  if (monitorMode.value !== 'single' || targets.length !== 1 || !time) return
+  const stock = targets[0]
+  const seq = ++priceSeq
+  priceLoading.value = true
+  try {
+    const r = await getPriceAt(stock.code, monitorKlType.value, time)
+    if (seq !== priceSeq) return // 过期响应丢弃
+    monitorPrice.value = r.price
+  } catch {
+    if (seq !== priceSeq) return
+    ElMessage.warning('所选时间无 K 线数据，保留原价格')
+  } finally {
+    if (seq === priceSeq) priceLoading.value = false
+  }
+}
+
+/** 级别/时间变化 → 300ms 防抖取价（design D9） */
+function onMonitorTimeChange() {
+  if (monitorMode.value !== 'single') return // 批量模式不逐只展示价格
+  if (priceTimer) clearTimeout(priceTimer)
+  if (!monitorStartTime.value) return
+  priceTimer = setTimeout(() => fetchMonitorPrice(monitorStartTime.value), 300)
+}
+
+/** 每次打开弹窗重置全部状态（级别回日线、时间回此刻、分组回未分组、价格回行股价） */
+function openMonitorDialog(row: Stock) {
+  monitorMode.value = 'single'
+  monitorTargets.value = [row]
+  resetMonitorDialogState(row.price)
+  monitorDialogVisible.value = true
+  // 默认时间也触发一次联动（语义统一：价格 = 所选时间点收盘价）
+  fetchMonitorPrice(monitorStartTime.value)
+}
+
+/** 批量入口：目标 = 多选列表，统一参数（级别/时间/分组） */
+function onBatchMonitor() {
+  if (!hasSelected.value || selected.value.length === 0) return
+  monitorMode.value = 'batch'
+  monitorTargets.value = [...selected.value]
+  resetMonitorDialogState()
+  monitorDialogVisible.value = true
+}
+
+/** 弹窗状态重置（批量无上下文行价：monitorPrice 不参与批量提交） */
+function resetMonitorDialogState(initialPrice?: number) {
+  monitorKlType.value = 'D'
+  monitorStartTime.value = toDateTimeStr(Date.now())
+  monitorGroupId.value = null
+  groupCreating.value = false
+  newGroupName.value = ''
+  monitorPrice.value = initialPrice ?? 0
+  priceLoading.value = false
+  if (priceTimer) {
+    clearTimeout(priceTimer)
+    priceTimer = null
+  }
+  priceSeq++ // 使在途取价响应过期
+}
+
+/** 「此刻」按钮：监控起始时间置为当前时间（经 change 事件触发联动） */
+function setMonitorTimeNow() {
+  monitorStartTime.value = toDateTimeStr(Date.now())
+  onMonitorTimeChange()
+}
+
+/** 提交：单只 → 单次 createMonitor；批量 → 串行逐只（先 getPriceAt，
+ *  取价失败按行股价提交并计入失败提示；单只 createMonitor 失败不中断） */
+async function confirmAddMonitor() {
+  const targets = monitorTargets.value
+  if (targets.length === 0) {
+    console.warn('[WatchlistView.confirmAddMonitor] 无目标股票，忽略提交', {
+      dialogVisible: monitorDialogVisible.value,
+    })
+    return
+  }
+  if (!monitorStartTime.value) {
+    ElMessage.warning('请设置监控起始时间')
+    return
+  }
+  addingMonitor.value = true
+  try {
+    if (monitorMode.value === 'single') {
+      const stock = targets[0]
+      await createMonitor({
+        code: stock.code,
+        kl_type: monitorKlType.value,
+        entry_price: monitorPrice.value, // 联动后的所选时间点价格（失败兜底 = 行股价）
+        monitor_start_time: monitorStartTime.value,
+        group_id: monitorGroupId.value ?? undefined,
+        source_type: 'watchlist',
+      })
+      ElMessage.success(`已将「${stock.name}」加入监控`)
+    } else {
+      // 批量（design D10）：前端串行循环既有 POST /api/monitor，统一参数；
+      // 失败计数 = 取价失败（按行股价提交）+ 提交失败，单只失败不中断
+      let okCount = 0
+      let failCount = 0
+      for (const stock of targets) {
+        let entryPrice: number
+        try {
+          const r = await getPriceAt(stock.code, monitorKlType.value, monitorStartTime.value)
+          entryPrice = r.price
+        } catch {
+          // 取价失败兜底：按该行股价提交并计入失败提示（不阻塞整体）
+          entryPrice = stock.price
+          failCount++
+        }
+        try {
+          await createMonitor({
+            code: stock.code,
+            kl_type: monitorKlType.value,
+            entry_price: entryPrice,
+            monitor_start_time: monitorStartTime.value,
+            group_id: monitorGroupId.value ?? undefined,
+            source_type: 'watchlist',
+          })
+          okCount++
+        } catch {
+          // 单只提交失败：错误文案由拦截器提示，继续后续标的
+          failCount++
+        }
+      }
+      if (failCount === 0) {
+        ElMessage.success(`已将 ${okCount} 只股票加入监控`)
+      } else {
+        ElMessage.warning(`成功 ${okCount} / 失败 ${failCount}（失败含取价失败与提交失败，取价失败已按行股价提交）`)
+      }
+    }
+    monitorDialogVisible.value = false
+  } finally {
+    addingMonitor.value = false
+  }
+}
+
 // ---- 工具 ----
 function formatPrice(v: number) {
   return v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -724,22 +1044,9 @@ async function reload() {
   await loadStocks()
 }
 
-/** KeepAlive 首次激活与 onMounted 会同时触发，跳过首次避免双请求 */
-let isFirstActivate = true
-
 onMounted(async () => {
   await nextTick()
   ensureStockSortable()
-  await reload()
-})
-
-onActivated(async () => {
-  // KeepAlive 再次激活时全量刷新（D4：跨页变更在回到本页时可见）
-  ensureStockSortable()
-  if (isFirstActivate) {
-    isFirstActivate = false
-    return
-  }
   await reload()
 })
 
@@ -860,6 +1167,63 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: var(--sp-lg);
+}
+/* ---- 加入监控弹窗（任务 7.3/7.4，样式对齐 BspView）---- */
+.monitor-ctx {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-md);
+  padding: var(--sp-md);
+  border: 1px solid var(--border-base);
+  border-radius: var(--r-md);
+}
+.monitor-ctx .form-row {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--sp-md);
+}
+.monitor-ctx .form-row label {
+  width: 90px;
+  flex-shrink: 0;
+}
+.ctx-value {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+/* 价格联动取价中的弱化显示 */
+.ctx-value.price-stale {
+  opacity: 0.5;
+}
+.ctx-code {
+  margin-left: 6px;
+  font-size: 12px;
+  color: var(--text-disabled);
+}
+.monitor-time-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+}
+/* 下拉尾部「新增分组」行内入口（同 BspView） */
+.group-add-entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  font-size: 13px;
+  color: var(--accent-hover);
+  cursor: pointer;
+  border-top: 1px solid var(--border-base);
+}
+.group-add-entry:hover {
+  background: var(--accent-dim);
+}
+.group-add-form {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+  padding: 6px 8px;
+  border-top: 1px solid var(--border-base);
 }
 .dialog-hint {
   font-size: 12px;

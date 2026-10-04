@@ -7,7 +7,7 @@
 **Goals:**
 - `/system` 三模块（用户/角色/权限配置）从 stub 变为挂鉴权的真实现，落在 B 套 RBAC 表上。
 - 权限配置"保存即生效"：运行时权限读取从 A 套切到 B 套。
-- 买卖点页面需求按审计结论迁入本 change（绩效部分）。（监控部分已于 2026-10-02 整体迁至 `monitor-page-change`。）
+- 买卖点页面需求按审计结论曾迁入本 change（绩效部分后于 2026-10-05 整体迁至 `performance-page-change`）。（监控部分已于 2026-10-02 整体迁至 `monitor-page-change`。）
 - chan-stock-manage 与实现脱节的需求按迁移映射表裁剪。
 
 **Non-Goals:**
@@ -60,8 +60,8 @@
 | `auth` | 用户与角色管理 | **迁**：细化为 `system-management` 多条需求；chan-stock-manage 的 delta 删除该条 |
 | `auth` | 用户认证 / 菜单权限控制 / 管理权限控制 / admin 绝对权限 | **留**（运行时行为）；本 change 不重复，仅在 `system-management` 承接其页面侧（admin 保护、管理接口校验） |
 | `bsp-index` | 全部六条（持久化/增量续算/日终索引/历史查询/板块聚合/多级别） | **归 `bsp-page-change`**（2026-10-01 裁定整体迁出；板块聚合按冲突裁定删除，U6 日期条件随迁） |
-| `bsp-performance` | 两条件 | **迁**（均已实现） |
-| proposal Tab3 页面描述、tasks 8.4/10.x | 监控页/绩效页任务（已完成） | 绩效部分**迁**至本 change tasks（标记已落地的验证项）；监控部分 2026-10-02 整体迁至 `monitor-page-change`；tasks 7.2、3.x、2.x 留 |
+| `bsp-performance` | 两条件 | **归 `performance-page-change`**（2026-10-05 整体迁出重写，口径裁定见其 design D1） |
+| proposal Tab3 页面描述、tasks 8.4/10.x | 监控页/绩效页任务（已完成） | 监控部分 2026-10-02 整体迁至 `monitor-page-change`；绩效部分曾迁入本 change，2026-10-05 整体迁至 `performance-page-change`（含原 8.2 验证记录）；tasks 7.2、3.x、2.x 留 |
 | proposal Tab2 页面描述、tasks 8.3/12.x | `/bsp` 页面任务（历史买卖点页/区间套） | **归 `bsp-page-change`**（2026-10-01 裁定） |
 | design D16 `/system` 页面表格 | 系统页字段/模块描述 | **迁**：以本 change 的 `system-management` spec + 本 design D2 为准；D16 处加指向注记 |
 | `watchlist` | 底层 3 条（文件夹分类/字段展示/批量加入） | **不属本 change**：按既定方案迁 `watchlist-page-change`，由其承接 |

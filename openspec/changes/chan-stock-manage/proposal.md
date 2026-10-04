@@ -9,7 +9,7 @@ chan.py 已能计算缠论结构（分型/笔/线段/中枢/买卖点），K 线
 <!-- Tab1 我的自选：自选页面需求已迁移至 watchlist-page-change（watchlist/watchlist-page 能力，由该变更统一维护；本变更不再保留自选页面需求内容）。 -->
 - **Tab3 股票监控**：`bsp-monitoring` 能力已于 2026-10-02 整体迁移至 `monitor-page-change`（含监控列表与盈利走势、监控完成与归因、卖点自动卖出与结算三需求）。
 - **行业多对多**：股票可关联多个行业（不限额），页面展示最相关的前 3 个；行业数据落 PG。
-- **分析增强**：条件选股器（可保存复用的选股策略）、预警提醒（价格/买卖点/监控卖点触发通知）；买卖点绩效统计的需求描述已迁移至 `system-page-change`（`bsp-performance` 能力），区间套（多级别买卖点查询）已迁移至 `bsp-page-change`（`bsp-index` 能力）。
+- **分析增强**：条件选股器（可保存复用的选股策略）、预警提醒（价格/买卖点/监控卖点触发通知）；买卖点绩效统计的需求描述已迁移至 `performance-page-change`（`bsp-performance` 能力），区间套（多级别买卖点查询）已迁移至 `bsp-page-change`（`bsp-index` 能力）。
 - **多用户与权限**：多用户认证（登录/登出、JWT 会话），RBAC 权限控制（菜单权限 + 按钮权限），admin 角色拥有绝对权限；配套登录页。用户/角色管理与权限分配、`/system` 权限管理页的需求描述已迁移至 `system-page-change`（`system-management` 能力）。
 - **存储分工**：原始 K 线继续落 DuckDB；缠论结论 / 买卖点索引 / 行业 / 自选 / 监控落 PG。
 - **不修改** `CChan`/`CBiList`/`CSegListChan`/`CZSList`/`CBSPointList` 的计算逻辑；续算仅复用其 `trigger_step` 与 pickle 能力。
@@ -30,7 +30,7 @@ chan.py 已能计算缠论结构（分型/笔/线段/中枢/买卖点），K 线
 
 ## Impact
 
-- **新增文件**：`WebAPI/`（在 stocks 路由基础上新增自选/监控路由）、`web/`（页面骨架）、PG schema 扩展（`stock_industry`/`watchlist_*`/`monitor*` 等表）、认证与权限（`auth_store.py` + `routers/{auth,system}.py` + `app_user`/`role`/`permission`/`role_permission` 表 + `/login`、`/system` 视图）。（`bsp` 路由、`chan_structure`/`bsp_index`/`chan_snapshot` 表与增量续算引擎——pickle 快照 + `trigger_load` 续算 + 日终买卖点索引——均归 `bsp-page-change`；`bsp-monitoring` spec 整体迁至 `monitor-page-change`；`bsp-performance` spec 整体迁至 `system-page-change`。）
+- **新增文件**：`WebAPI/`（在 stocks 路由基础上新增自选/监控路由）、`web/`（页面骨架）、PG schema 扩展（`stock_industry`/`watchlist_*`/`monitor*` 等表）、认证与权限（`auth_store.py` + `routers/{auth,system}.py` + `app_user`/`role`/`permission`/`role_permission` 表 + `/login`、`/system` 视图）。（`bsp` 路由、`chan_structure`/`bsp_index`/`chan_snapshot` 表与增量续算引擎——pickle 快照 + `trigger_load` 续算 + 日终买卖点索引——均归 `bsp-page-change`；`bsp-monitoring` spec 整体迁至 `monitor-page-change`；`bsp-performance` spec 整体迁至 `performance-page-change`。）
 - **修改文件**：`DataAPI/StockUniverse.py`（枚举逻辑 + 新增行业数据源接入）、`WebAPI/stock_store.py`（行业 M2M）、`Script/requirements.txt`（FastAPI/uvicorn，及 LLM SDK 待定）。
 - **复用**：`persist-kl-to-duckdb` 的 DuckDB `kline`（原始 K 线源）；`chan-web-viewer` 的 FastAPI/uvicorn + Vue3+Vite+TS 栈；chan.py 的 `trigger_step`/`trigger_load`/`chan_dump_pickle`/`chan_load_pickle`（续算基底）。
 - **依赖**：行业多标签数据源（东财/akshare）；LLM 供应商（待定，见 design Open Questions）；预警通知通道（先站内，webhook 后续）；认证依赖 JWT（python-jose）+ passlib[bcrypt]。

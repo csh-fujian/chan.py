@@ -11,12 +11,13 @@
 - **拖拽排序（持久化）**：文件夹树支持长按拖拽排序，文件夹内股票支持行拖拽排序；两张表新增 `sort_order` 列，新增 reorder 接口保存顺序。
 - **缓存刷新策略**：保留 KeepAlive 缓存，页面 `onActivated` 时重新拉取文件夹与股票列表，保证跨页新增自选可见；不引入跨页事件通知机制。
 - **需求迁移（自 chan-stock-manage）**：该变更的 `watchlist` 底层能力需求（文件夹分类、字段展示、批量加入自选）整体迁入本变更统一维护；其中「批量加入默认以日期作文件夹名、可改」条款与实际实现冲突且未实现，按裁定删除（见 design.md D7），批量加入按实际实现改写为「选择目标文件夹」。
+- **自选加入监控（增量）**：自选页列表提供行级与批量「加入监控」能力（交互对齐买卖点页弹窗）：弹窗可选级别（默认日线）、监控起始时间（默认此刻）与监控分组（选择/快速新建）；加入的监控记录来源 SHALL 为「自选」——复用 monitor 表既有 `source_type` 列扩展第三取值 `'watchlist'`，监控页来源列显示「自选」。批量加入对所选股票以统一弹窗参数逐只提交（部分失败不中断，汇总提示）。
 
 ## Capabilities
 
 ### New Capabilities
 
-- `watchlist-page`: 自选页面级交互——搜索（服务端查询）、文件夹切换即时刷新、文件夹删除/重命名、文件夹与股票拖拽排序持久化、页面缓存下的激活刷新。
+- `watchlist-page`: 自选页面级交互——搜索（服务端查询）、文件夹切换即时刷新、文件夹删除/重命名、文件夹与股票拖拽排序持久化、页面缓存下的激活刷新、自选加入监控（行级 + 批量，来源「自选」）。
 - `watchlist`: 我的自选列表底层能力（自 chan-stock-manage 迁入）——文件夹分类与切换、股票字段（名称/编码/股价/行业≤3）展示、查询结果多选批量加入自选。
 
 ### Modified Capabilities
@@ -25,7 +26,7 @@
 
 ## Impact
 
-- **前端**：`Front/src/views/watchlist/WatchlistView.vue`（搜索按钮、删除守卫修复、切换刷新、重命名 UI、拖拽、onActivated）；`Front/src/api/modules/watchlist.ts`（`q` 参数、reorder 接口）；`Front/package.json`（新增 `vuedraggable`/`sortablejs`）；`Front/src/mock/handlers/watchlist.ts` + `Front/src/mock/data/watchlist.ts`（搜索与排序 mock 同步）。
-- **后端**：`WebAPI/routers/watchlist.py`（`q` 查询参数、两个 reorder 端点）；`WebAPI/watchlist_store.py`（`sort_order` 列迁移、按序查询、reorder DAO）；`WebAPI/init.sql`（两表补 `sort_order` 列）。
+- **前端**：`Front/src/views/watchlist/WatchlistView.vue`（搜索按钮、删除守卫修复、切换刷新、重命名 UI、拖拽、onActivated、行级/批量加入监控弹窗）；`Front/src/api/modules/watchlist.ts`（`q` 参数、reorder 接口）；`Front/package.json`（新增 `vuedraggable`/`sortablejs`）；`Front/src/mock/handlers/watchlist.ts` + `Front/src/mock/data/watchlist.ts`（搜索与排序 mock 同步）；`Front/src/mock/handlers|data/monitor.ts`（`source_type='watchlist'` mock 支持）。
+- **后端**：`WebAPI/routers/watchlist.py`（`q` 查询参数、两个 reorder 端点）；`WebAPI/watchlist_store.py`（`sort_order` 列迁移、按序查询、reorder DAO）；`WebAPI/init.sql`（两表补 `sort_order` 列）；`WebAPI/routers/monitor.py` + `WebAPI/monitor_store.py`（`create_monitor` 的 `source_type` 白名单放行 `'watchlist'`）。
 - **数据库**：`watchlist_folder`、`watchlist_item` 各增 `sort_order` 列（存量数据按 `id`/`added_at` 回填初值）。
 - **不修改**：`CChan` 计算流水线；`kline-watchlist`（K 线页自选集成）。`watchlist` 底层能力需求已自 `chan-stock-manage` 迁入本变更（见 Capabilities），其已实现行为不变。

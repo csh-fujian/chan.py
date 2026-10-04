@@ -42,6 +42,12 @@ export const routes: RouteRecordRaw[] = [
         meta: { title: '买卖点', perm: 'menu:bsp', navKey: 'bsp' },
       },
       {
+        path: 'strategy',
+        name: 'strategy',
+        component: () => import('@/views/strategy/StrategySignalView.vue'),
+        meta: { title: '策略信号', perm: 'menu:strategy', navKey: 'strategy' },
+      },
+      {
         path: 'monitor',
         name: 'monitor',
         component: () => import('@/views/monitor/MonitorView.vue'),

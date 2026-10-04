@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 """
 Alerts 路由 — 预警管理 API（stub）。
+
+strategy-signal-page design D7 / 任务 4.3：规则 body 预留 source_type +
+instance_id 字段（stub 接受不报错，透传回显），无行为。
 """
 
 from fastapi import APIRouter
@@ -16,7 +19,8 @@ async def alerts_rules():
 
 @router.post("/rules")
 async def alerts_create_rule(body: dict):
-    """新建预警规则。"""
+    """新建预警规则（stub；body 可携带 source_type/instance_id 来源字段，
+    strategy-signal-page design D7 契约预留，接受不报错）。"""
     return {"id": 0, **body, "trigger_count": 0, "created_at": 0}
 
 

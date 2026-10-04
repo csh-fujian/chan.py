@@ -51,3 +51,17 @@
 - [x] 8.6 删除监控中列表「最大盈利」「最大回撤」两列（design D10，仅前端不展示，字段契约保留）；验证：表格无这两列，`MonitorItem` 类型与后端返回不变（侧栏盈利过滤仍用 `max_profit` 字段，属既有行为保留）
 - [x] 8.7 监控中统计项重做（design D11）：总体盈利改为收益率求和；总体盈利后新增「当前胜率」（current_price > bsp_price 计胜，缺失行不计入分母）与「涨幅最大」（当日 change_pct 最高值）；验证：三个统计值与列表收益率/当前价/涨跌幅手工核算一致（监控中卡序：总体盈利→当前胜率→涨幅最大→监控中数量→累计完成；已完成 tab 统计改名 cWinRate 避免重名）
 - [x] 8.8 双击「名称 / 编码」跳 K 线页（design D12）：两个表格 cell-stock 双击跳转，query 携带 code + 级别（参数名核对 K 线页既有约定）；验证：双击后 K 线页加载对应标的且级别生效（对齐 BspView 的 `KL_TO_KLINE_PERIOD` 映射 D/W/M→1d/1w/1M，`router.push({ name: 'kline', query: { code, period } })`；K 线页 PERIOD_MAP 词表已含 1d/1w/1M）
+
+## 9. 删除操作栏查看详情按钮（design D13，2026-10-04）
+
+- [x] 9.1 删除 `Front/src/views/monitor/MonitorView.vue` 监控中列表操作栏「查看详情」按钮（`onViewDetail`），并整体移除关联链路：`onViewDetail` 函数、`highlightCode`/`completedRowClass` 定位高亮（`row--hl` 样式）、监控中表格整行 `@row-dblclick="onViewDetail"` 绑定；验证：监控中操作栏仅剩「手动结束」，双击「名称/编码」跳 K 线（D12）仍可用，已完成「查看归因」按钮与归因抽屉不受影响，`vue-tsc` 0 错误、`npm run build` 通过（操作栏宽度 140→100 收窄；已完成表格 `:row-class-name` 绑定随高亮链路一并移除；grep 五处标识零残留）
+
+## 10. 来源下拉查询与统计联动（design D14，2026-10-04）
+
+- [x] 10.1 后端来源字典接口：`WebAPI/routers/monitor.py` 新增 `GET /api/monitor/sources`，`monitor_store` 增 `list_monitor_sources()`——monitor 表 distinct `(source_type, instance_id)` + 策略实例名（复用 `_fill_bsp_context` 实例名缓存语义）组装 `[{value, label, source_type, instance_id?}]`（value：`'chan'`/`'strategy:<instance_id>'`/`'watchlist'`）；验证：接口返回与 monitor 表实际来源一致，无策略实例时仅返回 chan/watchlist 项（真实 PG 实测：表仅 chan 记录时返回单项；`/sources` 路由注册在 `/{monitor_id}` 之前避免路径参数吞并）
+- [x] 10.2 来源枚举扩展：`monitor_store.create_monitor` 的 `source_type` 白名单与前端 `api/modules/monitor.ts` 的 `CreateMonitorPayload.source_type` 增加 `'watchlist'`；`MonitorView.vue` 两个表格来源列增加 watchlist→「自选」分支；验证：watchlist 来源记录创建成功且来源列显示「自选」（routers/monitor.py `monitor_create` 校验同步加 watchlist；`types.ts` `MonitorItem.source_type` 扩展并补 `instance_id` 字段）
+- [x] 10.3 自选页加入监控入口：`WatchlistView.vue` 行操作新增「加入监控」，弹窗复用 BspView 行级弹窗模式（级别/买卖点时间/价格/分组可选，缺省现价与当前时间），提交携带 `source_type='watchlist'`；验证：自选页加入监控后监控列表出现该记录且来源为「自选」（真实 PG 端到端验证：create 成功→字典含 watchlist 项→测试行已清理；弹窗周期选项对齐 D4 口径 30分/60分/日/周/月）
+- [x] 10.4 两 tab 来源下拉查询：`MonitorView.vue` 监控中与已完成搜索区各增来源 `el-select`（选项来自 `GET /api/monitor/sources`），过滤逻辑并入 `filteredList`/`filteredCompletedList`（`source_type` + `instance_id` 匹配，与 code 精确过滤叠加；「全部来源」不过滤；重置按钮同时清空来源选择）；验证：选择来源后列表仅剩该来源记录，与标的查询叠加生效，重置恢复全量（`matchSource` 三分支匹配；重置语义扩展为 `onResetMonitoringFilters`/`onResetCompletedFilters` 清搜索+来源；字典 onMounted 并行加载失败不阻塞）
+- [x] 10.5 统计联动：两 tab 统计 computed 改为消费来源过滤后列表（监控中 D11 五项、已完成完成总数/胜率/平均盈利/盈利比）；验证：选择来源后统计值与过滤后列表手工核算一致，清空恢复全量统计（全部 computed 数据源从 monitorList/completedList 改为 filteredList/filteredCompletedList；修复编辑引入的重复声明残留）
+- [x] 10.6 mock 同步：MSW handler 补 `GET /api/monitor/sources`，mock 数据补 watchlist 来源样例；验证：mock 模式下拉出现字典选项且 watchlist 记录可过滤（`monitorSources` 字典导出；策略样例行补 `instance_id` 与字典 `strategy:5` 对应；新增 `watchlistMonitoring` 样例行 sz.000858）
+- [x] 10.7 端到端走查（mock 模式）：字典下拉 → 来源过滤 → 统计联动 → 自选页加入监控 → 重置；验证：`vue-tsc` 0 错误、`npm run build` 通过（15.32s）、console 无报错（浏览器实测走查待用户 `npm run dev` 确认）

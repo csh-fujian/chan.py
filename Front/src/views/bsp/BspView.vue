@@ -314,6 +314,36 @@
             <el-button @click="setMonitorTimeNow">此刻</el-button>
           </div>
         </div>
+        <!-- 分组选择（monitor-group-change D5，任务 5.1）：可选，默认「未分组」；
+             下拉尾部「新增分组」行内输入，成功即自动选中新组 -->
+        <div class="form-row">
+          <label>分组</label>
+          <el-select
+            v-model="monitorGroupId"
+            placeholder="未分组"
+            style="width: 100%"
+            @visible-change="onGroupSelectVisible"
+          >
+            <el-option label="未分组" :value="null" />
+            <el-option v-for="g in monitorGroups" :key="g.id" :label="g.name" :value="g.id" />
+            <template #footer>
+              <div v-if="!groupCreating" class="group-add-entry" @click="groupCreating = true">
+                <el-icon><Plus /></el-icon>
+                <span>新增分组</span>
+              </div>
+              <div v-else class="group-add-form">
+                <el-input
+                  v-model="newGroupName"
+                  size="small"
+                  placeholder="输入分组名"
+                  maxlength="20"
+                  @keyup.enter="onCreateGroup"
+                />
+                <el-button size="small" :loading="groupSaving" @click="onCreateGroup">确定</el-button>
+              </div>
+            </template>
+          </el-select>
+        </div>
         <p class="dialog-hint">
           提交后将以所选买点时间对应的股票价格作为入场价，自买点时间起对该股票进行监控。
         </p>
@@ -327,18 +357,18 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, onActivated } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import type { AutocompleteInstance } from 'element-plus'
 import { ElMessage } from 'element-plus'
 import { useRouter } from 'vue-router'
-import { TrendCharts, Top, Bottom, Calendar, Search } from '@element-plus/icons-vue'
+import { TrendCharts, Top, Bottom, Calendar, Search, Plus } from '@element-plus/icons-vue'
 import IndustryBadges from '@/components/ui/IndustryBadges.vue'
 import ChangeBadge from '@/components/ui/ChangeBadge.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import NestingDrawer from './NestingDrawer.vue'
 import { getBspList, getBspAggregate, getPriceAt, type BspQuery } from '@/api/modules/bsp'
 import { getFolders, addStock, type WatchFolder } from '@/api/modules/watchlist'
-import { createMonitor } from '@/api/modules/monitor'
+import { createMonitor, getMonitorGroups, createMonitorGroup, type MonitorGroup } from '@/api/modules/monitor'
 import { searchStocks } from '@/api/modules/stock'
 import { ALL_BSP_LABELS, bspLabel } from '@/utils/bsp'
 import type { BspRecord, BspAggregate } from '@/api/types'
@@ -619,6 +649,46 @@ const monitorDialogVisible = ref(false)
 const monitorRow = ref<BspRecord | null>(null)
 const monitorStartTime = ref<string>('')
 const addingMonitor = ref(false)
+
+// ---- 弹窗分组选择（monitor-group-change D5，任务 5.1）----
+// 可选分组：默认「未分组」（null）；下拉尾部「新增分组」行内输入，
+// 创建成功即自动选中新组；重名/非法由后端返回 detail（拦截器提示）
+const monitorGroups = ref<MonitorGroup[]>([])
+const monitorGroupId = ref<number | null>(null)
+const groupCreating = ref(false)
+const newGroupName = ref('')
+const groupSaving = ref(false)
+
+/** 下拉展开时拉分组列表（每次展开都刷新，与左侧栏管理入口保持数据一致） */
+async function onGroupSelectVisible(visible: boolean) {
+  if (!visible) return
+  try {
+    monitorGroups.value = await getMonitorGroups()
+  } catch {
+    // 失败已由拦截器提示；保留现有选项
+  }
+}
+
+/** 行内新建分组：成功即自动选中新组（spec「弹窗内快速新建分组」） */
+async function onCreateGroup() {
+  const name = newGroupName.value.trim()
+  if (!name) {
+    ElMessage.warning('请输入分组名')
+    return
+  }
+  groupSaving.value = true
+  try {
+    const g = await createMonitorGroup(name)
+    monitorGroups.value = await getMonitorGroups()
+    monitorGroupId.value = g.id
+    newGroupName.value = ''
+    groupCreating.value = false
+  } catch {
+    // 重名/非法：后端 detail 已由拦截器提示，保留输入供修改重试
+  } finally {
+    groupSaving.value = false
+  }
+}
 // D12 价格联动：弹窗内显示与提交用的价格（初始 = 行买卖点价格，随时间变化更新）
 const monitorPrice = ref<number>(0)
 const priceLoading = ref(false)
@@ -662,6 +732,10 @@ function openMonitorDialog(row: BspRecord) {
   // 默认值 = 该行买卖点时间（bsp_date 为 ms 时间戳，已含时分秒）
   monitorStartTime.value = toDateTimeStr(row.bsp_date)
   monitorPrice.value = row.bsp_price
+  // 分组选择重置为「未分组」（null）
+  monitorGroupId.value = null
+  groupCreating.value = false
+  newGroupName.value = ''
   monitorDialogVisible.value = true
   // 默认时间也触发一次联动（语义统一：价格 = 所选时间点收盘价）
   fetchMonitorPrice(monitorStartTime.value)
@@ -690,6 +764,8 @@ async function confirmAddMonitor() {
       kl_type: row.kl_type,
       entry_price: monitorPrice.value, // D12：联动后的所选时间点价格
       monitor_start_time: monitorStartTime.value,
+      // 分组归属（monitor-group-change D5）：未分组（null）不传，后端写 NULL
+      group_id: monitorGroupId.value ?? undefined,
     })
     ElMessage.success(`已将「${row.name}」加入监控`)
     monitorDialogVisible.value = false
@@ -727,12 +803,6 @@ function formatBspTime(row: { bsp_date: number; kl_type: string }) {
 }
 
 onMounted(() => {
-  loadList()
-  loadAggregate()
-})
-
-// keep-alive 缓存后再次进入时，重新查询以确保数据时效性
-onActivated(() => {
   loadList()
   loadAggregate()
 })
@@ -810,6 +880,27 @@ onActivated(() => {
   display: flex;
   align-items: center;
   gap: var(--sp-sm);
+}
+/* 下拉尾部「新增分组」行内入口（monitor-group-change D5） */
+.group-add-entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  font-size: 13px;
+  color: var(--accent-hover);
+  cursor: pointer;
+  border-top: 1px solid var(--border-base);
+}
+.group-add-entry:hover {
+  background: var(--accent-dim);
+}
+.group-add-form {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+  padding: 6px 8px;
+  border-top: 1px solid var(--border-base);
 }
 .dialog-hint {
   font-size: 12px;

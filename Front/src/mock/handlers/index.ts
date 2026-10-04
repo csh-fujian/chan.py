@@ -4,6 +4,7 @@ import { watchlistHandlers } from './watchlist'
 import { stockHandlers } from './stock'
 import { qaHandlers } from './qa'
 import { bspHandlers } from './bsp'
+import { strategyHandlers } from './strategy'
 import { monitorHandlers } from './monitor'
 import { performanceHandlers } from './performance'
 import { screenerHandlers } from './screener'
@@ -17,6 +18,7 @@ export const handlers = [
   ...stockHandlers,
   ...qaHandlers,
   ...bspHandlers,
+  ...strategyHandlers,
   ...monitorHandlers,
   ...performanceHandlers,
   ...screenerHandlers,

@@ -150,7 +150,11 @@
  * design.md D7 / 1.3：面板 Tab 内容缓存（KeepAlive 三槽，换股经 prop 刷新）
  * design.md D6：切换代码/周期触发命令式重载
  * kline-metadata-change D5/D6：搜索框 el-autocomplete 远程下拉 + Enter 语义 + 300ms 本地防抖
+ * design.md D10（2026-10-04 修订）：AppShell KeepAlive include 白名单按组件名匹配，
+ *   故显式命名 KLineView（script setup 组件默认匿名，include 不命中即不缓存）
  */
+defineOptions({ name: 'KLineView' })
+
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { Search, Star, ChatDotRound, Fold, Expand, ArrowDown, TrendCharts } from '@element-plus/icons-vue'

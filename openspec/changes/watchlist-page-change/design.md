@@ -76,6 +76,34 @@ chan-stock-manage 的 `specs/watchlist` 三项需求整体迁入本变更 `specs
 - **批量加入自选**：「多选批量加入」已实现（历史买卖点页/选股器弹窗，按 code 去重入夹）→ 迁移；原「加入时默认以日期作为文件夹名称并允许修改」条款**与已上线交互冲突且全链路无实现**——实际为「弹窗选择已有目标文件夹」，无新建文件夹流程（BspView / Screener 均如此）→ 按裁定从旧变更删除、不迁入。若需该 UX 须另立新需求。
 - 附带订正：chan-stock-manage 任务 6.1 原文括注「默认日期作文件夹名、可改」与实现不符，已随迁移订正为实际行为。
 
+### D8. 来源「自选」：复用 monitor.source_type 扩第三取值，不新增列
+
+`monitor.source_type` 已存在（strategy-signal-page design D6，VARCHAR DEFAULT 'chan'，现取值 `'chan'|'strategy'`，语义为信号来源维度）。本变更是其第三个取值 `'watchlist'`：
+
+- `create_monitor` 白名单 `("chan", "strategy")` 放行 `"watchlist"`；无 DDL（列已在，纯白名单放行，`update.sql` 无需改动）。
+- 监控页来源列（`MonitorView.vue`，strategy-signal-page 任务 6.1）：`strategy` → 策略标签、`watchlist` → 「自选」、`chan`/缺省 → 「缠论」。`strategy_label` 填充逻辑不动（watchlist 来源不产生该字段）。
+- **为什么**：语义自洽——BspView 记录源自缠论买卖点（'chan'），自选页记录是用户人工挑选无信号驱动（'watchlist'），strategy 是策略信号；三值共用一列一列语义链完整。
+- **备选**：新增 `source_page` 之类的「加入入口页」字段——多一列、与 source_type 语义重叠（strategy 也是一种入口），否决。
+
+### D9. 弹窗交互：复用 BspView 模式，三处差异单独设计
+
+弹窗要素与 [BspView 加入监控弹窗]（级别/时间/分组/价格联动/快速新建分组）同构，差异三处：
+
+1. **级别**：BspView 随行 `kl_type` 不可选；自选页无买卖点上下文 → 新增级别下拉（30m/60m/D/W/M，词表同 `klOptions`），默认日线。级别或时间变化 → 300ms 防抖 `getPriceAt(code, 级别, 时间)` 取价（沿用 BspView D12 联动）。
+2. **时间默认**：BspView 默认行 `bsp_date`；自选页默认「此刻」（`toDateTimeStr(Date.now())`），提供「此刻」按钮同 BspView。
+3. **价格初始值**：BspView 为行 `bsp_price`；自选页为列表行股价（`Stock.price`）。取价失败兜底即「保留当前价格并提示」（当前价格 = 初始行股价或上次联动成功值），与 BspView 语义一致。
+
+### D10. 批量加入：前端逐只循环既有 POST /api/monitor，不新增批量端点
+
+- 弹窗对所选 N 只股票统一参数（级别/时间/分组），提交时前端循环调既有 `POST /api/monitor`（携带 `source_type='watchlist'`）。
+- **为什么**：单条端点的去重语义、分组校验、错误 detail 完全复用；N 为用户手工多选（几到几十），循环成本可忽略。批量端点要新事务边界与部分失败协议，收益不成比例。
+- 价格：提交前逐只 `getPriceAt`；取价失败的股票按行股价提交并计入「取价失败提示」（不阻塞整体）。
+- 部分失败：单只失败（4xx detail）继续后续，完成汇总「成功 X / 失败 Y」；批量弹窗不逐只展示价格（N 行价格表过重），失败明细靠汇总提示。
+
+### D11. 前端 API 层：`CreateMonitorPayload.source_type` 可选透传
+
+`Front/src/api/modules/monitor.ts` 的 `CreateMonitorPayload` 增加可选 `source_type?: 'chan' | 'strategy' | 'watchlist'`；WatchlistView 提交时传 `'watchlist'`。BspView 不传（后端缺省 'chan'，行为不变）。mock handlers（monitor.ts）同步支持 `source_type` 落库与列表返回。
+
 ## Risks / Trade-offs
 
 - [存量库无 `sort_order` 概念，迁移瞬间旧版本代码仍按旧序查询] → `ADD COLUMN DEFAULT 0` 对旧 SQL（`ORDER BY id`/`added_at`）无影响；新序在首次 reorder 前保持旧序，回填 `sort_order=id` 保证新旧序一致，可平滑共存。
@@ -84,12 +112,16 @@ chan-stock-manage 的 `specs/watchlist` 三项需求整体迁入本变更 `specs
 - [PG 降级内存模式下排序、删除仅进程内有效，重启丢失] → 与既有降级语义一致（本就无持久化），不新增承诺。
 - [乐观更新后接口失败导致本地序与服务端不一致] → `onEnd` 失败回滚本地数组并提示；用户重拖可自愈。
 - [vuedraggable 社区版维护平淡] → 其底层 SortableJS 仍活跃；接口面小（一个列表拖拽 + 一个 tbody 拖拽），替换成本可控。
+- [自选页级别无对应 DuckDB K 线数据（如 30m/60m 未灌数）导致 `getPriceAt` 失败] → D9 兜底：保留当前价格（行股价）并提示；用户可换级别或接受行股价提交（spec「价格口径与取价失败」场景覆盖）。
+- [批量循环中用户切换页面/参数状态被并发修改] → 提交期间禁用弹窗操作（loading 态），循环为串行 await 无共享可变状态。
+- [`source_type` 三值下 mock 与真后端行为漂移] → mock handlers 与真后端同步放行 `'watchlist'`（写入即返回），端到端任务 7.3 双模式各验一次来源列显示。
 
 ## Migration Plan
 
 1. 后端先行：`_ensure_tables` 加列 + 存量回填 + reorder 端点 + `q` 参数（旧接口向后兼容，新参数可选）。
 2. 前端随后：修复三项缺陷 → 重命名 UI → 拖拽（依赖新增）→ `onActivated`。
-3. 回滚：新列与新端点对旧前端无影响，回滚前端即回到旧行为；`sort_order` 列保留无害。
+3. 加入监控增量：后端 `source_type` 白名单放行（纯参数校验，无 DDL，对旧调用零影响）→ 前端 API 层 → WatchlistView 弹窗（行级 → 批量）→ mock 同步。
+4. 回滚：新列与新端点对旧前端无影响，回滚前端即回到旧行为；`sort_order` 列保留无害；`source_type='watchlist'` 记录在旧前端显示「缠论」（缺省分支），无破坏性。
 
 ## Open Questions
 

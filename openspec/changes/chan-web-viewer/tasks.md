@@ -39,8 +39,15 @@
 
 ## 7. 页面缓存（KeepAlive，后续新增需求）
 
-- [x] 7.1 `AppShell.vue` 的 router-view 接入 `<KeepAlive>`（子组件 key = `route.name`），`App.vue` 移除 `:key="route.path"`；验证在 K 线页操作（搜索股票/切周期/折叠左侧面板/添加副图）→ 切自选 → 切回，页面排版与数据保持原样、不重新加载
-- [x] 7.2 跨页带参跳转兼容：带参目标页补 `watch(() => route.query.*)`；验证 各跳转入口 → 目标页（`?param=`）仍按参数进入，无参切回保持缓存原样
-- [x] 7.3 返回滚动位置恢复：`router.beforeEach` 记录离开时 `scrollY` + `scrollBehavior` 按记忆恢复（登出清记忆）；验证切回长页面滚动位置不变、首次进入仍在顶部
-- [x] 7.4 图表复活尺寸自愈：`useEcharts` 增加 `onActivated(resize)`；`KLineChart` 的 ResizeObserver 忽略 0 尺寸事件（失活隐藏期 `resize()` 经 `_measurePaneHeight` 把副图 pane 固定高度永久压成 0、复活钳到 minHeight 30px → 主/副图排版错乱），并加 `onActivated` 逐副图 `setPaneOptions({id,height:130})` 断言 + `resize()` 重排；验证绩效页与 K 线页缓存复活后尺寸均正确（复现脚本往返前后 canvas 度量一致 209/130/130/23）
+<!-- 2026-10-04 修订：缓存范围收窄为仅 K 线页（KeepAlive include 白名单，
+     KLineView 需 defineOptions 显式命名）。原实现为全部应用内路由缓存；
+     范围收窄的代码回改已于 2026-10-04 apply 完成：AppShell include 白名单
+     + KLineView defineOptions 命名 + 移除 BspView/WatchlistView/
+     StrategySignalView 的 onActivated 缓存复活刷新（非缓存页重挂载天然
+     走 onMounted）。修订后 7.2 的带参兜底与 7.4 的尺寸自愈仅 K 线页需要。 -->
+
+- [x] 7.1 `AppShell.vue` 的 router-view 接入 `<KeepAlive>`（子组件 key = `route.name`），`App.vue` 移除 `:key="route.path"`；验证在 K 线页操作（搜索股票/切周期/折叠左侧面板/添加副图）→ 切自选 → 切回，页面排版与数据保持原样、不重新加载（**2026-10-04 修订：缓存范围收窄为仅 K 线页**，见组头注记）
+- [x] 7.2 跨页带参跳转兼容：带参目标页补 `watch(() => route.query.*)`；验证 各跳转入口 → 目标页（`?param=`）仍按参数进入，无参切回保持缓存原样（修订后仅 K 线页走缓存命中路径，需要此兜底；非缓存页重挂载天然执行 onMounted）
+- [x] 7.3 返回滚动位置恢复：`router.beforeEach` 记录离开时 `scrollY` + `scrollBehavior` 按记忆恢复（登出清记忆）；验证切回长页面滚动位置不变、首次进入仍在顶部（修订后恢复语义实际生效于 K 线页；记忆 Map 全局保留无害）
+- [x] 7.4 图表复活尺寸自愈：`useEcharts` 增加 `onActivated(resize)`；`KLineChart` 的 ResizeObserver 忽略 0 尺寸事件（失活隐藏期 `resize()` 经 `_measurePaneHeight` 把副图 pane 固定高度永久压成 0、复活钳到 minHeight 30px → 主/副图排版错乱），并加 `onActivated` 逐副图 `setPaneOptions({id,height:130})` 断言 + `resize()` 重排；验证 K 线页缓存复活后尺寸正确（复现脚本往返前后 canvas 度量一致 209/130/130/23；修订后仅 K 线页走缓存复活路径）
 - [x] 7.5 验证：`npm run build`（vue-tsc 类型检查 + 打包）通过，浏览器实测 7.1~7.4 行为

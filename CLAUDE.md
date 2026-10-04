@@ -149,6 +149,13 @@ CChan (ChanAnalyse/Chan.py)  ← 门面，接收 stock code + CChanConfig
 
 所有技术指标均为手写实现（MACD, BOLL, RSI, KDJ, DeMark, TrendLine），不依赖 talib。
 
+### 数据库 DDL 变更规范（WebAPI/update.sql）
+
+代码对数据库表做 DDL 变更时（建表、加列、加索引、加约束等），必须在 `WebAPI/update.sql` 中追加对应 SQL 语句：
+
+- 每次追加需在语句前注释**执行时间**（如 `-- 2026-10-04 xxx 表加列`）。
+- 所有 SQL 必须幂等，可重复执行：建表用 `CREATE TABLE IF NOT EXISTS`，加列/加索引/加约束用 `IF NOT EXISTS` 或先查 `information_schema`/`pg_attribute` 再执行的 DO 块判断，禁止裸 `CREATE/ALTER` 直接报错重跑。
+
 ## 前端（`Front/`）
 
 Vue3 + Vite + TypeScript + Element Plus + ECharts + KLineChart + Pinia，暗色专业终端风格，A 股红涨绿跌。结构见 `Front/README.md`。

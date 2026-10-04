@@ -15,7 +15,7 @@ export const mockUsers: MockUser[] = [
     role: 'admin',
     status: 'active',
     perms: [
-      'menu:kline', 'menu:watchlist', 'menu:bsp', 'menu:monitor',
+      'menu:kline', 'menu:watchlist', 'menu:bsp', 'menu:strategy', 'menu:monitor',
       'menu:performance', 'menu:screener', 'menu:alerts', 'menu:system',
       'manage',
     ],
@@ -28,7 +28,7 @@ export const mockUsers: MockUser[] = [
     role: 'trader',
     status: 'active',
     perms: [
-      'menu:kline', 'menu:watchlist', 'menu:bsp', 'menu:monitor',
+      'menu:kline', 'menu:watchlist', 'menu:bsp', 'menu:strategy', 'menu:monitor',
       'menu:performance', 'menu:screener', 'menu:alerts',
     ],
   },

@@ -185,6 +185,15 @@ export interface MonitorItem {
   max_profit: number
   max_drawdown: number
   status: 'monitoring' | 'completed'
+  /** 分组归属（monitor-group-change：null = 未分组，存量记录零迁移即 NULL） */
+  group_id: number | null
+  /** 信号来源（strategy-signal-page design D6 + D14 / watchlist-page-change design D8/D11）：
+   *  'chan'（默认，存量行为不变）、'strategy' 或 'watchlist'（自选页加入监控，来源列显示「自选」） */
+  source_type?: 'chan' | 'strategy' | 'watchlist'
+  /** 策略来源所属实例（source_type='strategy' 时随信号携带） */
+  instance_id?: number
+  /** 策略来源展示标签（「策略名 · 实例名 · 状态」，后端/mock 填充；chan/watchlist 来源不传） */
+  strategy_label?: string
 }
 
 export interface CompletedItem extends MonitorItem {
@@ -212,14 +221,89 @@ export interface AnalyzeResult {
 }
 
 // ---------------------------------------------------------------------------
+// 策略信号（strategy-signal-page design D5）
+// 命名区分：本节的 StrategyDefinition/StrategyInstance/StrategySignalRow 是
+// 策略引擎的「策略定义 / 参数实例 / 信号」三层实体（schema 驱动、实例不可变），
+// 与上方选股器的 Strategy（缠论买卖点过滤器）是完全不同的概念，刻意不共用命名。
+// ---------------------------------------------------------------------------
+/** 策略参数声明（params_schema 项）：动态渲染实例表单项（int/float → el-input-number） */
+export interface StrategyParamSchema {
+  key: string
+  label: string
+  type: 'int' | 'float'
+  default: number
+  min: number
+  max: number
+}
+
+/** 策略状态声明（states 项）：信号生命周期状态 + 展示色（映射 badge 样式类） */
+export interface StrategyStateDecl {
+  value: string
+  label: string
+  /** 展示色声明：info→badge--info / warning→badge--warning / danger→badge--rise / success→badge--fall */
+  color: 'info' | 'warning' | 'danger' | 'success'
+}
+
+/** 策略私有列声明（columns 项）：信号列表的动态列（值取自 payload[key]） */
+export interface StrategyColumnDecl {
+  key: string
+  label: string
+  type: 'date' | 'int' | 'float'
+}
+
+/** 策略实例（不可变：改参数 = 新建实例；历史信号随实例保留） */
+export interface StrategyInstance {
+  id: number
+  label: string
+  params: Record<string, number>
+  enabled: boolean
+  signal_count: number
+}
+
+/** 策略定义（代码注册，用户不可增删；前端表单/状态/私有列均由声明驱动渲染） */
+export interface StrategyDefinition {
+  id: string
+  name: string
+  group_name: string
+  sort: number
+  params_schema: StrategyParamSchema[]
+  states: StrategyStateDecl[]
+  columns: StrategyColumnDecl[]
+  /** 定义下的实例树（后端联查返回，含各实例信号计数） */
+  instances: StrategyInstance[]
+}
+
+/** 策略信号行（GET /api/strategy/signals 分页项） */
+export interface StrategySignalRow {
+  code: string
+  name: string
+  industries: string[]
+  /** 信号日期（YYYY-MM-DD，闭区间筛选参数同格式） */
+  signal_date: string
+  /** 取值域 = 所属策略定义声明的 states */
+  state: string
+  is_buy: boolean
+  entry_ref_price: number
+  stop_ref_price: number
+  /** 策略私有字段（按 columns 声明的 key 取值渲染） */
+  payload: Record<string, number | string>
+}
+
+// ---------------------------------------------------------------------------
 // 绩效
 // ---------------------------------------------------------------------------
+/** 绩效统计行（GET /performance/stats，按 (bsp_type, kl_type) 分组聚合） */
 export interface PerformanceStat {
+  /** 买卖点类型原始枚举（'2s'/'1'/…，展示由前端 bspLabel 映射） */
   bsp_type: string
+  /** K 线周期分组维度（'30m'/'60m'/'D'/'W'/'M'） */
+  kl_type: string
   samples: number
   win_rate: number
   avg_pnl: number
   profit_ratio: number
+  /** 期望值（胜率×平均盈利 − 败率×|平均亏损|，单位 %） */
+  expectancy: number
 }
 
 export interface PerformanceSample {
@@ -227,6 +311,14 @@ export interface PerformanceSample {
   code: string
   name: string
   bsp_type: string
+  /** K 线周期（'30m'/'60m'/'D'/'W'/'M'） */
+  kl_type: string
+  /** 信号来源（缺省视为 'chan'，与后端兜底语义一致） */
+  source_type?: 'chan' | 'strategy' | 'watchlist'
+  /** source_type='strategy' 时的实例 id（来源树 strategy:<id> 过滤用） */
+  instance_id?: number
+  /** source_type='strategy' 时的「策略名·实例名·状态」标签 */
+  strategy_label?: string
   direction: 'buy' | 'sell'
   bsp_price: number
   end_price: number
@@ -234,6 +326,10 @@ export interface PerformanceSample {
   bsp_date: number
   end_date: number
   hold_days: number
+  /** 归因摘要（未归因为空串/缺省） */
+  attribution?: string
+  /** 监控分组 id（null = 未分组；design D9 分组维度过滤用，后端缺省返回 null/0 时视为未分组） */
+  group_id?: number | null
 }
 
 // ---------------------------------------------------------------------------

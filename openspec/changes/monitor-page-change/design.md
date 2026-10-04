@@ -86,7 +86,7 @@
 
 - **删除** `Topnav.vue` 的 `monitor-completed` 菜单项；**删除** `routes.ts` 的 `monitor/completed` 路由（`name: 'monitor-completed'`）。
 - **整合**：`CompletedView.vue` 的内容（完成列表、统计卡、归因面板、批量/单项 LLM 分析、`SampleDrawer` 抽屉）并入 `MonitorView.vue`；「监控中/已完成」`el-radio-group` tab 移至页面顶部，切换时整体替换内容区（监控中内容 ↔ 已完成内容），**不走路由跳转**。
-- **KeepAlive/带参跳入**：原「监控 → 完成（`?code=`）」跨页跳转变为页内 tab 切换 + 选中标的定位；`CompletedView` 原 `watch(() => route.query.code)` 逻辑改为页内状态（详情按钮直接切换 tab 并定位行）。
+- **KeepAlive/带参跳入**：原「监控 → 完成（`?code=`）」跨页跳转变为页内 tab 切换 + 选中标的定位；`CompletedView` 原 `watch(() => route.query.code)` 逻辑改为页内状态~~（详情按钮直接切换 tab 并定位行）~~（该页内切 tab 定位链路已随 D13 删除查看详情按钮整体移除，已完成 tab 仅由顶部 tab 手动切换到达）。
 - **归因相关状态**（`drawerVisible`/`drawerItem`/批量进度）随内容并入 `MonitorView`；`SampleDrawer.vue` 组件保留复用不合并。
 - **备选否决**：保留两个路由仅去掉菜单项（tab 切换仍走路由，KeepAlive 缓存两份实例，状态割裂）。
 
@@ -138,6 +138,26 @@
 - **跳转语义**：监控中与已完成两个表格「名称 / 编码」列的值支持**双击**跳转到 K 线页面，并携带该行的「级别」（`kl_type`）值，K 线页按该级别加载。
 - **实现要点**：`cell-stock` 容器加 `@dblclick` 跳转（query 带 `code` + 级别参数）；实施时核对 K 线页路由的既有参数约定（参数名以 `Front/src/router/routes.ts` 与 K 线页读取逻辑为准）。
 - **备选否决**：单击跳转（与点选候选/文本选择冲突，双击为终端惯例）。
+
+### D13. 删除监控中列表操作栏「查看详情」按钮（2026-10-04 新增）
+
+- **删除范围**：`MonitorView.vue` 监控中列表操作栏的「查看详情」按钮及 `onViewDetail` 页内切 tab 定位链路整体移除——含 `highlightCode` 高亮状态、`completedRowClass` 的 `row--hl` 定位样式、监控中表格整行 `@row-dblclick="onViewDetail"` 绑定。
+- **操作栏收敛**：监控中表格操作栏仅剩「手动结束」（`status === 'monitoring'` 行）；已完成表格操作栏仍为「查看归因」。
+- **不受影响**：双击「名称/编码」跳 K 线（D12，`cell-stock` 的 `@dblclick`）保留；失败原因汇总面板与已完成列表的归因抽屉入口（`SampleDrawer`，`onViewAttrDetail`）保留——spec「查看归因详情」requirement 不受本决策影响。
+- **tab 到达方式**：已完成 tab 仅由顶部「监控中/已完成」tab 手动切换到达，无页内跨 tab 定位捷径。
+- **备选否决**：仅删按钮保留整行双击定位（按钮删了功能还在，删得不彻底）。
+
+### D14. 来源下拉查询 + 字典接口 + 统计联动（2026-10-04 新增）
+
+现状：来源列已展示 `source_type` 两级（chan→「缠论」、strategy→策略标签 `strategy_label`），但无来源查询条件；两 tab 统计卡基于全量列表计算；自选页无「加入监控」入口。
+
+- **字典接口**：后端新增 `GET /api/monitor/sources`，返回 `[{value, label, source_type, instance_id?}]`——value 为过滤键（`'chan'` / `'strategy:<instance_id>'` / `'watchlist'`），label 为展示名。数据源为 monitor 表 distinct `(source_type, instance_id)` + 策略实例名（复用 `_fill_bsp_context` 的实例名缓存语义），前端下拉消费，SHALL NOT 硬编码策略实例。
+- **来源枚举扩展**：`monitor_store.create_monitor` 的 `source_type` 白名单与前端 `CreateMonitorPayload` 增加 `'watchlist'`；来源列三分支：chan/缺省→「缠论」、strategy→策略标签、watchlist→「自选」。
+- **自选页加入监控入口**：`WatchlistView` 行操作新增「加入监控」，弹窗复用 BspView 行级弹窗模式（级别/买卖点时间/价格/分组可选），缺省现价与当前时间，提交携带 `source_type='watchlist'`。
+- **过滤实现**：沿用 D7 前端过滤模式（列表数据已在内存）——来源过滤为 `source_type`（+ `instance_id`）匹配，与 code 精确过滤可叠加；「全部来源」即不过滤。查询/重置按钮语义扩展：重置同时清空来源选择。
+- **统计联动**：两 tab 统计 computed 改为消费来源过滤后的列表（监控中 tab 为 D11 五项统计、已完成 tab 为完成总数/胜率/平均盈利/盈利比），来源选择变化即重算，清空恢复全量。
+- **mock**：MSW handler 补 `GET /api/monitor/sources` 与 watchlist 来源样例数据。
+- **备选否决**：前端从列表数据提取来源选项（仅覆盖当前 tab 已加载列表，两 tab 选项不一致，且与「字典结构」诉求不符）。
 
 ## Risks / Trade-offs
 

@@ -71,6 +71,7 @@ const allMenus: MenuItem[] = [
   { key: 'kline', label: 'K线', to: '/kline' },
   { key: 'watchlist', label: '自选', to: '/watchlist' },
   { key: 'bsp', label: '买卖点', to: '/bsp' },
+  { key: 'strategy', label: '策略信号', to: '/strategy' },
   { key: 'monitor', label: '监控', to: '/monitor' },
   { key: 'performance', label: '绩效', to: '/performance' },
   { key: 'screener', label: '选股', to: '/screener' },
