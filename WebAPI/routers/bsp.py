@@ -102,11 +102,17 @@ async def bsp_list(
     kl_type: str = Query(""),
     date_from: str = Query(""),
     date_to: str = Query(""),
+    sure: str = Query(""),
 ):
     """买卖点列表（分页 + 筛选；date_from/date_to 为 YYYY-MM-DD 日期范围，
     双端齐备按闭区间 [date_from, date_to] 匹配，只传一端单边过滤，双空不过滤）。
 
-    响应契约 PageRes<BspRecord>：{list, total, page, page_size}。
+    sure（bsp-sure-annotation D3）：确认状态过滤，取值 confirmed（只看已确认）/
+    preview（只看未确认）；缺省不过滤；非法取值返回 400（三态字符串与
+    direction 同风格，缺省语义显式无歧义）。
+
+    响应契约 PageRes<BspRecord>：{list, total, page, page_size}，每行携带
+    is_sure（记录确认状态，spec「记录携带确认状态」）。
     """
     _check_date_param(date_from, "date_from")
     _check_date_param(date_to, "date_to")
@@ -116,6 +122,17 @@ async def bsp_list(
         is_buy = True
     elif direction == "sell":
         is_buy = False
+
+    # 确认状态三态解析（D3）
+    # 注：直调（非 HTTP 层，如 Debug/bsp_engine_regression.py T7.4）缺省参数
+    # 拿到的是 Query 实例而非 str —— 非 str 视同缺省，不误入 400 分支。
+    is_sure: Optional[bool] = None
+    if sure == "confirmed":
+        is_sure = True
+    elif sure == "preview":
+        is_sure = False
+    elif isinstance(sure, str) and sure != "":
+        raise HTTPException(status_code=400, detail="sure 需为 confirmed 或 preview")
 
     # 过滤下推（2.3/2.6）：keyword/kl_type/bsp_type/direction/date_from~date_to
     # 同一 WHERE，COUNT 与分页共用，total = 过滤后总数；无命中 list=[] 且 total=0
@@ -133,6 +150,7 @@ async def bsp_list(
         keyword=keyword if keyword else "",
         page=page,
         page_size=page_size,
+        is_sure=is_sure,
     )
 
     items = result["items"]
@@ -158,6 +176,8 @@ async def bsp_list(
             "bsp_date": _to_ms(it["bsp_date"], it["time_key"]),
             "kl_type": it["kl_type"],
             "change_pct": change_pct,
+            "is_sure": it["is_sure"],
+            "ladder": it.get("ladder"),
         })
 
     return {

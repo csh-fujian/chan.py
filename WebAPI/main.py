@@ -27,6 +27,8 @@ from .chan_service import (
     _compute_chan,
     _resolve_data_src,
     _resolve_kl_type,
+    compute_sub_chan,
+    resolve_sub_level,
 )
 from .serializer import serialize_chan
 
@@ -136,7 +138,12 @@ async def get_klines(
             ),
         )
 
-    result = serialize_chan(chan, kl_type)
+    # L1 区间套子级别计算（bsp-ladder-change D3）：D→30m/W→D/M→W；失败降级 None
+    # （未确认行不标 L1），不阻断主级别响应。分钟级周期无子级（None）零开销。
+    sub_chan = compute_sub_chan(symbol, kl_type)
+    sub_kl_type = resolve_sub_level(kl_type) if sub_chan is not None else None
+
+    result = serialize_chan(chan, kl_type, sub_chan=sub_chan, sub_kl_type=sub_kl_type)
 
     # 增量加载分页支持：若指定 end，只返回时间戳 <= end 的 K 线
     if end is not None and end > 0:

@@ -21,12 +21,16 @@ export const bspHandlers = [
     // 日期范围条件（D7）：双端齐备按闭区间（YYYY-MM-DD 字符串比较），单端单边，双空不过滤
     const dateFrom = url.searchParams.get('date_from') || ''
     const dateTo = url.searchParams.get('date_to') || ''
+    // 确认状态过滤（bsp-sure-annotation D3/D4）：confirmed 只回 true、preview 只回 false、缺省不过滤
+    const sure = url.searchParams.get('sure') || ''
 
     let list = bspRecords
     if (keyword) list = list.filter((r) => r.code.includes(keyword) || r.name.includes(keyword))
     if (bspType) list = list.filter((r) => r.bsp_type === bspType)
     if (direction) list = list.filter((r) => r.direction === direction)
     if (klType) list = list.filter((r) => r.kl_type === klType)
+    if (sure === 'confirmed') list = list.filter((r) => r.is_sure === true)
+    else if (sure === 'preview') list = list.filter((r) => r.is_sure === false)
     if (dateFrom || dateTo) {
       list = list.filter((r) => {
         const d = localDateStr(r.bsp_date)

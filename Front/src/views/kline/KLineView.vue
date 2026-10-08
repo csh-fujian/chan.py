@@ -107,6 +107,8 @@
           <div class="legend-title">缠论图例</div>
           <div class="legend-row"><span class="sw"></span>笔（灰线）</div>
           <div class="legend-row"><span class="sw sw--seg"></span>线段（蓝线）</div>
+          <!-- kline-unsure-dashed：未确认笔/段为同色虚线，补示意项解释虚线语义 -->
+          <div class="legend-row"><span class="sw sw--unsure"></span>未确认笔/段（虚线）</div>
           <div class="legend-row"><span class="sw sw--box"></span>笔中枢（灰框）</div>
           <div class="legend-row"><span class="sw sw--box sw--box2"></span>线段中枢（蓝框）</div>
           <div class="legend-row"><span class="dot dot--buy"></span>买点（1B/2B/L2B/3B）</div>
@@ -644,6 +646,11 @@ onBeforeUnmount(() => {
 .legend-row .sw--seg {
   border-color: var(--accent-base);
   border-top-width: 3px;
+}
+/* kline-unsure-dashed：未确认笔/段示意——同色虚线（笔灰/段蓝同语义，图例统一灰虚线示意） */
+.legend-row .sw--unsure {
+  border-top-style: dashed;
+  border-color: var(--text-secondary);
 }
 .legend-row .sw--box {
   width: 16px;

@@ -13,6 +13,8 @@ export interface BspQuery {
   date_from?: string | null
   /** 日期范围终点（YYYY-MM-DD）；与 date_from 双端齐备按闭区间匹配，只传一端单边过滤，空则不过滤 */
   date_to?: string | null
+  /** 确认状态过滤（bsp-sure-annotation D3，后端同风格三态字符串）：'confirmed' 只看已确认、'preview' 只看未确认、空=不过滤 */
+  sure?: string
 }
 
 /** 买卖点列表（服务端分页） */
@@ -43,6 +45,7 @@ export function getBspAggregate() {
  * 字段对齐后端 get_bsp_by_code：bsp_date 为 ISO 日期字符串（YYYY-MM-DD），
  * bsp_type 为 CEnum.BSP_TYPE.value 原始值（'1'/'2'/'2s'/'3a'/'3b'/'1p'），
  * 与 BspRecord（bsp_date ms 时间戳、标签化 bsp_type）不同，调用方需做映射。
+ * is_sure（bsp-sure-annotation 3.3）：确认状态，口径与 BspRecord.is_sure 一致。
  */
 export interface BspIndexRow {
   code: string
@@ -53,6 +56,9 @@ export interface BspIndexRow {
   is_buy: boolean
   price: number
   time_key: string
+  is_sure: boolean
+  /** 确认阶梯级别（bsp-ladder-change）：'L1'/'L2'/'L3'/'L4'，NULL 行后端按 is_sure 兜底映射 */
+  ladder?: string | null
 }
 
 /** 指定股票的多级别买卖点（区间套），kl_types 过滤周期集合 */

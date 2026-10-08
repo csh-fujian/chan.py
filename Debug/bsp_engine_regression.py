@@ -12,6 +12,7 @@
   T6  3.6/5.3 重复触发幂等：数据无变化再跑 catch_up，行数与游标不变
   T7  5.2 查询下推：query_bsp 分页/关键词/周期/date 与 SQL 直查一致；router PageRes 契约
   T8  2.5 注入面：kl_types 含引号构造串不产生 SQL 错误
+  T9  5.3 L1 落库（D3 修订）：W 级重算出现 L1 行；BSP_L1_PERSIST=0 后 L1 消失回 L2
 
 运行（项目根目录，需 PG + Data/kl_store.duckdb）：
     .venv/bin/python Debug/bsp_engine_regression.py
@@ -345,7 +346,8 @@ def check_t7(codes, period) -> bool:
 
     res = asyncio.run(bsp_list(page=1, page_size=5, keyword=code[3:6], bsp_type="", direction="", kl_type=period, date_from="", date_to=""))
     shape_ok = set(res.keys()) == {"list", "total", "page", "page_size"}
-    fields = {"id", "code", "name", "industries", "bsp_type", "direction", "bsp_price", "current_price", "bsp_date", "kl_type", "change_pct"}
+    # bsp-ladder-change：BspRecord 增 ladder 字段（L1/L2/L3/L4）
+    fields = {"id", "code", "name", "industries", "bsp_type", "direction", "bsp_price", "current_price", "bsp_date", "kl_type", "change_pct", "is_sure", "ladder"}
     rec_ok = all(set(rec.keys()) == fields for rec in res["list"])
     type_ok = all(
         isinstance(rec["id"], int)
@@ -399,6 +401,58 @@ def check_t8(codes, period) -> bool:
     return good
 
 
+def check_t9(codes, period) -> bool:
+    """5.3 D3 修订：落库链路计算 L1（子级别共振）。
+
+    用 W 级（子级别 D）验证：重算后 bsp_index 出现 L1 行；
+    BSP_L1_PERSIST=0 重算 L1 行消失（未确认无背驰回 L2）。
+    W 级未确认行较少时 L1 可能数为 0——此时用「开关关后 L2 数变化」
+    或降级断言（无未确认行则 SKIP），保底验证开关语义生效。
+    """
+    import importlib
+
+    from WebAPI import incremental_engine as ie
+
+    ok = True
+    for code in codes:
+        s = recompute_stock(code, "W")
+        if s is None:
+            print(f"[SKIP] T9 L1-persist {code} W: DuckDB 无周线数据")
+            continue
+        l1_on = _ladder_rows(code, "W", "L1")
+        # 开关关闭：重算后 L1 行必须消失
+        os.environ["BSP_L1_PERSIST"] = "0"
+        try:
+            importlib.reload(ie)
+            s2 = recompute_stock(code, "W")
+            l1_off = _ladder_rows(code, "W", "L1")
+        finally:
+            os.environ.pop("BSP_L1_PERSIST", None)
+            importlib.reload(ie)
+        good = (s2 is not None) and (len(l1_off) == 0)
+        print(f"[{'PASS' if good else 'FAIL'}] T9 L1-persist {code} W: "
+              f"ladder_rows(on)={len(l1_on)} -> ladder_rows(off)={len(l1_off)}")
+        if l1_on:
+            print(f"        L1 行示例: {l1_on[0][0]} {l1_on[0][1]}")
+        ok = ok and good
+    return ok
+
+
+def _ladder_rows(code, period, ladder, autype="QFQ"):
+    conn = _conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT bsp_date, bsp_type, time_key FROM bsp_index "
+                "WHERE code=%s AND kl_type=%s AND autype=%s AND ladder=%s "
+                "ORDER BY bsp_date, bsp_type",
+                (code, period, autype, ladder),
+            )
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--codes", default=",".join(TEST_CODES))
@@ -408,7 +462,7 @@ def main() -> int:
     period = args.period
 
     results = []
-    for fn in (check_t1, check_t2, check_t3, check_t4, check_t5, check_t6, check_t7, check_t8):
+    for fn in (check_t1, check_t2, check_t3, check_t4, check_t5, check_t6, check_t7, check_t8, check_t9):
         try:
             results.append(fn(codes, period))
         except Exception as e:

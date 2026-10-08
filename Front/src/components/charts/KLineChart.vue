@@ -19,6 +19,45 @@
       <el-icon><Setting /></el-icon>
     </button>
     <VolConfigDialog v-model="volDialogVisible" />
+    <!-- 买卖点确认阶梯 hover 说明卡（bsp-ladder-change D5）：canvas overlay 无法用
+         el-tooltip 包裹，走 chan_bsp 注册期注入的 hover 钩子 + 绝对定位浮层 -->
+    <div
+      v-if="bspLadderTip.show"
+      class="bsp-ladder-tip"
+      :style="{ top: `${bspLadderTip.top}px`, left: `${bspLadderTip.left}px` }"
+    >
+      <div class="bsp-ladder-tip__head">
+        <span class="bsp-ladder-tip__badge" :class="`badge--${ladderBadgeClass(bspLadderTip.ladder)}`">
+          {{ bspLadderTip.ladder ? bspLadderTip.ladder : '未定级' }}
+        </span>
+        <span class="bsp-ladder-tip__dir" :class="bspLadderTip.isBuy ? 'text-rise' : 'text-fall'">
+          {{ bspLadderTip.isBuy ? '买点' : '卖点' }}
+        </span>
+        <span class="bsp-ladder-tip__types mono">{{ bspLadderTip.typesLabel }}</span>
+      </div>
+      <div class="bsp-ladder-tip__rows">
+        <div
+          v-for="l in LADDER_LEVELS"
+          :key="l.level"
+          class="bsp-ladder-tip__row"
+          :class="{ 'is-current': l.level === bspLadderTip.ladder }"
+        >
+          <span class="bsp-ladder-tip__lv mono">{{ l.level }}</span>
+          <span class="bsp-ladder-tip__name">{{ l.name }}</span>
+          <!-- 仓位指引按悬浮标记方向取（卖点镜像文案，bspLadder.ladderPosition） -->
+          <span class="bsp-ladder-tip__pos">{{ ladderPosition(l, bspLadderTip.isBuy) }}</span>
+        </div>
+        <div v-if="!bspLadderTip.ladder" class="bsp-ladder-tip__row is-current">
+          <span class="bsp-ladder-tip__lv mono">--</span>
+          <span class="bsp-ladder-tip__name">未定级（数据缺 ladder 字段或降级）</span>
+          <span class="bsp-ladder-tip__pos">--</span>
+        </div>
+      </div>
+      <div v-if="bspLadderTip.l1Resonant" class="bsp-ladder-tip__sub">
+        L1 小级别共振佐证同时成立（当前按判定顺序标 {{ bspLadderTip.ladder }}）
+      </div>
+      <div class="bsp-ladder-tip__note">{{ LADDER_ORDER_NOTE }}</div>
+    </div>
   </div>
 </template>
 
@@ -48,9 +87,19 @@ import {
   chanBspLabel,
   bspBoxSize,
   vBspRadius,
+  setChanBspHoverHooks,
   type ChanBspMeta,
   type ChanVBspMeta,
+  type ChanBiMeta,
+  type ChanSegMeta,
 } from '@/components/chan'
+import {
+  isLadder,
+  ladderInfo,
+  ladderPosition,
+  LADDER_LEVELS,
+  LADDER_ORDER_NOTE,
+} from '@/utils/bspLadder'
 import {
   useVirtualBsp,
   findAnchorBarTimestamp,
@@ -124,6 +173,67 @@ const {
 const volBtnPos = ref<{ top: number; left: number } | null>(null)
 const volDialogVisible = ref(false)
 let volBtnRaf = 0
+
+// ---------------------------------------------------------------------------
+// 买卖点确认阶梯 hover 说明卡（bsp-ladder-change D5 / 任务 3.2）：
+// chan_bsp overlay 注册期注入 hover 钩子（figure 命中 → meta + 鼠标坐标），
+// 此处以绝对定位浮层渲染（canvas overlay 无法用 el-tooltip 包裹）。
+// 缺 ladder 字段兜底「未定级」；浮层位置贴鼠标右上，右缘越界自动翻转。
+// ---------------------------------------------------------------------------
+interface BspLadderTip {
+  show: boolean
+  top: number
+  left: number
+  ladder: string | null
+  isBuy: boolean
+  typesLabel: string
+  /** L3 命中且 L1 共振同时成立的副标记（后端 L3 优先裁定，design D1） */
+  l1Resonant: boolean
+}
+const bspLadderTip = ref<BspLadderTip>({
+  show: false, top: 0, left: 0, ladder: null, isBuy: true, typesLabel: '', l1Resonant: false,
+})
+
+/** 级别 → 徽章色（L4 实色 / L1-L3 弱化，design D6 语义与买卖点页级别列一致） */
+function ladderBadgeClass(ladder: string | null): string {
+  if (ladder === 'L4') return 'rise'
+  if (ladder === 'L3') return 'warning'
+  if (ladder === 'L1') return 'info'
+  return 'default'
+}
+
+/** 估算浮层尺寸（定宽 + 估算高：头部 + 4 行 + 脚注），用于越界翻转 */
+const TIP_WIDTH = 300
+const TIP_HEIGHT = 210
+/** 浮层与鼠标的间隙 */
+const TIP_GAP = 14
+
+/** figure 命中 → 展示浮层（位置贴鼠标右上；右缘/下缘越界翻转） */
+function showBspLadderTip(meta: ChanBspMeta, x: number, y: number): void {
+  const info = ladderInfo(meta.ladder)
+  const label = chanBspLabel(meta.types, meta.isBuy)
+  let left = x + TIP_GAP
+  let top = y - TIP_HEIGHT / 2
+  // 容器宽高未知时用 chart DOM 兜底；右缘越界翻到鼠标左侧
+  const wrapW = chartRef.value?.clientWidth ?? 0
+  const wrapH = chartRef.value?.clientHeight ?? 0
+  if (wrapW > 0 && left + TIP_WIDTH > wrapW) left = x - TIP_WIDTH - TIP_GAP
+  if (top < 4) top = 4
+  if (wrapH > 0 && top + TIP_HEIGHT > wrapH - 4) top = Math.max(4, wrapH - TIP_HEIGHT - 4)
+  bspLadderTip.value = {
+    show: true,
+    top,
+    left,
+    ladder: info?.level ?? null,
+    isBuy: meta.isBuy,
+    typesLabel: label,
+    l1Resonant: false, // L1 共振副标记：单字段语义下 L3 命中时无独立 L1 状态可考，先常 false
+  }
+}
+
+function hideBspLadderTip(): void {
+  bspLadderTip.value.show = false
+}
 
 /** 构造 MA 指标创建/覆盖参数：calcParams 天数 + 逐线颜色 */
 function mainMaIndicator(): IndicatorCreate {
@@ -261,6 +371,8 @@ function rebuildBspOverlays(): void {
     barTs: number
     high: number
     low: number
+    /** 确认阶梯级别（bsp-ladder-change 3.1）：保留不再丢弃；缺失 = 未定级 */
+    ladder?: string
   }
   const chanMarks: BspMark[] = []
   let chanDropped = 0
@@ -271,7 +383,15 @@ function rebuildBspOverlays(): void {
       chanDropped++
       continue
     }
-    chanMarks.push({ isBuy: b.is_buy, types: b.types, v: b.v, barTs, high: bar.high, low: bar.low })
+    chanMarks.push({
+      isBuy: b.is_buy,
+      types: b.types,
+      v: b.v,
+      barTs,
+      high: bar.high,
+      low: bar.low,
+      ladder: isLadder(b.ladder) ? b.ladder : undefined,
+    })
   }
 
   // —— 虚拟买卖点：仅当 monitor 数据的 code 与当前图表一致（异步数据防串号）——
@@ -333,6 +453,7 @@ function rebuildBspOverlays(): void {
         low: m.low,
         stackIndex,
         xOffset,
+        ladder: m.ladder,
       })
     }
     chart.createOverlay({
@@ -407,23 +528,42 @@ function rebuildAllOverlays(): void {
 
   if (result) {
     // 笔覆盖层：points 按 [begin, end, begin, end, ...] 顺序；lock=true 禁止拖动
+    // kline-unsure-dashed：extendData 挂与 points 顺序对齐的元数据数组（每条笔一项：
+    // startIndex 对齐 points 起始索引 + isSure 确认状态），绘制端按 meta 取线型
+    //（isSure=false 虚笔 → 同色虚线）。meta 数组下标 = 笔序号，startIndex = 笔序号 * 2。
     if (result.bi.length > 0) {
       const biPoints: Array<{ timestamp: number; value: number }> = []
+      const biMeta: ChanBiMeta[] = []
       for (const b of result.bi) {
+        biMeta.push({ startIndex: biPoints.length, isSure: b.is_sure })
         biPoints.push({ timestamp: b.begin.t, value: b.begin.v })
         biPoints.push({ timestamp: b.end.t, value: b.end.v })
       }
-      chart.createOverlay({ name: 'chan_bi', lock: true, points: biPoints })
+      chart.createOverlay({
+        name: 'chan_bi',
+        lock: true,
+        points: biPoints,
+        extendData: biMeta,
+      })
     }
 
     // 线段覆盖层：同笔结构；lock=true 禁止拖动
+    // kline-unsure-dashed：extendData 元数据同 chan_bi（每条段一项：startIndex + isSure），
+    // isSure=false 虚段 → 同色虚线 + 减细线宽。meta 数组下标 = 段序号，startIndex = 段序号 * 2。
     if (result.seg.length > 0) {
       const segPoints: Array<{ timestamp: number; value: number }> = []
+      const segMeta: ChanSegMeta[] = []
       for (const s of result.seg) {
+        segMeta.push({ startIndex: segPoints.length, isSure: s.is_sure })
         segPoints.push({ timestamp: s.begin.t, value: s.begin.v })
         segPoints.push({ timestamp: s.end.t, value: s.end.v })
       }
-      chart.createOverlay({ name: 'chan_seg', lock: true, points: segPoints })
+      chart.createOverlay({
+        name: 'chan_seg',
+        lock: true,
+        points: segPoints,
+        extendData: segMeta,
+      })
     }
 
     // 中枢覆盖层：每个中枢 4 个角点，extendData 存 meta；lock=true 禁止拖动
@@ -572,6 +712,12 @@ function initChart(): void {
 
   // 主图均线：按 chartConfig 配置挂 candle_pane（默认 5/10/20/60，kline-chart-change 1.2）
   applyMainMa()
+
+  // 买卖点阶梯 hover 钩子注入（bsp-ladder-change D5）：chan_bsp figure 命中 → 浮层
+  setChanBspHoverHooks({
+    onEnter: (meta, pos) => showBspLadderTip(meta, pos.x, pos.y),
+    onLeave: () => hideBspLadderTip(),
+  })
 
   // 图例订阅：onCrosshairChange + 容器 mouseleave（悬停/回退最新，kline-chart-change 5.1）
   if (chartRef.value) {
@@ -743,6 +889,9 @@ watch(virtualBsp, () => {
 })
 
 onBeforeUnmount(() => {
+  // 阶梯 hover 钩子移除（bsp-ladder-change D5）
+  setChanBspHoverHooks(null)
+  hideBspLadderTip()
   // 图例订阅清理（subscribeAction / mouseleave；kline-chart-change 5.1）
   detachLegend()
   resizeObserver?.disconnect()
@@ -810,5 +959,98 @@ defineExpose({
 .vol-config-btn :deep(.el-icon) {
   width: 13px;
   height: 13px;
+}
+
+/* 买卖点确认阶梯 hover 说明卡（bsp-ladder-change D5 / 任务 3.4）：
+   全部走 design.css 令牌，明暗主题随 <html data-theme> 自动切换 */
+.bsp-ladder-tip {
+  position: absolute;
+  z-index: 4;
+  width: 300px;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border-strong);
+  background: color-mix(in srgb, var(--bg-surface) 96%, transparent);
+  box-shadow: var(--shadow-popover);
+  pointer-events: none;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.bsp-ladder-tip__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border-base);
+}
+.bsp-ladder-tip__badge {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 8px;
+  border-radius: var(--r-full);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.bsp-ladder-tip__badge.badge--rise { background: var(--rise-dim); color: var(--rise); }
+.bsp-ladder-tip__badge.badge--warning { background: var(--warning-dim); color: var(--warning); }
+.bsp-ladder-tip__badge.badge--info { background: var(--accent-dim); color: var(--accent-hover); }
+.bsp-ladder-tip__badge.badge--default { background: var(--bg-surface-hover); color: var(--text-secondary); }
+.bsp-ladder-tip__dir {
+  font-size: 12px;
+  font-weight: 600;
+}
+.bsp-ladder-tip__types {
+  margin-left: auto;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.bsp-ladder-tip__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 0;
+}
+.bsp-ladder-tip__row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 6px;
+  border-radius: var(--r-sm);
+  color: var(--text-secondary);
+}
+.bsp-ladder-tip__row.is-current {
+  background: var(--accent-dim);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.bsp-ladder-tip__lv {
+  width: 22px;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+.bsp-ladder-tip__name {
+  flex: 1;
+}
+.bsp-ladder-tip__pos {
+  flex-shrink: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.bsp-ladder-tip__row.is-current .bsp-ladder-tip__pos {
+  color: var(--text-primary);
+}
+.bsp-ladder-tip__sub {
+  padding: 4px 6px;
+  color: var(--warning);
+  font-size: 11px;
+}
+.bsp-ladder-tip__note {
+  padding-top: 6px;
+  border-top: 1px solid var(--border-base);
+  color: var(--text-disabled);
+  font-size: 11px;
 }
 </style>

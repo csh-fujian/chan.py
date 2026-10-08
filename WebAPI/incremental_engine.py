@@ -43,13 +43,21 @@ from ChanAnalyse.DataAPI.KLineStore import KLineStore, ctime_to_str
 from ChanAnalyse.DataAPI.RecomputeCursor import RecomputeCursor
 
 from .bsp_store import get_snapshot, persist_full_set
-from .chan_service import period_of_db_name, resolve_period
+from .bsp_ladder import cal_ladder
+from .bsp_sure import bsp_is_sure
+from .chan_service import period_of_db_name, resolve_period, resolve_sub_level
 from .config import DUCKDB_PATH, PG_DSN
 from .serializer import _serialize_bi, _serialize_seg, _serialize_zs
 
 log = logging.getLogger("incremental_engine")
 
 DEFAULT_AUTYPE = "QFQ"
+
+# ---- L1 落库开关（bsp-ladder-change design D3 修订）----
+# 落库链路是否计算子级别共振（L1）。默认开启——买卖点页读 PG 落库值，
+# L1 必须随整套替换写入，与 /api/klines 实时链路同口径。
+# 全市场批量场景性能吃紧时可置 0（未确认行统一落 L2，与旧 D3 行为一致）。
+BSP_L1_PERSIST = os.environ.get("BSP_L1_PERSIST", "1") not in ("0", "false", "False")
 
 
 # ----------------------------------------------------------------------
@@ -155,21 +163,36 @@ def _compute_incremental(
 # 结果抽取
 # ----------------------------------------------------------------------
 
-def _extract_bsp_rows(chan: CChan, kl_type) -> list[tuple]:
-    """bs_point_lst 当前全集 → bsp_index 行 (bsp_date, bsp_type, is_buy, price, time_key)。
+def _extract_bsp_rows(chan: CChan, kl_type, sub_result=None) -> list[tuple]:
+    """bs_point_lst 当前全集 → bsp_index 行 (bsp_date, bsp_type, is_buy, price, time_key, is_sure, ladder)。
 
     一个点多类型（如 T1+T1P）按类型展开多行（唯一键含 bsp_type，过滤才可精确命中）。
     price：买点取 klu.low、卖点取 klu.high（chan-stock-manage D4 语义）。
+    is_sure：确认状态推导（bsp-sure-annotation D1，水位线口径，bsp_sure.bsp_is_sure）。
+    ladder：确认阶梯（bsp-ladder-change D1/D3 修订）——sub_result 为
+    (sub_bsps, sub_bs_point_lst) 时计算 L1 共振（与 /api/klines 序列化链路
+    同口径）；None = 子级别不可用（无子级周期 / 数据缺失 / 计算失败 /
+    BSP_L1_PERSIST=0），未确认行落 L2。
     """
     kl = chan[kl_type]
+    bi_list = kl.bi_list
+    sub_bsps, sub_bs_point_lst = sub_result if sub_result else (None, None)
+    sub_kl_type = resolve_sub_level(kl_type)  # L1 窗口差异化键（D3 修订二）
     rows: list[tuple] = []
     for bsp in kl.bs_point_lst.getSortedBspList():
         klu = bsp.klu
         price = float(klu.low if bsp.is_buy else klu.high)
         time_key = ctime_to_str(klu.time)
         bsp_date = klu.time.toDateStr("-")
+        is_sure = bsp_is_sure(bsp, kl.bs_point_lst)
+        ladder = cal_ladder(
+            bsp, kl.bs_point_lst,
+            bi_list=bi_list, sub_bsps=sub_bsps,
+            kl_type=kl_type, sub_kl_type=sub_kl_type,
+            sub_bs_point_lst=sub_bs_point_lst,
+        )
         for t in bsp.type:
-            rows.append((bsp_date, t.value, bool(bsp.is_buy), price, time_key))
+            rows.append((bsp_date, t.value, bool(bsp.is_buy), price, time_key, is_sure, ladder))
     return rows
 
 
@@ -182,6 +205,54 @@ def _extract_structure(chan: CChan, kl_type) -> dict:
         "zs": _serialize_zs([zs for zs in kl.zs_list if zs.is_sure]),
         "seg_zs": _serialize_zs([zs for zs in kl.segzs_list if zs.is_sure]),
     }
+
+
+def _compute_sub_for_l1(code: str, kl_type, autype: str, canonical: str):
+    """L1 区间套子级别计算（bsp-ladder-change design D3 修订）。
+
+    对有子级别的周期（30m/60m→5m、D→30m / W→D / M→W）额外计算子级别买卖点，
+    供 _extract_bsp_rows 的 L1 共振判定。失败（无子级 / DuckDB 无数据 /
+    计算异常 / BSP_L1_PERSIST=0）返回 None → 调用方降级不计算 L1（落 L2），
+    不阻断主级别落库。
+
+    返回 (sub_bsps, sub_bs_point_lst)：买卖点列表 + 子级别 CBSPointList
+    （D3 修订三：L1 佐证要求子级点自身 is_sure=true，即子级 L4，
+    过滤需要子级别水位线）。
+
+    计算复用主级别的快照续算机制：优先从 chan_snapshot 恢复（快照在 PG，
+    子级别该股票若有独立快照则续算，否则全量）；**只读不落库、不推游标**——
+    子级别快照/游标归其自身的 recompute 周期管，L1 判定只借结果。
+    """
+    if not BSP_L1_PERSIST:
+        return None
+    sub_kl_type = resolve_sub_level(kl_type)
+    if sub_kl_type is None:
+        return None
+    try:
+        sub_canonical = period_of_db_name(sub_kl_type.name)
+        src = source_watermark(code, sub_kl_type.name, autype)
+        if src is None:
+            return None  # DuckDB 无子级别 K 线 → 不计算 L1
+        sub_cursor = _get_cursor(code, sub_kl_type.name, AUTYPE[autype].name)
+        snapshot = None
+        if sub_cursor is not None:
+            snapshot = get_snapshot(code, sub_canonical, autype)
+        chan = None
+        if snapshot and sub_cursor is not None:
+            try:
+                chan = _compute_incremental(code, sub_kl_type, autype, sub_cursor, snapshot)
+            except Exception:
+                log.debug("L1 子级别续算失败回退全量: %s %s", code, sub_canonical)
+                chan = None
+        if chan is None:
+            chan = _compute_full(code, sub_kl_type, autype)
+        if chan is None:
+            return None
+        sub_bs_point_lst = chan[sub_kl_type].bs_point_lst
+        return list(sub_bs_point_lst.getSortedBspList()), sub_bs_point_lst
+    except Exception:
+        log.exception("L1 子级别计算失败: %s %s -> %s", code, canonical, sub_kl_type)
+        return None
 
 
 # ----------------------------------------------------------------------
@@ -242,7 +313,11 @@ def recompute_stock(
         log.info("skip %s %s: 计算无数据", code, canonical)
         return None
 
-    bsp_rows = _extract_bsp_rows(chan, kl_type)
+    # L1 区间套（bsp-ladder-change D3 修订）：主级别计算完成后，额外计算子级别
+    # 买卖点全集（只读，不落库不推游标），供 ladder 落库判定共振。
+    sub_result = _compute_sub_for_l1(code, kl_type, autype, canonical)
+
+    bsp_rows = _extract_bsp_rows(chan, kl_type, sub_result=sub_result)
     structure = _extract_structure(chan, kl_type)
     pickle_bytes = _dump_pickle_bytes(chan)
 

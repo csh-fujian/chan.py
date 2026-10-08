@@ -12,6 +12,7 @@ from typing import Any, Optional
 
 import psycopg2
 
+from .bsp_ladder import ladder_of_legacy
 from .chan_service import PERIOD_MAP
 from .config import PG_DSN
 
@@ -71,6 +72,8 @@ def _ensure_tables():
                     is_buy     BOOLEAN NOT NULL,
                     price      DOUBLE PRECISION NOT NULL,
                     time_key   VARCHAR NOT NULL,
+                    is_sure    BOOLEAN NOT NULL DEFAULT TRUE,
+                    ladder     VARCHAR(2),
                     UNIQUE (code, kl_type, autype, bsp_date, bsp_type, is_buy, time_key)
                 )
                 """
@@ -146,7 +149,11 @@ def upsert_bsp_index(
     price: float,
     time_key: str,
 ) -> None:
-    """写入买卖点索引（INSERT ON CONFLICT DO NOTHING）。"""
+    """写入买卖点索引（INSERT ON CONFLICT DO NOTHING）。
+
+    is_sure 走列默认值 TRUE（bsp-sure-annotation D2：该遗留单行写路径不携带
+    确认推导，保守按已确认写入；主链路 persist_full_set 全集替换携带准确值）。
+    """
     _ensure_tables()
     conn = _get_pg_conn()
     if conn is None:
@@ -189,6 +196,7 @@ def query_bsp(
     keyword: str = "",
     page: int = 1,
     page_size: int = 20,
+    is_sure: Optional[bool] = None,
 ) -> dict:
     """条件查询买卖点，返回 {items, total, page, page_size}。
 
@@ -199,6 +207,10 @@ def query_bsp(
 
     bsp_types（design D11）：原始枚举集合（如 ['2'] 或 ['3a','3b']），IN 匹配；
     方向语义由 is_buy 承载（router 层从方向化标签解析）。空列表不过滤。
+
+    is_sure（bsp-sure-annotation D3）：确认状态三态过滤——True 只回已确认行、
+    False 只回未确认行、None 不过滤；与 keyword 等条件下推同一 WHERE，
+    COUNT 与分页共用。响应每行携带 is_sure。
     """
     _ensure_tables()
     conn = _get_pg_conn()
@@ -219,6 +231,9 @@ def query_bsp(
     if is_buy is not None:
         conditions.append("b.is_buy = %s")
         params.append(is_buy)
+    if is_sure is not None:
+        conditions.append("b.is_sure = %s")
+        params.append(is_sure)
     if keyword:
         kw = f"%{keyword}%"
         conditions.append("(b.code ILIKE %s OR s.name ILIKE %s OR s.name_py ILIKE %s)")
@@ -247,7 +262,8 @@ def query_bsp(
                 f"""
                 SELECT b.code, b.kl_type, b.autype, b.bsp_date, b.bsp_type,
                        b.is_buy, b.price, b.time_key,
-                       COALESCE(s.name, b.code) AS stock_name
+                       COALESCE(s.name, b.code) AS stock_name,
+                       b.is_sure, b.ladder
                 FROM bsp_index b
                 LEFT JOIN stock s ON b.code = s.code
                 {where_clause}
@@ -262,7 +278,7 @@ def query_bsp(
 
     items = []
     for row in rows:
-        code_val, kt, at, bd, bt, ib, price, tk, stock_name = row
+        code_val, kt, at, bd, bt, ib, price, tk, stock_name, sure, ladder_raw = row
         items.append({
             "code": code_val,
             "name": stock_name,
@@ -273,6 +289,9 @@ def query_bsp(
             "is_buy": ib,
             "price": price,
             "time_key": tk,
+            "is_sure": sure,
+            # 存量行 ladder 为 NULL（D4 不回填）→ 按 is_sure 映射兜底（L4/L2）
+            "ladder": ladder_raw if ladder_raw else ladder_of_legacy(sure),
         })
 
     return {"items": items, "total": total, "page": page, "page_size": page_size}
@@ -344,7 +363,7 @@ def get_bsp_by_code(code: str, kl_types: Optional[list[str]] = None) -> list[dic
     if kl_types:
         placeholders = ", ".join(["%s"] * len(kl_types))
         sql = f"""
-            SELECT code, kl_type, autype, bsp_date, bsp_type, is_buy, price, time_key
+            SELECT code, kl_type, autype, bsp_date, bsp_type, is_buy, price, time_key, is_sure, ladder
             FROM bsp_index
             WHERE code = %s AND kl_type IN ({placeholders})
             ORDER BY bsp_date DESC, kl_type
@@ -352,7 +371,7 @@ def get_bsp_by_code(code: str, kl_types: Optional[list[str]] = None) -> list[dic
         params: tuple = (code, *kl_types)
     else:
         sql = """
-            SELECT code, kl_type, autype, bsp_date, bsp_type, is_buy, price, time_key
+            SELECT code, kl_type, autype, bsp_date, bsp_type, is_buy, price, time_key, is_sure, ladder
             FROM bsp_index
             WHERE code = %s
             ORDER BY bsp_date DESC, kl_type
@@ -376,6 +395,9 @@ def get_bsp_by_code(code: str, kl_types: Optional[list[str]] = None) -> list[dic
             "is_buy": r[5],
             "price": r[6],
             "time_key": r[7],
+            "is_sure": r[8],
+            # 存量 NULL 兜底（与 query_bsp 同口径）
+            "ladder": r[9] if r[9] else ladder_of_legacy(r[8]),
         }
         for r in rows
     ]
@@ -565,14 +587,19 @@ def _delete_bsp_rows(cur, code: str, kl_type: str, autype: str) -> int:
 
 
 def _insert_bsp_rows(cur, code: str, kl_type: str, autype: str, bsp_rows) -> int:
-    """层 1 幂等：唯一键 + ON CONFLICT DO NOTHING（防并发/集合内重复写）。"""
+    """层 1 幂等：唯一键 + ON CONFLICT DO NOTHING（防并发/集合内重复写）。
+
+    bsp_rows 为 7 元行 (bsp_date, bsp_type, is_buy, price, time_key, is_sure, ladder)
+    （bsp-sure-annotation D1/D5 的 is_sure 与 bsp-ladder-change D1 的 ladder
+    均由 incremental_engine 推导后传入）。
+    """
     if not bsp_rows:
         return 0
     cur.executemany(
-        """INSERT INTO bsp_index (code, kl_type, autype, bsp_date, bsp_type, is_buy, price, time_key)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """INSERT INTO bsp_index (code, kl_type, autype, bsp_date, bsp_type, is_buy, price, time_key, is_sure, ladder)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
            ON CONFLICT (code, kl_type, autype, bsp_date, bsp_type, is_buy, time_key) DO NOTHING""",
-        [(code, kl_type, autype, bd, bt, ib, pr, tk) for (bd, bt, ib, pr, tk) in bsp_rows],
+        [(code, kl_type, autype, bd, bt, ib, pr, tk, su, ld) for (bd, bt, ib, pr, tk, su, ld) in bsp_rows],
     )
     return cur.rowcount
 

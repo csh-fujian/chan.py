@@ -49,7 +49,10 @@ function genKlines(seed: number, basePrice: number): KLine[] {
   return klines
 }
 
-/** 从 K 线极值提取笔端点 — 每 5-8 根一个，交替 UP/DOWN */
+/** 从 K 线极值提取笔端点 — 每 5-8 根一个，交替 UP/DOWN
+ * 尾部 1~2 条 is_sure: false，模拟真实计算的「尾部未确认」形态（kline-unsure-dashed D4）：
+ * 真实结果中未确认笔天然出现在确认前缀之后的序列尾部，mock 按此形态构造；
+ * 与真实数据动态变化不同（固定 false），仅影响演示观感，不影响契约。 */
 function genBi(klines: KLine[]): Bi[] {
   const bi: Bi[] = []
   const step = 6
@@ -77,10 +80,15 @@ function genBi(klines: KLine[]): Bi[] {
       dir = 'UP'
     }
   }
+  // 尾部未确认样例（kline-unsure-dashed 3.1）：最后 2 条改 is_sure=false
+  if (bi.length >= 2) {
+    bi[bi.length - 1].is_sure = false
+    bi[bi.length - 2].is_sure = false
+  }
   return bi
 }
 
-/** 从笔合成线段 — 每 3-5 笔一段 */
+/** 从笔合成线段 — 每 3-5 笔一段；尾部 1 条 is_sure: false（模拟尾部虚段，kline-unsure-dashed 3.1） */
 function genSeg(bi: Bi[]): Seg[] {
   const seg: Seg[] = []
   const step = 4
@@ -96,6 +104,10 @@ function genSeg(bi: Bi[]): Seg[] {
       is_sure: true,
       level: 1,
     })
+  }
+  // 尾部未确认样例：最后 1 条改 is_sure=false（虚段）
+  if (seg.length >= 1) {
+    seg[seg.length - 1].is_sure = false
   }
   return seg
 }
@@ -123,7 +135,13 @@ function genZs(bi: Bi[], level: 'bi' | 'seg' = 'bi'): ZS[] {
   return zs
 }
 
-/** 在笔端点生成买卖点 — types 用原始枚举 */
+/** 在笔端点生成买卖点 — types 用原始枚举
+ * is_sure（bsp-sure-annotation 4.4）：口径与 design D1 对齐——依托笔确认（bi.is_sure）则买卖点已确认，
+ * 尾部未确认笔上的买卖点为预览信号（is_sure=false），形态与真实尾部一致
+ * ladder（bsp-ladder-change 3.3）：is_sure=true → 'L4'；未确认行在 'L1'/'L2'/'L3' 轮转
+ * 覆盖四态（真实形态 L4 占大头、未确认聚尾部），hover 演示可命中各级别 */
+const UNSURE_LADDERS = ['L1', 'L2', 'L3'] as const
+let unsureIdx = 0
 function genBsp(bi: Bi[]): BspPoint[] {
   const bsp: BspPoint[] = []
   const types = ['1', '2', '2s', '3a', '3b', '1p']
@@ -131,11 +149,14 @@ function genBsp(bi: Bi[]): BspPoint[] {
     if (Math.random() < 0.4) continue
     const b = bi[i]
     const isBuy = b.dir === 'UP'
+    const isSure = b.is_sure
     bsp.push({
       t: b.begin.t,
       v: b.begin.v,
       is_buy: isBuy,
       types: [types[i % types.length]],
+      is_sure: isSure,
+      ladder: isSure ? 'L4' : UNSURE_LADDERS[unsureIdx++ % UNSURE_LADDERS.length],
     })
   }
   return bsp

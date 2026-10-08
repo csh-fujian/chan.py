@@ -8,6 +8,7 @@ get_serialized_chan() 复用同一链路（_compute_chan + serialize_chan + chan
 """
 
 import os
+from typing import Optional
 
 from fastapi import HTTPException
 
@@ -110,6 +111,29 @@ def _resolve_data_src(period: str) -> str:
     )
 
 
+# ---- L1 区间套子级别映射（bsp-ladder-change design D3 修订二）----
+# 本级别 → 共振判定的直接子级别（单级直连，无跨级传递）：
+# 5m→(30m 的子级)、30m→5m、D→30m、W→D、M→W。
+# 语义约束：每个级别只看**直接一级**子级别的买卖点做共振判定，不递归——
+# 5m 信号只佐证 30m 的 L1，不会经 30m 传递影响 D/W/M 的判定。
+# 5m 自身无子级（最低级别）；60m 不在用户指定链（5m→30m→D→W→M）中，
+# 按 30m 同档处理配 5m。
+SUB_LEVEL_MAP: dict[KL_TYPE, KL_TYPE] = {
+    KL_TYPE.K_30M: KL_TYPE.K_5M,
+    KL_TYPE.K_60M: KL_TYPE.K_5M,
+    KL_TYPE.K_DAY: KL_TYPE.K_30M,
+    KL_TYPE.K_WEEK: KL_TYPE.K_DAY,
+    KL_TYPE.K_MON: KL_TYPE.K_WEEK,
+}
+
+
+def resolve_sub_level(kl_type: KL_TYPE) -> Optional[KL_TYPE]:
+    """L1 共振子级别解析（单级直连）：30m/60m→5m、D→30m、W→D、M→W；
+    5m 及以下无子级返回 None。不做跨级传递（D 的 L1 只看 30m，不看 5m）。
+    """
+    return SUB_LEVEL_MAP.get(kl_type)
+
+
 def _compute_chan(symbol: str, kl_type: KL_TYPE, data_src: str) -> CChan:
     """创建 CChan 实例并执行完整计算。"""
     config = CChanConfig(
@@ -123,6 +147,27 @@ def _compute_chan(symbol: str, kl_type: KL_TYPE, data_src: str) -> CChan:
         autype=AUTYPE.QFQ,
     )
     return chan
+
+
+def compute_sub_chan(symbol: str, kl_type: KL_TYPE) -> Optional[CChan]:
+    """L1 区间套子级别计算（bsp-ladder-change D3）。
+
+    对日线及以上级别额外计算子级别（D→30m / W→D / M→W）CChan，供
+    serializer 的 L1 共振判定。子级别失败（数据缺失/计算异常）返回 None，
+    调用方降级为不计算 L1（未确认行落 L2），不阻断主级别响应。
+
+    计算复用 chan_stable_prefix 缓存（get_serialized_chan 同款链路），
+    同一 (symbol, sub_kl_type) 重复请求不重算序列化（缓存命中返回缓存）。
+    """
+    sub_kl_type = resolve_sub_level(kl_type)
+    if sub_kl_type is None:
+        return None
+    try:
+        period = PERIOD_CANONICAL[sub_kl_type]
+        data_src = _resolve_data_src(period)
+        return _compute_chan(symbol, sub_kl_type, data_src)
+    except Exception:
+        return None
 
 
 def get_serialized_chan(symbol: str, period: str) -> dict:

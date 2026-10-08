@@ -108,6 +108,12 @@
             <el-option label="买" value="buy" />
             <el-option label="卖" value="sell" />
           </el-select>
+          <!-- 确认状态筛选（bsp-sure-annotation D4）：默认全部=不传参数；选择后带 sure 参数请求并重置分页 -->
+          <el-select v-model="query.sure" placeholder="确认状态" style="width: 110px" @change="onQueryChange">
+            <el-option label="全部状态" value="" />
+            <el-option label="已确认" value="confirmed" />
+            <el-option label="未确认" value="preview" />
+          </el-select>
           <button class="btn btn--primary" @click="onQuery">查询</button>
           <button class="btn btn--default" @click="onReset">重置</button>
         </div>
@@ -166,9 +172,31 @@
                   </el-table-column>
                   <el-table-column label="买卖点类型" width="110">
                     <template #default="{ row }">
-                      <span class="badge" :class="row.direction === 'buy' ? 'badge--rise' : 'badge--fall'">
-                        {{ bspLabel(row.bsp_type, row.direction === 'buy') }}
-                      </span>
+                      <div class="bsp-type-cell">
+                        <span class="badge" :class="row.direction === 'buy' ? 'badge--rise' : 'badge--fall'">
+                          {{ bspLabel(row.bsp_type, row.direction === 'buy') }}
+                        </span>
+                        <!-- 未确认标注（bsp-sure-annotation D4）：灰色弱化，确认行无标签，避免与方向色冲突 -->
+                        <el-tag v-if="row.is_sure === false" type="info" size="small" class="sure-tag">未确认</el-tag>
+                      </div>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="级别" width="100">
+                    <template #default="{ row }">
+                      <!-- 确认阶梯级别（bsp-ladder-change 4.2）：徽章 + hover 说明（级别名 + 仓位指引）；
+                           L4 实色 badge--rise、L3 warning、L1 info、L2 弱化 default，缺失兜底「未定级」。
+                           与「未确认」灰 tag 协调：L4 = 已确认无灰 tag，L1-L3 行保留类型列灰 tag 不动 -->
+                      <el-tooltip
+                        v-if="ladderInfoOf(row)"
+                        :content="ladderTooltip(row)"
+                        placement="top"
+                        :show-after="200"
+                      >
+                        <span class="badge" :class="ladderBadgeClass(row.ladder)">
+                          {{ row.ladder }}
+                        </span>
+                      </el-tooltip>
+                      <span v-else class="badge badge--default">未定级</span>
                     </template>
                   </el-table-column>
                   <el-table-column label="买卖点价格" width="120" align="right">
@@ -371,6 +399,7 @@ import { getFolders, addStock, type WatchFolder } from '@/api/modules/watchlist'
 import { createMonitor, getMonitorGroups, createMonitorGroup, type MonitorGroup } from '@/api/modules/monitor'
 import { searchStocks } from '@/api/modules/stock'
 import { ALL_BSP_LABELS, bspLabel } from '@/utils/bsp'
+import { isLadder, ladderInfo, ladderPosition, type LadderInfo } from '@/utils/bspLadder'
 import type { BspRecord, BspAggregate } from '@/api/types'
 
 // 周期词表（design D1）：30分 → 60分 → 日线 → 周线 → 月线，无 1/5/15 分钟
@@ -385,6 +414,29 @@ const klOptions = [
 
 function klLabel(v: string) {
   return klOptions.find((k) => k.value === v)?.label || v
+}
+
+// ---- 级别列（bsp-ladder-change 4.2）：徽章色 + hover 说明文案 ----
+/** 徽章样式：L4 实色 badge--rise / L3 warning / L1 info / L2（及缺省）弱化 default */
+function ladderBadgeClass(ladder: string | null | undefined): string {
+  switch (ladder) {
+    case 'L4': return 'badge--rise'
+    case 'L3': return 'badge--warning'
+    case 'L1': return 'badge--info'
+    default: return 'badge--default'
+  }
+}
+/** 级别定义查询：缺 ladder / 非法值返回 null（模板 v-if 分支兜底「未定级」） */
+function ladderInfoOf(row: BspRecord): LadderInfo | null {
+  return isLadder(row.ladder) ? ladderInfo(row.ladder) : null
+}
+/** hover 说明：级别名 · 仓位指引 — 一句说明（与 K 线图 tooltip 文案同源自 bspLadder 词表；
+ *  仓位指引按方向取买/卖镜像文案，卖点显示退出阶梯如「空仓」「减仓至 1/2」） */
+function ladderTooltip(row: BspRecord): string {
+  const info = ladderInfoOf(row)
+  return info
+    ? `${info.name} · ${ladderPosition(info, row.direction === 'buy')} — ${info.desc}`
+    : ''
 }
 
 // ---- 查询 ----
@@ -412,6 +464,8 @@ const query = reactive<BspQuery>({
   kl_type: '',
   date_from: '',
   date_to: '',
+  // 确认状态（bsp-sure-annotation D4）：'' = 全部（不传参数），confirmed/preview 透传后端 sure 过滤
+  sure: '',
 })
 
 // 日期范围控件本地状态（daterange 绑定 [start, end]，空为 null）
@@ -544,6 +598,8 @@ function onReset() {
   query.bsp_type = ''
   query.direction = ''
   query.kl_type = ''
+  // 确认状态恢复默认：全部（不传参数）
+  query.sure = ''
   // 日期范围恢复默认：最近三个交易日（spec「默认日期范围为最近三个交易日」）
   dateRange.value = recentThreeWorkdays()
   syncDateRangeToQuery()
@@ -831,6 +887,20 @@ onMounted(() => {
 .bsp-tabs :deep(.el-tabs__header) {
   margin: 0;
   padding: 0 var(--sp-md);
+}
+/* 买卖点类型单元格（bsp-sure-annotation D4）：类型徽章与「未确认」灰 tag 垂直堆叠，避免 110px 列宽内横向挤压 */
+.bsp-type-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  line-height: 1.3;
+}
+.sure-tag {
+  /* 灰色弱化标注，height 压缩以适配行高 */
+  height: 18px;
+  padding: 0 6px;
+  font-size: 11px;
 }
 .bsp-tabs :deep(.el-tabs__nav-wrap::after) {
   background: var(--border-base);

@@ -10,13 +10,25 @@ function rand(seed: number) {
   return ((seed * 9301 + 49297) % 233280) / 233280
 }
 
-/** 生成 60 条买卖点记录 */
+/** 生成 60 条买卖点记录
+ * is_sure（bsp-sure-annotation 4.4）：真实形态中未确认点天然聚在索引尾部
+ * （依托尾部虚段），按此形态构造——最后 6 条 is_sure=false，其余 true；
+ * 未确认行日期贴近当前（尾部 = 最新），保证默认「最近三个交易日」范围内可见
+ * ladder（bsp-ladder-change 4.3）：is_sure=true → 'L4'；未确认行在 'L1'/'L2'/'L3'
+ * 轮转覆盖三态（口径对齐后端落库链路：确认 → L4，未确认无背驰 → L2，虚笔 → L2 兜底） */
+const UNSURE_LADDERS = ['L1', 'L2', 'L3'] as const
+let unsureIdx = 0
+
 export const bspRecords: BspRecord[] = Array.from({ length: 60 }, (_, i) => {
   const stock = stocks[i % stocks.length]
   const r = rand(i + 1)
   const bspType = bspTypes[i % bspTypes.length]
   const direction = bspType.includes('B') ? 'buy' : 'sell'
   const basePrice = stock.price
+  // 尾部 6 条未确认（预览信号），其余已确认
+  const isSure = i < 54
+  // 已确认行分布在近 30 天；未确认行贴近当前（0~1 天，尾部预览形态）
+  const daysAgo = isSure ? Math.floor(r * 30) : Math.floor(r * 2)
   return {
     id: i + 1,
     code: stock.code,
@@ -26,9 +38,11 @@ export const bspRecords: BspRecord[] = Array.from({ length: 60 }, (_, i) => {
     direction: direction as 'buy' | 'sell',
     bsp_price: +(basePrice * (0.9 + r * 0.2)).toFixed(2),
     current_price: stock.price,
-    bsp_date: Date.now() - Math.floor(r * 30) * 86400000,
+    bsp_date: Date.now() - daysAgo * 86400000,
     kl_type: klTypes[i % klTypes.length],
     change_pct: +((r - 0.5) * 10).toFixed(2),
+    is_sure: isSure,
+    ladder: isSure ? 'L4' : UNSURE_LADDERS[unsureIdx++ % UNSURE_LADDERS.length],
   }
 })
 
@@ -67,6 +81,10 @@ export function getBspByCode(code: string, klTypesFilter?: string[]): BspIndexRo
         is_buy: isBuy,
         price: +(stock.price * (0.88 + r * 0.24)).toFixed(2),
         time_key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} 00:00:00`,
+        // 每周期尾部 2 条未确认（bsp-sure-annotation 4.4，形态对齐真实索引的尾部预览）
+        is_sure: j < counts[kl] - 2,
+        // 确认阶梯（bsp-ladder-change 4.3）：确认 → L4；尾部未确认在 L1/L2/L3 轮转
+        ladder: j < counts[kl] - 2 ? 'L4' : UNSURE_LADDERS[i % UNSURE_LADDERS.length],
       })
       i++
     }

@@ -33,6 +33,8 @@ export interface ChanBspMeta {
   stackIndex: number
   /** 共存左右排布的 x 偏移（px；0 = 居中，任务 4.3） */
   xOffset: number
+  /** 确认阶梯级别（bsp-ladder-change D5）：'L1'/'L2'/'L3'/'L4'；缺省 = 未定级（tooltip 兜底） */
+  ladder?: string
 }
 
 /** 买点颜色 — design.css --rise；卖点 — --fall；框底半透明 — 均取 palette（任务 6.3，语义色主题不变） */
@@ -65,6 +67,26 @@ export function bspBoxSize(label: string): { width: number; height: number } {
 
 let registered = false
 
+/** hover 钩子（bsp-ladder-change D5）：figure 命中 → KLineChart 注入的 tooltip 控制回调。
+ *  模块级单例：chan_bsp overlay 是全图唯一的买卖点层，注册期由 KLineChart 注入
+ *  实现后，绘制端 figure 的 onMouseEnter/onMouseLeave 转发到该钩子（携带 meta 与
+ *  鼠标事件坐标）。图卸载/重建时置 null。 */
+export interface ChanBspHoverHooks {
+  onEnter?: (meta: ChanBspMeta, event: { x: number; y: number }) => void
+  onLeave?: () => void
+}
+let hoverHooks: ChanBspHoverHooks | null = null
+
+/** 注入 hover 钩子（幂等；null = 移除） */
+export function setChanBspHoverHooks(hooks: ChanBspHoverHooks | null): void {
+  hoverHooks = hooks
+}
+
+/** 框体 figure 稳定 key：`bsp:<meta 下标>`（onMouseEnter 回调的 figureKey 反查 meta） */
+function bspBoxKey(metaIndex: number): string {
+  return `bsp:${metaIndex}`
+}
+
 /** 注册买卖点覆盖层。幂等，重复调用安全。 */
 export function registerChanBsp(): void {
   if (registered) return
@@ -75,6 +97,22 @@ export function registerChanBsp(): void {
     needDefaultPointFigure: false,
     needDefaultXAxisFigure: false,
     needDefaultYAxisFigure: false,
+    onMouseEnter: (event) => {
+      // figureKey = bspBoxKey(meta 下标)；仅框体/文字命中（虚线不挂 key）
+      const key = event.figureKey ?? ''
+      const x = typeof event.x === 'number' ? event.x : 0
+      const y = typeof event.y === 'number' ? event.y : 0
+      if (!key.startsWith('bsp:') || !hoverHooks?.onEnter) return false
+      const meta = (event.overlay.extendData as ChanBspMeta[] | undefined) ?? []
+      const m = meta[Number(key.slice(4))]
+      if (!m) return false
+      hoverHooks.onEnter(m, { x, y })
+      return true
+    },
+    onMouseLeave: (_event) => {
+      hoverHooks?.onLeave?.()
+      return false
+    },
     createPointFigures: (params): OverlayFigure[] => {
       const { overlay, coordinates, yAxis } = params
       const meta = overlay.extendData as ChanBspMeta[] | undefined
@@ -86,7 +124,7 @@ export function registerChanBsp(): void {
       const boxFigures: OverlayFigure[] = []
       const pal = getChanPalette()
 
-      meta.forEach((m) => {
+      meta.forEach((m, metaIndex) => {
         const c = coordinates[m.pointIndex]
         if (!c) return
 
@@ -134,8 +172,10 @@ export function registerChanBsp(): void {
         })
 
         // 圆角矩形框：stroke_fill 半透明底 + 同色描边
+        // key = 稳定 meta 下标（bsp-ladder-change D5：hover figureKey 反查 meta）
         boxFigures.push({
           type: 'rect',
+          key: bspBoxKey(metaIndex),
           attrs: {
             x: cx - width / 2,
             y: boxTop,
@@ -153,9 +193,10 @@ export function registerChanBsp(): void {
           },
         })
 
-        // 文字标签居中于框内
+        // 文字标签居中于框内（事件转发给框体 rect：同 key 命中，免逐字命中抖动）
         boxFigures.push({
           type: 'text',
+          key: bspBoxKey(metaIndex),
           attrs: {
             x: cx,
             y: boxTop + height / 2,
