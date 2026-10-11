@@ -44,8 +44,9 @@ BSP_CATCHUP_TICK_SECONDS = int(os.environ.get("BSP_CATCHUP_TICK_SECONDS", "3600"
 BSP_CATCHUP_BATCH = int(os.environ.get("BSP_CATCHUP_BATCH", "20"))
 BSP_EOD_AT = os.environ.get("BSP_EOD_AT", "16:30")
 
-# ---- 策略信号扫描调度（strategy-signal-page design D4：EOD 复用 + 独立游标表）----
+# ---- 策略信号扫描调度（strategy-task-redesign design D4：EOD 复用 + 独立游标表）----
 # STRATEGY_SCAN_ENABLED=0 关闭策略扫描（回滚手段：关调度即可）
+# 日终只取 mode='persistent' 的任务做增量扫描；test 任务只在用户启动/续跑时执行
 STRATEGY_SCAN_ENABLED = os.environ.get("STRATEGY_SCAN_ENABLED", "1") != "0"
 
 
@@ -143,20 +144,22 @@ async def _bsp_eod_loop() -> None:
 
 
 def _run_strategy_eod() -> dict:
-    """策略日终扫描（strategy-signal-page 任务 3.2）：全部 enabled 实例增量扫描。
+    """策略日终扫描（strategy-signal-page 任务 3.2 → strategy-task-redesign D4）：
+    全部 persistent 任务增量扫描。
 
-    对全部启用实例跑 scan_all_enabled（水位门：无新 K 线的 code 不重扫；
+    run_eod_tasks 只取 mode='persistent' 的任务（test 任务不参与日终调度，
+    只在用户启动/续跑时执行）；水位门不变（无新 K 线的 code 不重扫；
     幂等：唯一键 + ON CONFLICT ... WHERE frozen = FALSE）。返回汇总摘要
-    {instances, scanned, updated, failed}。
+    {tasks, scanned, updated, failed}。
     """
-    from .strategy_engines.scheduler import scan_all_enabled
+    from .strategy_engines.scheduler import run_eod_tasks
 
-    summaries = scan_all_enabled()
+    summaries = run_eod_tasks()
     scanned = sum(s.get("scanned", 0) for s in summaries)
     updated = sum(s.get("updated", 0) for s in summaries)
     failed = sum(len(s.get("failed", [])) for s in summaries)
     return {
-        "instances": len(summaries),
+        "tasks": len(summaries),
         "scanned": scanned,
         "updated": updated,
         "failed": failed,
@@ -164,19 +167,20 @@ def _run_strategy_eod() -> dict:
 
 
 async def _strategy_eod_loop() -> None:
-    """策略信号日终调度（strategy-signal-page design D4）。
+    """策略信号日终调度（strategy-task-redesign design D4）。
 
     在 _bsp_eod_loop 触发点之后顺序执行（同一 BSP_EOD_AT 时刻，策略阶段在
     bsp 阶段之后追加），独立 try/except、独立 logger——策略扫描失败互不影响
-    bsp 日终流水线（设计 D4「失败互不影响」）。
+    bsp 日终流水线（设计 D4「失败互不影响」）。只扫 persistent 任务
+    （test 任务不参与日终调度）。
     """
     while True:
         await asyncio.sleep(_seconds_until(BSP_EOD_AT))
         try:
             result = await asyncio.to_thread(_run_strategy_eod)
             strategy_log.info(
-                "strategy eod: instances=%s scanned=%s updated=%s failed=%s",
-                result["instances"], result["scanned"], result["updated"], result["failed"],
+                "strategy eod: tasks=%s scanned=%s updated=%s failed=%s",
+                result["tasks"], result["scanned"], result["updated"], result["failed"],
             )
         except asyncio.CancelledError:
             strategy_log.info("strategy eod loop cancelled")

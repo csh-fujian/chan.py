@@ -38,18 +38,18 @@ export function reorderMonitorGroups(ids: number[]) {
   return client.put<unknown, { success: boolean }>('/monitor/groups/reorder', { ids })
 }
 
-/** 来源字典项（design D14：GET /monitor/sources，来源下拉消费，前端不硬编码策略实例） */
+/** 来源字典项（design D14：GET /monitor/sources，来源下拉消费，前端不硬编码策略任务） */
 export interface MonitorSource {
-  /** 过滤键：'chan' / 'strategy:<instance_id>' / 'watchlist' */
+  /** 过滤键：'chan' / 'strategy:<task_id>' / 'watchlist' */
   value: string
-  /** 下拉展示名：缠论 / 策略名·实例名 / 自选 */
+  /** 下拉展示名：缠论 / 策略名·任务名 / 自选 */
   label: string
   source_type: 'chan' | 'strategy' | 'watchlist'
-  /** source_type='strategy' 时的实例 id */
-  instance_id?: number
+  /** source_type='strategy' 时的任务 id */
+  task_id?: number
 }
 
-/** 来源字典（design D14）：monitor 表 distinct 来源 + 策略实例名 */
+/** 来源字典（design D14）：monitor 表 distinct 来源 + 策略任务名 */
 export function getMonitorSources() {
   return client.get<unknown, MonitorSource[]>('/monitor/sources')
 }
@@ -80,8 +80,8 @@ export interface CreateMonitorPayload {
    *  'chan'（缺省，BspView 不传后端落 'chan'，行为不变）、'strategy' 或
    *  'watchlist'（自选页加入监控，提交显式携带） */
   source_type?: 'chan' | 'strategy' | 'watchlist'
-  /** 策略来源所属实例（source_type='strategy' 时随信号携带） */
-  instance_id?: number
+  /** 策略来源所属任务（source_type='strategy' 时随信号携带；原 instance_id 废弃，BREAKING） */
+  task_id?: number
   /** 策略信号的信号日期（source_type='strategy' 时随信号携带，YYYY-MM-DD） */
   signal_date?: string
 }

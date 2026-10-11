@@ -353,16 +353,17 @@ async function loadGroups() {
 }
 
 // ---- 筛选选中值 → 请求参数拆解（来源 + 分组合并为一个参数对象） ----
-// 来源：'strategy:<id>' → source + instance_id；'chan'/'watchlist' → source 原值
+// 来源：'strategy:<id>' → source + task_id；'chan'/'watchlist' → source 原值
+//（strategy-task-redesign：策略维度从 instance_id 改 task_id）
 // 分组：'ungrouped'/'<id>' → group_id 原值透传（后端哨兵语义），'all' → 不传
-function filterParams(): { source?: string; instance_id?: number; group_id?: string } {
-  const p: { source?: string; instance_id?: number; group_id?: string } = {}
+function filterParams(): { source?: string; task_id?: number; group_id?: string } {
+  const p: { source?: string; task_id?: number; group_id?: string } = {}
   const v = activeSource.value
   if (v && v !== 'all') {
     if (v.startsWith('strategy:')) {
       const id = Number(v.slice('strategy:'.length))
       if (Number.isInteger(id) && id > 0) p.source = 'strategy'
-      p.instance_id = id
+      p.task_id = id
     } else {
       p.source = v
     }
@@ -555,8 +556,8 @@ async function onDrillDown(row: PerformanceStat) {
   drawerLoading.value = true
   try {
     // 抽屉带当前筛选参数（来源/分组请求过滤 + 类型/周期同分组下钻）
-    const { source, instance_id, group_id } = filterParams()
-    const list = await getPerformanceSamples(row.bsp_type, row.kl_type, source, instance_id, group_id)
+    const { source, task_id, group_id } = filterParams()
+    const list = await getPerformanceSamples(row.bsp_type, row.kl_type, source, task_id, group_id)
     drawerSamples.value = list
   } catch {
     drawerSamples.value = []
@@ -608,10 +609,10 @@ function truncate(text: string, max: number) {
 async function loadAll() {
   loading.value = true
   try {
-    const { source, instance_id, group_id } = filterParams()
+    const { source, task_id, group_id } = filterParams()
     const [st, sp] = await Promise.all([
-      getPerformanceStats(source, instance_id, group_id),
-      getPerformanceSamples(undefined, undefined, source, instance_id, group_id),
+      getPerformanceStats(source, task_id, group_id),
+      getPerformanceSamples(undefined, undefined, source, task_id, group_id),
     ])
     stats.value = st
     samples.value = sp

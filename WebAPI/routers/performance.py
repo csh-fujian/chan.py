@@ -4,8 +4,8 @@ Performance 路由 — 买卖点绩效统计 API（performance-page-change desig
 
 统计口径 A：样本 = monitor 表 status='completed' 结算记录；聚合在
 performance_store 完成（复用 monitor_store.list_completed 的上下文回查链路），
-本路由只做参数解析与调用。source/instance_id 参数兑现 strategy-signal-page
-design D7 预留契约（chan / strategy+实例精确匹配 / watchlist）。
+本路由只做参数解析与调用。source/task_id 参数兑现 strategy-task-redesign
+design D6 预留契约（chan / strategy+任务精确匹配 / watchlist）。
 
 PG 不可用时 list_completed 返回 []，接口自然降级空集。
 
@@ -41,7 +41,7 @@ def _parse_group_id_param(raw: str) -> str:
 @router.get("/stats")
 async def performance_stats(
     source: str = Query("", description="信号来源过滤（chan/strategy/watchlist）"),
-    instance_id: int = Query(0, description="策略实例 id 过滤（>0 时与 source='strategy' 联合精确匹配）"),
+    task_id: int = Query(0, description="策略任务 id 过滤（>0 时与 source='strategy' 联合精确匹配）"),
     group_id: str = Query("", description="监控分组过滤：正整数或字面 'ungrouped'（未分组）"),
 ):
     """买卖点绩效统计：completed 样本按 (bsp_type, kl_type) 分组聚合。
@@ -52,7 +52,7 @@ async def performance_stats(
     parsed_group_id = _parse_group_id_param(group_id) if group_id else None
     return get_performance_stats(
         source=source,
-        instance_id=instance_id,
+        task_id=task_id,
         group_id=parsed_group_id,
     )
 
@@ -62,7 +62,7 @@ async def performance_samples(
     bsp_type: str = Query("", description="买卖点类型过滤（精确匹配）"),
     kl_type: str = Query("", description="K 线周期过滤（精确匹配）"),
     source: str = Query("", description="信号来源过滤（chan/strategy/watchlist）"),
-    instance_id: int = Query(0, description="策略实例 id 过滤（>0 时与 source='strategy' 联合精确匹配）"),
+    task_id: int = Query(0, description="策略任务 id 过滤（>0 时与 source='strategy' 联合精确匹配）"),
     group_id: str = Query("", description="监控分组过滤：正整数或字面 'ungrouped'（未分组）"),
 ):
     """绩效样本明细：completed 结算样本行（对齐前端 PerformanceSample 契约）。
@@ -76,6 +76,6 @@ async def performance_samples(
         bsp_type=bsp_type,
         kl_type=kl_type,
         source=source,
-        instance_id=instance_id,
+        task_id=task_id,
         group_id=parsed_group_id,
     )

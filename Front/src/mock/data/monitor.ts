@@ -18,21 +18,22 @@ function rand(i: number) {
 
 // ---------------------------------------------------------------------------
 // 来源字典（design D14）：GET /monitor/sources 的 mock 数据，
-// distinct (source_type, instance_id) + 实例名，与真后端 list_monitor_sources 语义一致
+// distinct (source_type, task_id) + 任务名，与真后端 list_monitor_sources 语义一致
+//（strategy-task-redesign：来源维度从 instance_id 改 task_id，BREAKING）
 // ---------------------------------------------------------------------------
 export interface MonitorSourceMock {
   value: string
   label: string
   source_type: 'chan' | 'strategy' | 'watchlist'
-  instance_id?: number
+  task_id?: number
 }
 
-/** 策略实例 id（与 strategyMonitoring/strategyCompleted 的来源对应） */
-const MOCK_STRATEGY_INSTANCE_ID = 5
+/** 策略任务 id（与 strategyMonitoring/strategyCompleted 的来源对应） */
+const MOCK_STRATEGY_TASK_ID = 1
 
 export const monitorSources: MonitorSourceMock[] = [
   { value: 'chan', label: '缠论', source_type: 'chan' },
-  { value: `strategy:${MOCK_STRATEGY_INSTANCE_ID}`, label: '放量首板回调 · 回调5日', source_type: 'strategy', instance_id: MOCK_STRATEGY_INSTANCE_ID },
+  { value: `strategy:${MOCK_STRATEGY_TASK_ID}`, label: '放量首板回调 · 回调5日', source_type: 'strategy', task_id: MOCK_STRATEGY_TASK_ID },
   { value: 'watchlist', label: '自选', source_type: 'watchlist' },
 ]
 
@@ -165,8 +166,8 @@ const sz000001Completed: CompletedItem = {
 }
 
 /**
- * 策略来源样例监控行（strategy-signal-page design D6 / 任务 6.1）：
- * source_type='strategy' + strategy_label（「策略名 · 实例名 · 状态」），
+ * 策略来源样例监控行（strategy-task-redesign 任务 4.6）：
+ * source_type='strategy' + strategy_label（「策略名 · 任务名 · 状态」）+ task_id，
  * bsp_type 存信号 state 文案（mock 侧与后端 _fill_bsp_context 分叉语义一致），
  * 供监控列表「来源」列与类型列的两种渲染分支联调。
  */
@@ -189,7 +190,7 @@ const strategyMonitoring: MonitorItem = {
   group_id: null,
   source_type: 'strategy',
   strategy_label: '放量首板回调 · 回调5日 · 已触发',
-  instance_id: MOCK_STRATEGY_INSTANCE_ID,
+  task_id: MOCK_STRATEGY_TASK_ID,
 }
 
 const strategyCompleted: CompletedItem = {
@@ -216,7 +217,7 @@ const strategyCompleted: CompletedItem = {
   group_id: null,
   source_type: 'strategy',
   strategy_label: '放量首板回调 · 回调5日 · 已失效',
-  instance_id: MOCK_STRATEGY_INSTANCE_ID,
+  task_id: MOCK_STRATEGY_TASK_ID,
 }
 
 /**

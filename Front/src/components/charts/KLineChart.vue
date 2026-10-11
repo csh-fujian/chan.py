@@ -902,11 +902,63 @@ onBeforeUnmount(() => {
   }
 })
 
+/**
+ * 时间段定位（不改数据，只滚视口）：K 线始终加载至最新，选完时间段后把
+ * begin 滚到视口左缘、区间向右自然展开（右侧超出部分仍可继续向右查看
+ * 直至最新一根）。
+ *
+ * klinecharts 的 scrollToDataIndex(i) 语义是把第 i 根 bar 放到**右缘**，
+ * 故目标索引 = beginIdx + 一屏 bar 数（左缘留 2 根边距）；begin 之后不足
+ * 一屏时直接 scrollToRealTime 滚到最新（此时 begin 本就在最后一屏内）。
+ * 时间戳不在数据范围时由 nearestIndexByTimestamp 吸附最近一根，不报错。
+ */
+function scrollToRange(begin: number): void {
+  if (!chart) return
+  const klines = chart.getDataList()
+  if (klines.length === 0) return
+  if (begin > klines[klines.length - 1].timestamp) {
+    chart.scrollToRealTime()
+    return
+  }
+  // 可视 bar 数：Main 区宽 / 单 bar 宽（barSpace 随当前缩放级别变化）
+  const size = chart.getSize(undefined, DomPosition.Main)
+  const bar = chart.getBarSpace()
+  const visibleBars = size && bar > 0 ? Math.floor(size.width / bar) : 80
+  const beginIdx = nearestIndexByTimestamp(klines, begin)
+  const target = beginIdx + visibleBars - 3 // 左缘留 2 根边距
+  if (target >= klines.length - 1) {
+    chart.scrollToRealTime()
+    return
+  }
+  chart.scrollToDataIndex(target)
+}
+
+/** 按时间戳找最近 K 线下标（手写二分，klinecharts 内部 binarySearchNearest 未导出） */
+function nearestIndexByTimestamp(
+  klines: Array<{ timestamp: number }>,
+  ts: number,
+): number {
+  let lo = 0
+  let hi = klines.length - 1
+  if (ts <= klines[0].timestamp) return 0
+  if (ts >= klines[hi].timestamp) return hi
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1
+    if (klines[mid].timestamp < ts) lo = mid
+    else hi = mid
+  }
+  // 取与 ts 更近的一侧
+  return Math.abs(klines[hi].timestamp - ts) < Math.abs(ts - klines[lo].timestamp)
+    ? hi
+    : lo
+}
+
 defineExpose({
   resize: () => chart?.resize(),
   addSubIndicator,
   removeSubIndicator,
   syncSubIndicators,
+  scrollToRange,
 })
 </script>
 

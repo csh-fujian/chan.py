@@ -91,9 +91,9 @@ export const monitorHandlers = [
 
   // 行级加入监控（bsp-page-change 4.5）：与真后端 POST /api/monitor 语义一致——
   // code 缺失 / entry_price 为 0 → 422；成功插入 mock 列表并返回创建结果。
-  // strategy-signal-page design D6：body 新增 source_type/instance_id/signal_date
-  // 可选字段（不传 = 'chan' 现行为不变）；策略来源条目 bsp_type 存 state 文案、
-  // direction 按信号 is_buy（与后端 _fill_bsp_context 分叉填充语义一致）。
+  // strategy-task-redesign：策略来源维度从 instance_id 改 task_id（BREAKING）；
+  // 策略来源条目 bsp_type 存 state 文案、direction 按信号 is_buy
+  //（与后端 _fill_bsp_context 分叉填充语义一致）。
   // watchlist-page-change design D11：source_type 放行 'watchlist'（自选页加入监控）。
   http.post('/api/monitor', async ({ request }) => {
     await delay(300)
@@ -104,7 +104,7 @@ export const monitorHandlers = [
       monitor_start_time?: string
       group_id?: number
       source_type?: 'chan' | 'strategy' | 'watchlist'
-      instance_id?: number
+      task_id?: number
       signal_date?: string
       /** mock 侧扩展：策略来源展示标签（后端由 _fill_bsp_context 回查填充，无需前端传） */
       state?: string
@@ -179,7 +179,7 @@ export const monitorHandlers = [
       name: item.name,
       group_id: groupId,
       source_type: sourceType,
-      instance_id: sourceType === 'strategy' ? (body?.instance_id ?? null) : null,
+      task_id: sourceType === 'strategy' ? (body?.task_id ?? null) : null,
       signal_date: sourceType === 'strategy' ? (body?.signal_date ?? null) : null,
     })
   }),

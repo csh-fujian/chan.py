@@ -18,6 +18,8 @@
         <span class="badge" :class="signal.is_buy ? 'badge--rise' : 'badge--fall'">
           {{ signal.is_buy ? '买' : '卖' }}
         </span>
+        <!-- 参数版本标识（spec：信号标注产生它的参数版本） -->
+        <span class="badge badge--accent mono">参数 v{{ signal.params_version }}</span>
       </div>
 
       <!-- 信号信息卡：通用字段 + columns 声明驱动的私有字段 -->
@@ -36,7 +38,13 @@
         </div>
         <div v-for="col in privateColumns" :key="col.key" class="info-row">
           <label>{{ col.label }}</label>
-          <span class="num">{{ formatPayload(signal.payload?.[col.key], col.type) }}</span>
+          <!-- price_pct 合并列（D12 兜底）：价格 | 涨跌幅 双值渲染 -->
+          <span v-if="col.type === 'price_pct'" class="num">
+            {{ formatPayload(colValue(signal, col.priceKey || ''), 'float') }}
+            <span class="pp-sep">|</span>
+            {{ formatPayload(colValue(signal, col.pctKey || ''), 'pct') }}
+          </span>
+          <span v-else class="num">{{ formatPayload(colValue(signal, col.key), col.type) }}</span>
         </div>
       </div>
 
@@ -60,21 +68,22 @@ import { useEcharts } from '@/composables/useEcharts'
 import { getEchartsPalette } from '@/components/charts/echartsPalette'
 import { getKLine } from '@/api/modules/kline'
 import { createMonitor } from '@/api/modules/monitor'
-import type { StrategySignalRow, StrategyDefinition, StrategyColumnDecl, KLine } from '@/api/types'
+import type { StrategySignalRow, StrategyDefinition, StrategyColumnDecl, StrategyTask, KLine } from '@/api/types'
 
 /**
- * 信号详情抽屉（strategy-signal-page 任务 5.6）：
- * - 信息卡：通用字段 + columns 声明驱动的私有字段
+ * 信号详情抽屉（strategy-task-redesign 4.6 改造）：
+ * - 信息卡：通用字段 + columns 声明驱动的私有字段 + 参数版本标识
  * - K 线图：ECharts 最近 60 日收盘价折线 + 信号日 markLine 竖线
  *   （design Open Question 允许简单标记形态，暂不做 chan 覆盖层集成）
- * - footer「加入监控」：携带 source_type='strategy' + instance_id + signal_date
+ * - footer「加入监控」：携带 source_type='strategy' + task_id + signal_date
+ *   （strategy-task-redesign：来源维度从 instance_id 改 task_id，BREAKING）
  */
 const props = defineProps<{
   visible: boolean
   signal: StrategySignalRow | null
   definition: StrategyDefinition | null
-  /** 当前选中实例（加监控时随信号来源携带；null 时禁用提交语义退化为演示） */
-  instanceId: number | null
+  /** 当前选中任务（加监控时随信号来源携带；null 时禁用提交并提示） */
+  task: StrategyTask | null
 }>()
 const emit = defineEmits<{
   'update:visible': [v: boolean]
@@ -101,10 +110,30 @@ const stateBadgeClass = computed(() => COLOR_CLASS[stateDecl.value?.color || 'in
 // ---- 私有字段（columns 声明驱动） ----
 const privateColumns = computed<StrategyColumnDecl[]>(() => props.definition?.columns || [])
 
-function formatPayload(v: number | string | undefined, type: StrategyColumnDecl['type']): string {
-  if (v == null) return '--'
+function formatPayload(v: number | string | null | undefined, type: StrategyColumnDecl['type']): string {
+  if (v == null || v === '') return '--'
   if (type === 'float') return Number(v).toFixed(2)
+  // pct/price_pct 涨幅分量 / outcome 兜底（strategy-signal-outcome D7/D12）：
+  // pct 小数转百分比文本、outcome 中文标签，保证不显示裸小数
+  if (type === 'pct' || type === 'price_pct') {
+    const n = Number(v)
+    if (!Number.isFinite(n)) return '--'
+    return `${n > 0 ? '+' : ''}${(n * 100).toFixed(1)}%`
+  }
+  if (type === 'outcome') {
+    const LABELS: Record<string, string> = { success: '成功', failed: '失败', pending: '待定' }
+    return LABELS[String(v)] || '--'
+  }
   return String(v)
+}
+
+/** 列取值兜底（strategy-signal-outcome 5.1/D12）：先 payload[key]，无键回退
+ *  行级字段（ret_7d 等绩效列与 entry_ref_price 不在 payload）——price_pct
+ *  合并列的价格/涨幅分量取值同此双路径 */
+function colValue(row: StrategySignalRow, key: string): number | string | null | undefined {
+  const pv = row.payload?.[key]
+  if (pv !== undefined) return pv
+  return row[key as keyof StrategySignalRow] as number | string | null | undefined
 }
 
 function formatPrice(v: number | null | undefined) {
@@ -240,7 +269,7 @@ watch(
   },
 )
 
-// ---- 加入监控（design D6：携带 strategy 来源字段） ----
+// ---- 加入监控（design D6：携带 strategy 来源字段；strategy-task-redesign：任务维度） ----
 const adding = ref(false)
 
 async function onAddMonitor() {
@@ -249,8 +278,8 @@ async function onAddMonitor() {
     console.warn('[SignalDrawer] 无上下文信号，忽略提交', { visible: visibleRef.value })
     return
   }
-  if (props.instanceId == null) {
-    ElMessage.warning('当前无选中实例，无法标记策略来源')
+  if (props.task == null) {
+    ElMessage.warning('当前无选中任务，无法标记策略来源')
     return
   }
   adding.value = true
@@ -260,9 +289,9 @@ async function onAddMonitor() {
       kl_type: 'D',
       entry_price: s.entry_ref_price,
       monitor_start_time: `${s.signal_date} 00:00:00`,
-      // 策略来源（strategy-signal-page design D6）：随信号携带实例与信号日期
+      // 策略来源（strategy-signal-downstream spec）：随信号携带任务与信号日期
       source_type: 'strategy',
-      instance_id: props.instanceId,
+      task_id: props.task.id,
       signal_date: s.signal_date,
     })
     ElMessage.success(`已将「${s.name}」加入监控`)
@@ -317,6 +346,11 @@ async function onAddMonitor() {
 }
 .info-row .num {
   color: var(--text-primary);
+}
+/* price_pct 合并列两值分隔符（D12：弱化分隔符视觉层级） */
+.pp-sep {
+  color: var(--text-disabled);
+  margin: 0 2px;
 }
 .signal-chart {
   width: 100%;

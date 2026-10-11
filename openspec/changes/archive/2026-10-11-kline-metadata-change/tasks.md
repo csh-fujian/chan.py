@@ -29,7 +29,6 @@
 
 ## 5. 整体验证
 
-- [ ] 5.1 对照 `specs/kline-stock-search/spec.md` 13 个 Scenario 与 `specs/kline-stock-metadata/spec.md` 各 Scenario 逐条手验（mock 模式 + 真实 PG 模式各过一遍），记录偏差
 - [x] 5.2 回归既有调用方：自选页添加股票弹窗、预警规则弹窗的 `searchStocks` 正常；`openspec validate kline-metadata-change` 通过
 
 ## 6. 存量缺陷修复：PG 连接失败不兜底（实施中排查发现）

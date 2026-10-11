@@ -200,9 +200,9 @@ export interface MonitorItem {
   /** 信号来源（strategy-signal-page design D6 + D14 / watchlist-page-change design D8/D11）：
    *  'chan'（默认，存量行为不变）、'strategy' 或 'watchlist'（自选页加入监控，来源列显示「自选」） */
   source_type?: 'chan' | 'strategy' | 'watchlist'
-  /** 策略来源所属实例（source_type='strategy' 时随信号携带） */
-  instance_id?: number
-  /** 策略来源展示标签（「策略名 · 实例名 · 状态」，后端/mock 填充；chan/watchlist 来源不传） */
+  /** 策略来源所属任务（source_type='strategy' 时随信号携带；原 instance_id 废弃，BREAKING） */
+  task_id?: number
+  /** 策略来源展示标签（「策略名 · 任务名 · 状态」，后端/mock 填充；chan/watchlist 来源不传） */
   strategy_label?: string
 }
 
@@ -231,19 +231,36 @@ export interface AnalyzeResult {
 }
 
 // ---------------------------------------------------------------------------
-// 策略信号（strategy-signal-page design D5）
-// 命名区分：本节的 StrategyDefinition/StrategyInstance/StrategySignalRow 是
-// 策略引擎的「策略定义 / 参数实例 / 信号」三层实体（schema 驱动、实例不可变），
+// 策略任务（strategy-task-redesign design D1/D5/D6）
+// 命名区分：本节的 StrategyDefinition/StrategyTask/StrategySignalRow 是
+// 策略引擎的「策略定义 / 任务 / 信号」三层实体（schema 驱动、任务为中心），
 // 与上方选股器的 Strategy（缠论买卖点过滤器）是完全不同的概念，刻意不共用命名。
+// 原实例模型（strategy_instance）废弃，统一为任务模型（BREAKING）。
 // ---------------------------------------------------------------------------
-/** 策略参数声明（params_schema 项）：动态渲染实例表单项（int/float → el-input-number） */
+/** 策略参数声明（params_schema 项）：动态渲染任务表单项
+ *  （int/float → el-input-number；enum → el-select 下拉，选项集声明驱动） */
 export interface StrategyParamSchema {
   key: string
   label: string
-  type: 'int' | 'float'
-  default: number
-  min: number
-  max: number
+  /** 参数类型：int/float 数值区间；enum 枚举选项集（vp-entry-strategy-integration D4） */
+  type: 'int' | 'float' | 'enum'
+  /** 默认值（enum 参数为选项 value 字符串，如 'mean'） */
+  default: number | string
+  /** int/float 参数的取值区间（enum 参数无该字段，由 options 声明合法取值集） */
+  min?: number
+  max?: number
+  /** 参数说明（strategy-task-redesign D6）：创建/编辑表单参数名旁 tooltip 悬浮文案 */
+  desc?: string
+  /** enum 参数的选项集（type='enum' 时必填；提交取值必须在 options[].value 内，
+   *  前端拦截 + 后端 422 兜底） */
+  options?: { value: string; label: string }[]
+  /** float 参数输入精度（strategy-signal-outcome D12/6.9）：el-input-number 的
+   *  precision；缺省按 default 小数位推导（0.05 → 2；2.0 → 1；int → 0）。
+   *  展示元数据键，不参与取值校验（后端 validate_params 放行，同 desc 先例） */
+  precision?: number
+  /** float 参数输入步进（el-input-number 的 step）；缺省按 precision 推导
+   *  10^-precision（如 0.01）；int 缺省 1 */
+  step?: number
 }
 
 /** 策略状态声明（states 项）：信号生命周期状态 + 展示色（映射 badge 样式类） */
@@ -254,36 +271,138 @@ export interface StrategyStateDecl {
   color: 'info' | 'warning' | 'danger' | 'success'
 }
 
-/** 策略私有列声明（columns 项）：信号列表的动态列（值取自 payload[key]） */
+/** 策略私有列声明（columns 项）：信号列表的动态列（取值先 payload[key]、
+ *  无该键时回退行级字段——ret_7d/ret_14d/ret_30d/outcome 为行级绩效列、
+ *  entry_ref_price 为行级 B 点价格列，均不在 payload）
+ *  date/int/float → 数值与日期格式化；str → 原样字符串（如触发方式/Spring 标记）；
+ *  pct → 涨跌百分比（小数 0.173 → +17.3%，正涨红 var(--rise)/负跌绿 var(--fall)、
+ *  空值 '--'，strategy-signal-outcome D7）；
+ *  price_pct → 合并单元格「价格 | 涨跌幅」（D12，如 `9.81 | +6.2%`）：
+ *  价格分量取 priceKey、涨幅分量取 pctKey（均为 payload 先、行级回退的双路径），
+ *  涨幅渲染规则同 pct；outcome → 成功判定 badge
+ *  （success 成功绿 / failed 失败红 / pending 待定灰 / null '--'） */
 export interface StrategyColumnDecl {
   key: string
   label: string
-  type: 'date' | 'int' | 'float'
+  type: 'date' | 'int' | 'float' | 'str' | 'pct' | 'price_pct' | 'outcome'
+  /** price_pct 列价格分量取值 key（如 'a_close'；type='price_pct' 时必填） */
+  priceKey?: string
+  /** price_pct 列涨幅分量取值 key（如 'a_pct'；type='price_pct' 时必填） */
+  pctKey?: string
 }
 
-/** 策略实例（不可变：改参数 = 新建实例；历史信号随实例保留） */
-export interface StrategyInstance {
+/** 任务股票范围来源（design D3）：'all' = 全量 A 股（默认排 ST/*ST），scope_codes 为 null */
+export type StrategyTaskScopeType = 'manual' | 'watchlist' | 'bsp_query' | 'all'
+
+/** 任务形态（design D1）：test 一次性测试 / persistent 长期任务（挂 EOD 日终调度） */
+export type StrategyTaskMode = 'test' | 'persistent'
+
+/** 任务状态（design D1）：pending 待执行 / running 执行中 / paused 已暂停 / done 已完成 */
+export type StrategyTaskStatus = 'pending' | 'running' | 'paused' | 'done'
+
+/** 策略任务（strategy_task，策略执行的原子单位：参数/范围可编辑、两种续跑、转正冻结） */
+export interface StrategyTask {
   id: number
+  /** 所属策略定义 id */
+  strategy_id: string
+  /** 用户命名 */
   label: string
-  params: Record<string, number>
-  enabled: boolean
+  /** 用户自定义分组（纯组织性标签，无独立分组表） */
+  user_group: string
+  /** 当前生效参数（按定义 params_schema 校验；int/float → 数值，enum → 选项 value 字符串） */
+  params: Record<string, number | string>
+  /** 参数版本号（每次参数编辑 +1；信号行携带产生它时的版本） */
+  params_version: number
+  scope_type: StrategyTaskScopeType
+  /** 显式范围：固化快照 code 列表；scope_type='all' 时为 null */
+  scope_codes: string[] | null
+  mode: StrategyTaskMode
+  status: StrategyTaskStatus
+  /** 进度：已扫股票数 / 总股票数 */
+  progress_scanned: number
+  progress_total: number
+  /** 信号计数（列表/树节点 badge 用，后端联查返回） */
   signal_count: number
+  created_by: string
+  created_at: number
+  updated_at: number
 }
 
-/** 策略定义（代码注册，用户不可增删；前端表单/状态/私有列均由声明驱动渲染） */
+// ---------------------------------------------------------------------------
+// 任务详情 detail_schema 积木块（design D5）
+// v1 类型全集：summary / signals / per_stock / kv / timeline；
+// 渲染器为 Front/src/views/strategy/detail_blocks/ 通用积木组件，按声明顺序渲染。
+// ---------------------------------------------------------------------------
+
+/** summary 块：汇总面板（进度/总数/匹配数/失败数），无附加声明字段 */
+export interface DetailBlockSummary {
+  type: 'summary'
+}
+
+/** signals 块：该任务信号表格（复用信号列表列声明） */
+export interface DetailBlockSignals {
+  type: 'signals'
+}
+
+/** per_stock 块：逐股结果表格（scope_type='all' 时后端不返回数据、前端静默隐藏） */
+export interface DetailBlockPerStock {
+  type: 'per_stock'
+}
+
+/** kv 块：键值摘要块，items 的取值来自 payload 聚合或任务字段 */
+export interface DetailBlockKvItem {
+  /** 展示标签 */
+  label: string
+  /** 取值来源：detail API 响应的 kv_payload 键名 */
+  key: string
+  /** 值格式化类型：pct = 小数转百分比（0.173 → 17.3%，绩效统计项用，
+   *  strategy-signal-outcome D7：accuracy/avg_ret_* 为小数或 null） */
+  fmt?: 'int' | 'float' | 'str' | 'pct'
+}
+
+export interface DetailBlockKv {
+  type: 'kv'
+  /** 块标题（无则缺省「策略摘要」） */
+  title?: string
+  items: DetailBlockKvItem[]
+}
+
+/** timeline 块：时间线（信号日期序列 + 状态演进） */
+export interface DetailBlockTimeline {
+  type: 'timeline'
+}
+
+/** chart 块：信号日期分布图（design D5 v1 可支持 date_histogram；当前 mock 定义未声明） */
+export interface DetailBlockChart {
+  type: 'chart'
+}
+
+/** detail_schema 积木块声明（联合类型，按定义声明顺序渲染） */
+export type DetailBlockDecl =
+  | DetailBlockSummary
+  | DetailBlockSignals
+  | DetailBlockPerStock
+  | DetailBlockKv
+  | DetailBlockTimeline
+  | DetailBlockChart
+
+/** 策略定义（代码注册，用户不可增删；表单/状态/私有列/任务详情均由声明驱动渲染） */
 export interface StrategyDefinition {
   id: string
   name: string
   group_name: string
   sort: number
+  /** 每项含 desc（参数说明，表单 tooltip 消费） */
   params_schema: StrategyParamSchema[]
   states: StrategyStateDecl[]
   columns: StrategyColumnDecl[]
-  /** 定义下的实例树（后端联查返回，含各实例信号计数） */
-  instances: StrategyInstance[]
+  /** 任务详情展示声明（design D5 积木块序列；新策略注册必填） */
+  detail_schema: DetailBlockDecl[]
+  /** 定义下的任务树（后端联查返回，含各任务信号计数） */
+  tasks: StrategyTask[]
 }
 
-/** 策略信号行（GET /api/strategy/signals 分页项） */
+/** 策略信号行（GET /api/strategy/signals 分页项；挂 task_id 维度） */
 export interface StrategySignalRow {
   code: string
   name: string
@@ -295,8 +414,70 @@ export interface StrategySignalRow {
   is_buy: boolean
   entry_ref_price: number
   stop_ref_price: number
-  /** 策略私有字段（按 columns 声明的 key 取值渲染） */
-  payload: Record<string, number | string>
+  /** 策略私有字段（按 columns 声明的 key 取值渲染；A/B 点过程字段
+   *  a_date/a_close/a_pct/b_date/close_7d/14d/30d 亦在此，D10；
+   *  过程字段缺键或越界（数据不足）时值为 null） */
+  payload: Record<string, number | string | null>
+  /** 产生该信号的参数版本（strategy-task-redesign：混合参数任务按版本归因） */
+  params_version: number
+  /** 信号绩效四字段（strategy-signal-outcome D1 行级独立列，非 payload）：
+   *  入场日后 +7/+14/+30 日收益率（小数 0.173 = +17.3%，NULL = 数据不足/无绩效）
+   *  与成功判定（success/failed/pending；NULL = 旧信号无绩效）。
+   *  行级字段按 columns 声明的 ret_7d/ret_14d/ret_30d/outcome key 渲染。 */
+  ret_7d?: number | null
+  ret_14d?: number | null
+  ret_30d?: number | null
+  outcome?: 'success' | 'failed' | 'pending' | null
+}
+
+/** 逐股结果行（strategy_task_stock_result，detail API per_stock 块数据；显式范围任务才有） */
+export interface StrategyTaskStockResult {
+  code: string
+  name: string
+  /** 是否命中策略 */
+  matched: boolean
+  /** 执行状态：'ok' | 'failed' */
+  run_status: 'ok' | 'failed'
+  /** 失败原因 / 摘要 */
+  message: string
+  /** matched 时冗余信号日期 */
+  signal_date: string | null
+  /** 该行结果产生时的参数版本 */
+  params_version: number
+  /** 执行时间（ms 时间戳） */
+  executed_at: number
+}
+
+/** 任务详情响应（GET /api/strategy/tasks/{id}/detail，design D5） */
+export interface StrategyTaskDetail {
+  /** 任务行（含进度/参数/范围） */
+  task: StrategyTask
+  /** 汇总计数（summary 块消费：匹配/失败/进度聚合） */
+  summary: {
+    total: number
+    scanned: number
+    matched: number
+    failed: number
+  }
+  /** kv 块取值载荷（key → 值，声明 items[].key 取值；值可为 null——
+   *  绩效统计 accuracy/avg_ret_* 无样本时为 null，前端显示 '--'） */
+  kv_payload: Record<string, number | string | null>
+  /** 逐股结果（scope='all' 时后端不返回该键 → undefined，per_stock 块静默隐藏） */
+  per_stock?: StrategyTaskStockResult[]
+  /** 任务信号首页（signals 块初始数据，同信号列表分页结构） */
+  signals_page: PageRes<StrategySignalRow>
+  /** 所属策略定义（states/columns/detail_schema 声明随详情返回，渲染器消费） */
+  definition: {
+    id: string
+    name: string
+    group_name: string
+    params_schema: StrategyParamSchema[]
+    states: StrategyStateDecl[]
+    columns: StrategyColumnDecl[]
+    detail_schema: DetailBlockDecl[]
+  }
+  /** 时间线事件（timeline 块消费：信号日期序列 + 状态演进） */
+  timeline: { date: string; event: string; state: string }[]
 }
 
 // ---------------------------------------------------------------------------
@@ -325,9 +506,9 @@ export interface PerformanceSample {
   kl_type: string
   /** 信号来源（缺省视为 'chan'，与后端兜底语义一致） */
   source_type?: 'chan' | 'strategy' | 'watchlist'
-  /** source_type='strategy' 时的实例 id（来源树 strategy:<id> 过滤用） */
-  instance_id?: number
-  /** source_type='strategy' 时的「策略名·实例名·状态」标签 */
+  /** source_type='strategy' 时的任务 id（来源树 strategy:<id> 过滤用；原 instance_id 废弃） */
+  task_id?: number
+  /** source_type='strategy' 时的「策略名·任务名·状态」标签 */
   strategy_label?: string
   direction: 'buy' | 'sell'
   bsp_price: number

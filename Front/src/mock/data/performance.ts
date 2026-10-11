@@ -53,12 +53,12 @@ export const performanceSamples: PerformanceSample[] = Array.from({ length: 40 }
   const bspPrice = +(stock.price * (0.85 + r * 0.2)).toFixed(2)
   const endPrice = +(bspPrice * (1 + (direction === 'buy' ? 1 : -1) * (0.05 + r * 0.2))).toFixed(2)
   const profit = +(((endPrice - bspPrice) / bspPrice) * 100).toFixed(2)
-  // 来源三分支（design D6）：chan 60% / strategy 25%（instance_id=5）/ watchlist 15%
+  // 来源三分支（design D6）：chan 60% / strategy 25%（task_id=1，strategy-task-redesign 来源维度改任务）/ watchlist 15%
   const sourceRoll = rand(i + 7)
   const sourceType: PerformanceSample['source_type'] =
     sourceRoll < 0.6 ? 'chan' : sourceRoll < 0.85 ? 'strategy' : 'watchlist'
-  // 策略实例 id（与 monitorSources 字典 'strategy:5' 对应，handler instance_id 过滤用）
-  const instanceId = sourceType === 'strategy' ? 5 : undefined
+  // 策略任务 id（与 monitorSources 字典 'strategy:1' 对应，handler task_id 过滤用）
+  const taskId = sourceType === 'strategy' ? 1 : undefined
   // 归因摘要：约 30% 非空
   const attribution = r < 0.3 ? attributionPool[i % attributionPool.length] : ''
   // 分组归属（design D9）：约 60% 未分组（null），其余轮换 1/2（与 monitor mock 分组 id 对齐）
@@ -72,7 +72,7 @@ export const performanceSamples: PerformanceSample[] = Array.from({ length: 40 }
     kl_type: klTypes[(i + 2) % klTypes.length],
     source_type: sourceType,
     strategy_label: sourceType === 'strategy' ? '放量首板回调 · 回调5日 · 已触发' : undefined,
-    instance_id: instanceId,
+    task_id: taskId,
     direction,
     bsp_price: bspPrice,
     end_price: endPrice,

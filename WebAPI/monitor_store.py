@@ -103,8 +103,10 @@ def _ensure_tables():
                 )
                 """
             )
-            # 策略信号来源维度（strategy-signal-page design D6）：纯加列带
-            # DEFAULT，存量行 NULL → source_type 兜底 'chan'（查询侧 COALESCE）
+            # 策略信号来源维度（strategy-signal-page design D6 → strategy-task-redesign
+            # D6/D7：来源维度从实例改为任务）：纯加列带 DEFAULT，存量行 NULL →
+            # source_type 兜底 'chan'（查询侧 COALESCE）；task_id 列（旧库可能是
+            # instance_id，update.sql 迁移块负责改名，这里幂等兜底补列/改名）
             cur.execute(
                 """
                 ALTER TABLE monitor
@@ -113,8 +115,35 @@ def _ensure_tables():
             )
             cur.execute(
                 """
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = current_schema()
+                          AND table_name = 'monitor'
+                          AND column_name = 'instance_id'
+                    ) AND NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = current_schema()
+                          AND table_name = 'monitor'
+                          AND column_name = 'task_id'
+                    ) THEN
+                        IF EXISTS (
+                            SELECT 1 FROM pg_constraint
+                            WHERE conname = 'fk_monitor_instance_id'
+                              AND conrelid = 'monitor'::regclass
+                        ) THEN
+                            ALTER TABLE monitor DROP CONSTRAINT fk_monitor_instance_id;
+                        END IF;
+                        ALTER TABLE monitor RENAME COLUMN instance_id TO task_id;
+                    END IF;
+                END $$;
+                """
+            )
+            cur.execute(
+                """
                 ALTER TABLE monitor
-                ADD COLUMN IF NOT EXISTS instance_id INT
+                ADD COLUMN IF NOT EXISTS task_id INT
                 """
             )
             cur.execute(
@@ -124,19 +153,20 @@ def _ensure_tables():
                 """
             )
             # FK 单独语句（ADD COLUMN IF NOT EXISTS 不支持内联 REFERENCES 的幂等性；
-            # 约束名固定便于识别；已存在时 IF NOT EXISTS 幂等跳过）
+            # 约束名固定便于识别；已存在时 IF NOT EXISTS 幂等跳过；ON DELETE SET NULL
+            # —— 删除策略任务时监控行来源置空，不级联删监控记录）
             cur.execute(
                 """
                 DO $$
                 BEGIN
                     IF NOT EXISTS (
                         SELECT 1 FROM pg_constraint
-                        WHERE conname = 'fk_monitor_instance_id'
+                        WHERE conname = 'fk_monitor_task_id'
                           AND conrelid = 'monitor'::regclass
                     ) THEN
                         ALTER TABLE monitor
-                        ADD CONSTRAINT fk_monitor_instance_id
-                        FOREIGN KEY (instance_id) REFERENCES strategy_instance(id);
+                            ADD CONSTRAINT fk_monitor_task_id
+                            FOREIGN KEY (task_id) REFERENCES strategy_task(id) ON DELETE SET NULL;
                     END IF;
                 END $$;
                 """
@@ -175,13 +205,13 @@ def create_monitor(
     monitor_start_time: str,
     group_id: Optional[int] = None,
     source_type: str = "chan",
-    instance_id: Optional[int] = None,
+    task_id: Optional[int] = None,
     signal_date: Optional[str] = None,
 ) -> Optional[dict]:
     """创建一条监控记录（group_id 未传写 NULL = 未分组）。
 
-    策略信号来源（strategy-signal-page design D6/D8）：
-    - source_type='strategy' 且 instance_id/signal_date 齐备：来源字段落库，
+    策略信号来源（strategy-task-redesign design D6/D8，任务维度）：
+    - source_type='strategy' 且 task_id/signal_date 齐备：来源字段落库，
       并在同一事务内冻结对应 strategy_signal 行（frozen=TRUE，状态不再被
       引擎覆盖）——加监控成功与冻结同生共死
     - source_type='chan'（缺省）：行为与既有调用完全一致（来源列落 'chan'，
@@ -197,26 +227,26 @@ def create_monitor(
         with conn.cursor() as cur:
             cur.execute(
                 """INSERT INTO monitor (code, kl_type, entry_price, monitor_start_time, group_id,
-                                        source_type, instance_id, signal_date)
+                                        source_type, task_id, signal_date)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                    RETURNING id, code, kl_type, monitor_start_time, entry_price, status,
                              sold_price, sold_at, pnl_pct, created_at,
-                             source_type, instance_id, signal_date""",
+                             source_type, task_id, signal_date""",
                 (
                     code, kl_type, entry_price, monitor_start_time, group_id,
                     # 白名单放行 'watchlist'（watchlist-page-change design D8：
                     # 复用 source_type 第三取值，纯校验放行无 DDL）；非法值兜底 'chan'
                     source_type if source_type in ("chan", "strategy", "watchlist") else "chan",
-                    instance_id if source_type == "strategy" else None,
+                    task_id if source_type == "strategy" else None,
                     signal_date if source_type == "strategy" else None,
                 ),
             )
             row = cur.fetchone()
             # 同事务冻结信号（design D8：加监控成功与 frozen 置位同事务）
-            if source_type == "strategy" and instance_id is not None and signal_date:
+            if source_type == "strategy" and task_id is not None and signal_date:
                 from .strategy_store import freeze_signal_in_conn
 
-                freeze_signal_in_conn(cur, instance_id, code, signal_date)
+                freeze_signal_in_conn(cur, task_id, code, signal_date)
         conn.commit()
         return _row_to_dict(row)
     finally:
@@ -244,7 +274,7 @@ def list_monitoring(
         SELECT m.id, m.code, m.kl_type, m.monitor_start_time, m.entry_price,
                m.status, m.sold_price, m.sold_at, m.pnl_pct, m.created_at,
                COALESCE(m.source_type, 'chan') AS source_type,
-               m.instance_id, m.signal_date,
+               m.task_id, m.signal_date,
                COALESCE(s.name, m.code) AS stock_name
         FROM monitor m
         LEFT JOIN stock s ON m.code = s.code
@@ -285,7 +315,7 @@ def list_completed(
         SELECT m.id, m.code, m.kl_type, m.monitor_start_time, m.entry_price,
                m.status, m.sold_price, m.sold_at, m.pnl_pct, m.created_at,
                COALESCE(m.source_type, 'chan') AS source_type,
-               m.instance_id, m.signal_date,
+               m.task_id, m.signal_date,
                COALESCE(s.name, m.code) AS stock_name
         FROM monitor m
         LEFT JOIN stock s ON m.code = s.code
@@ -324,7 +354,7 @@ def settle_monitor(monitor_id: int, sold_price: float, sold_at: str, pnl_pct: fl
                    WHERE id=%s
                    RETURNING id, code, kl_type, monitor_start_time, entry_price, status,
                              sold_price, sold_at, pnl_pct, created_at,
-                             source_type, instance_id, signal_date""",
+                             source_type, task_id, signal_date""",
                 (sold_price, sold_at, pnl_pct, monitor_id),
             )
             row = cur.fetchone()
@@ -398,7 +428,7 @@ def get_monitor(monitor_id: int) -> Optional[dict]:
                 """SELECT m.id, m.code, m.kl_type, m.monitor_start_time, m.entry_price,
                           m.status, m.sold_price, m.sold_at, m.pnl_pct, m.created_at,
                           COALESCE(m.source_type, 'chan') AS source_type,
-                          m.instance_id, m.signal_date,
+                          m.task_id, m.signal_date,
                           COALESCE(s.name, m.code) AS stock_name
                    FROM monitor m LEFT JOIN stock s ON m.code = s.code
                    WHERE m.id=%s""",
@@ -794,12 +824,13 @@ def get_aggregate_profit_series() -> list[dict]:
 
 
 def list_monitor_sources() -> list[dict]:
-    """来源字典（design D14）：monitor 表 distinct (source_type, instance_id) + 实例名。
+    """来源字典（design D14 + strategy-task-redesign D6）：monitor 表
+    distinct (source_type, task_id) + 任务名。
 
-    返回 [{value, label, source_type, instance_id?}]：
-    - value 为前端过滤键：'chan' / 'strategy:<instance_id>' / 'watchlist'
-    - label 为下拉展示名：缠论 / 策略名·实例名 / 自选
-    PG 不可用返回 []；实例名缺失时降级 strategy_id 文本。
+    返回 [{value, label, source_type, task_id?}]：
+    - value 为前端过滤键：'chan' / 'strategy:<task_id>' / 'watchlist'
+    - label 为下拉展示名：缠论 / 策略名·任务名 / 自选
+    PG 不可用返回 []；任务名缺失时降级 strategy_id 文本。
     """
     _ensure_tables()
     conn = _get_pg_conn()
@@ -808,9 +839,9 @@ def list_monitor_sources() -> list[dict]:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """SELECT DISTINCT source_type, instance_id
+                """SELECT DISTINCT source_type, task_id
                    FROM monitor
-                   ORDER BY source_type, instance_id"""
+                   ORDER BY source_type, task_id"""
             )
             rows = cur.fetchall()
     except Exception:
@@ -819,31 +850,31 @@ def list_monitor_sources() -> list[dict]:
     finally:
         conn.close()
 
-    # 实例名（策略名·实例名）批量解析，复用 _fill_bsp_context 的语义
-    def _instance_label(instance_id: int) -> str:
+    # 任务名（策略名·任务名）批量解析，复用 _fill_bsp_context 的语义
+    def _task_label(task_id: int) -> str:
         try:
-            from .strategy_store import get_instance
+            from .strategy_store import get_task
 
-            ins = get_instance(instance_id)
-            if ins:
+            task = get_task(task_id)
+            if task:
                 from .strategy_engines import DEFINITIONS
 
-                defn = DEFINITIONS.get(ins["strategy_id"])
-                strategy_name = defn.name if defn else ins["strategy_id"]
-                return f"{strategy_name} · {ins['label']}"
+                defn = DEFINITIONS.get(task["strategy_id"])
+                strategy_name = defn.name if defn else task["strategy_id"]
+                return f"{strategy_name} · {task['label']}"
         except Exception:
-            log.exception("实例名解析失败: %s", instance_id)
-        return f"策略实例 {instance_id}"
+            log.exception("任务名解析失败: %s", task_id)
+        return f"策略任务 {task_id}"
 
     result: list[dict] = []
-    for source_type, instance_id in rows:
+    for source_type, task_id in rows:
         st = source_type or "chan"  # 旧行 NULL 兜底
-        if st == "strategy" and instance_id is not None:
+        if st == "strategy" and task_id is not None:
             result.append({
-                "value": f"strategy:{instance_id}",
-                "label": _instance_label(instance_id),
+                "value": f"strategy:{task_id}",
+                "label": _task_label(task_id),
                 "source_type": "strategy",
-                "instance_id": instance_id,
+                "task_id": task_id,
             })
         elif st == "watchlist":
             result.append({"value": "watchlist", "label": "自选", "source_type": "watchlist"})
@@ -906,10 +937,10 @@ def get_profit_series(monitor_id: int) -> list[dict]:
 def _row_to_dict(row, stock_name: Optional[str] = None) -> dict:
     """将 DB 行转为字典。
 
-    strategy-signal-page design D6：兼容两种行形态——
+    strategy-signal-page design D6 → strategy-task-redesign D6：兼容两种行形态——
     - 10 列（旧 SELECT/RETURNING）：来源字段取缺省（source_type='chan'，
-      instance_id/signal_date=None）
-    - 13 列（新 SELECT/RETURNING）：row[10..12] = source_type/instance_id/signal_date
+      task_id/signal_date=None）
+    - 13 列（新 SELECT/RETURNING）：row[10..12] = source_type/task_id/signal_date
     """
     d = {
         "id": row[0],
@@ -926,7 +957,7 @@ def _row_to_dict(row, stock_name: Optional[str] = None) -> dict:
     }
     if len(row) >= 13:
         d["source_type"] = row[10] or "chan"  # 旧行 NULL 兜底（spec 存量数据兼容）
-        d["instance_id"] = row[11]
+        d["task_id"] = row[11]
         d["signal_date"] = (
             row[12].isoformat()[:10]
             if hasattr(row[12], "isoformat") and row[12]
@@ -934,7 +965,7 @@ def _row_to_dict(row, stock_name: Optional[str] = None) -> dict:
         )
     else:
         d["source_type"] = "chan"
-        d["instance_id"] = None
+        d["task_id"] = None
         d["signal_date"] = None
     return d
 
@@ -953,11 +984,11 @@ def _fill_bsp_context(items: list[dict]) -> None:
     monitor 表只存监控本体（code/kl_type/entry_price/...），前端列表还需要
     买卖点上下文与行业/极值列。字段来源：
     - bsp_price ← entry_price（监控以买卖点价格入场，同值换名）
-    - bsp_type/direction/bsp_date ← 按 source_type 分叉（strategy-signal-page
-      design D6 / downstream spec「买卖点上下文回查分叉」）：
+    - bsp_type/direction/bsp_date ← 按 source_type 分叉（strategy-task-redesign
+      design D6 / downstream spec「买卖点上下文回查分叉」，任务维度）：
       * 'chan'：bsp_index 按 (code,kl_type) 回查监控开始前最近一条买卖点
         （监控的语义起点，现状路径不变）；查不到给兜底值
-      * 'strategy'：strategy_signal 按 (instance_id, signal_date) 定位信号行，
+      * 'strategy'：strategy_signal 按 (task_id, signal_date) 定位信号行，
         bsp_type=state、direction←is_buy、bsp_date=signal_date、
         bsp_price=entry_ref_price；查不到给兜底值（与现状兜底一致）
     - industries ← stock_industry 批量查（rank≤3 名称数组）
@@ -1009,32 +1040,32 @@ def _fill_bsp_context(items: list[dict]) -> None:
             it.setdefault("direction", "buy")
             it.setdefault("bsp_date", _to_ms(it["monitor_start_time"]))
 
-    # strategy 来源：strategy_signal 按 (instance_id, signal_date, code) 定位
-    # （downstream spec「策略监控回查」：上下文来自信号行，非 bsp_index）
-    # strategy_label（「策略名 · 实例名 · 状态」）供前端来源标签列（downstream spec
-    # 「监控列表来源展示」）：定义/实例名来自 strategy_store，状态文案来自 states 声明
-    _strategy_label_cache: dict[int, tuple[str, str]] = {}  # instance_id -> (策略名, 实例名)
+    # strategy 来源：strategy_signal 按 (task_id, signal_date, code) 定位
+    # （downstream spec「策略监控回查」：上下文来自信号行，非 bsp_index，任务维度）
+    # strategy_label（「策略名 · 任务名 · 状态」）供前端来源标签列（downstream spec
+    # 「监控列表来源展示」）：定义/任务名来自 strategy_store，状态文案来自 states 声明
+    _strategy_label_cache: dict[int, tuple[str, str]] = {}  # task_id -> (策略名, 任务名)
     for it in strategy_items:
         sig = None
         strategy_label = None
         try:
-            if it.get("instance_id") is not None and it.get("signal_date"):
+            if it.get("task_id") is not None and it.get("signal_date"):
                 from .strategy_store import get_signal_for_monitor
 
                 sig = get_signal_for_monitor(
-                    it["instance_id"], it["signal_date"], it["code"]
+                    it["task_id"], it["signal_date"], it["code"]
                 )
-                if sig and it["instance_id"] not in _strategy_label_cache:
-                    from .strategy_store import get_instance
+                if sig and it["task_id"] not in _strategy_label_cache:
+                    from .strategy_store import get_task
 
-                    ins = get_instance(it["instance_id"])
-                    if ins:
+                    task = get_task(it["task_id"])
+                    if task:
                         from .strategy_engines import DEFINITIONS
 
-                        defn = DEFINITIONS.get(ins["strategy_id"])
-                        _strategy_label_cache[it["instance_id"]] = (
-                            defn.name if defn else ins["strategy_id"],
-                            ins["label"],
+                        defn = DEFINITIONS.get(task["strategy_id"])
+                        _strategy_label_cache[it["task_id"]] = (
+                            defn.name if defn else task["strategy_id"],
+                            task["label"],
                         )
         except Exception:
             log.exception("策略信号回查失败，使用兜底值: %s", it.get("code"))
@@ -1045,7 +1076,7 @@ def _fill_bsp_context(items: list[dict]) -> None:
             it["bsp_date"] = _to_ms(str(it["signal_date"]))
             if sig.get("entry_ref_price"):
                 it["bsp_price"] = sig["entry_ref_price"]
-            names = _strategy_label_cache.get(it["instance_id"])
+            names = _strategy_label_cache.get(it["task_id"])
             if names:
                 strategy_label = f"{names[0]} · {names[1]} · {sig['state']}"
         else:

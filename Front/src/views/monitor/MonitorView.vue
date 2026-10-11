@@ -1105,14 +1105,15 @@ const monitorSources = ref<MonitorSource[]>([])
 const mSourceValue = ref<string>('') // 监控中 tab 选中来源（'' = 全部）
 const cSourceValue = ref<string>('') // 已完成 tab 选中来源（'' = 全部）
 
-/** 来源字典项匹配行：'chan'/'watchlist' 按 source_type；'strategy:<id>' 加 instance_id */
+/** 来源字典项匹配行：'chan'/'watchlist' 按 source_type；'strategy:<id>' 加 task_id
+ *（strategy-task-redesign：来源维度从 instance_id 改 task_id，BREAKING） */
 function matchSource(row: MonitorItem, value: string): boolean {
   if (!value) return true
   if (value === 'chan') return (row.source_type ?? 'chan') === 'chan'
   if (value === 'watchlist') return row.source_type === 'watchlist'
   if (value.startsWith('strategy:')) {
     const id = Number(value.slice('strategy:'.length))
-    return row.source_type === 'strategy' && row.instance_id === id
+    return row.source_type === 'strategy' && row.task_id === id
   }
   return true
 }

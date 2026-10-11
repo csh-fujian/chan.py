@@ -48,6 +48,20 @@
         <el-option label="月线" value="1M" />
       </el-select>
 
+      <!-- 时间段查询：选日期范围后重载，仅展示该区间 K 线（清空 = 恢复全量） -->
+      <el-date-picker
+        v-model="dateRange"
+        type="daterange"
+        size="default"
+        class="range-picker"
+        range-separator="至"
+        start-placeholder="开始日期"
+        end-placeholder="结束日期"
+        value-format="YYYY-MM-DD"
+        :clearable="true"
+        @change="onDateRangeChange"
+      />
+
       <!-- 副图指标：自定义多选（缩略展示 + 悬浮查看全部） -->
       <el-popover
         v-model:visible="indicatorMenuVisible"
@@ -135,7 +149,9 @@
       </aside>
 
       <section class="chart chart--grid main-chart reveal reveal--1">
-        <div class="chart__tag">{{ code.toUpperCase() }} · {{ periodLabel }} · 前复权</div>
+        <div class="chart__tag">
+          {{ code.toUpperCase() }} · {{ periodLabel }} · 前复权<span v-if="rangeLabel"> · {{ rangeLabel }}</span>
+        </div>
         <KLineChart ref="chartComp" :result="result" :code="code" :period="period" />
       </section>
     </div>
@@ -179,6 +195,48 @@ const period = ref('1d')
 const loading = ref(false)
 const result = ref<ChanResult | null>(null)
 const subIndicators = ref<string[]>(['VOL', 'MACD'])
+
+// ---------------------------------------------------------------------------
+// 时间段定位：daterange 绑定 [start, end]（YYYY-MM-DD），空为 null。
+// 不重新拉数据 —— K 线始终到最新一根，选完时间段只是把图表视口滚到该区间。
+// ---------------------------------------------------------------------------
+const dateRange = ref<[string, string] | null>(null)
+
+/** 日期字符串（YYYY-MM-DD）→ 当日 00:00 的毫秒时间戳 */
+function dayStartTs(d: string): number {
+  return new Date(`${d}T00:00:00`).getTime()
+}
+
+/**
+ * 时间段变化（选择/清空）→ 视口定位（KLineChart.scrollToRange）。
+ * 数据未加载（首屏前误操作）或区间完全在数据范围外时无操作/提示。
+ */
+function onDateRangeChange(): void {
+  const r = dateRange.value
+  if (!r || !r[0] || !r[1]) return // 清空：保持当前视口
+  const begin = dayStartTs(r[0])
+  const end = dayStartTs(r[1]) + 86400000 - 1
+  const klines = result.value?.klines
+  if (!klines || klines.length === 0) {
+    ElMessage.warning('K 线数据尚未加载')
+    return
+  }
+  if (begin > klines[klines.length - 1].timestamp) {
+    ElMessage.warning('所选时间段晚于最新 K 线')
+    return
+  }
+  if (end < klines[0].timestamp) {
+    ElMessage.warning('所选时间段早于最早 K 线')
+    return
+  }
+  chartComp.value?.scrollToRange(begin)
+}
+
+/** 图表标签中的时间段展示（选择后显示，如 2026-08-01 ~ 2026-09-30） */
+const rangeLabel = computed(() => {
+  const r = dateRange.value
+  return r && r[0] && r[1] ? `${r[0]} ~ ${r[1]}` : ''
+})
 
 // 副图指标多选（自定义缩略展示）
 const indicatorMenuVisible = ref(false)
@@ -539,6 +597,26 @@ onBeforeUnmount(() => {
 }
 .period-select :deep(.el-select__wrapper.is-focused) {
   box-shadow: 0 0 0 1px var(--accent-base) inset, 0 0 14px var(--accent-glow);
+}
+
+/* 时间段日期范围选择器（顶栏） */
+.range-picker {
+  width: 260px;
+}
+.range-picker :deep(.el-date-editor--daterange) {
+  width: 100%;
+}
+.range-picker :deep(.el-input__wrapper) {
+  background: var(--bg-surface);
+  box-shadow: 0 0 0 1px var(--border-base) inset;
+}
+.range-picker :deep(.el-input__wrapper.is-focus) {
+  box-shadow: 0 0 0 1px var(--accent-base) inset, 0 0 14px var(--accent-glow);
+}
+.range-picker :deep(.el-range-input) {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-primary);
 }
 
 /* 副图指标自定义多选触发器 */

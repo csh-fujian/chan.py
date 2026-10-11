@@ -90,7 +90,7 @@ async def monitor_completed(keyword: str = Query(""), group_id: str = Query(""))
 
 @router.get("/sources")
 async def monitor_sources():
-    """来源字典（design D14）：distinct (source_type, instance_id) + 实例名，前端来源下拉消费。"""
+    """来源字典（design D14 + strategy-task-redesign D6）：distinct (source_type, task_id) + 任务名，前端来源下拉消费。"""
     return list_monitor_sources()
 
 
@@ -104,9 +104,9 @@ async def monitor_aggregate_profit_series():
 async def monitor_create(body: dict):
     """加入监控（可选携带 group_id，不传归「未分组」）。
 
-    策略信号来源（strategy-signal-page design D6）：body 可选携带
-    source_type/instance_id/signal_date；缺省 'chan'（既有调用不传，行为不变）。
-    source_type='strategy' 时 instance_id 与 signal_date 必填（422）。
+    策略信号来源（strategy-task-redesign design D6，任务维度）：body 可选携带
+    source_type/task_id/signal_date；缺省 'chan'（既有调用不传，行为不变）。
+    source_type='strategy' 时 task_id 与 signal_date 必填（422）。
     source_type='watchlist'（watchlist-page-change design D8）：自选页人工
     挑选来源，直接放行透传；非法值 422（store 层另有兜底 'chan'）。
     """
@@ -116,7 +116,7 @@ async def monitor_create(body: dict):
     monitor_start_time = body.get("monitor_start_time", "")
     group_id = body.get("group_id", None)
     source_type = body.get("source_type", "chan")
-    instance_id = body.get("instance_id", None)
+    task_id = body.get("task_id", None)
     signal_date = body.get("signal_date", None)
 
     if not code:
@@ -135,19 +135,19 @@ async def monitor_create(body: dict):
     if source_type not in ("chan", "strategy", "watchlist"):
         raise HTTPException(status_code=422, detail="source_type 仅接受 'chan'、'strategy' 或 'watchlist'")
     if source_type == "strategy":
-        if not isinstance(instance_id, int) or isinstance(instance_id, bool) or instance_id <= 0:
-            raise HTTPException(status_code=422, detail="strategy 来源必须携带正整数 instance_id")
+        if not isinstance(task_id, int) or isinstance(task_id, bool) or task_id <= 0:
+            raise HTTPException(status_code=422, detail="strategy 来源必须携带正整数 task_id")
         if not signal_date or not isinstance(signal_date, str):
             raise HTTPException(status_code=422, detail="strategy 来源必须携带 signal_date（YYYY-MM-DD）")
         try:
             datetime.strptime(signal_date, "%Y-%m-%d")
         except ValueError:
             raise HTTPException(status_code=422, detail="signal_date 需为 YYYY-MM-DD 日期")
-        # 实例存在性校验（404 语义与分组不存在一致按 400/404 区分：实例不存在 404）
-        from ..strategy_store import get_instance
+        # 任务存在性校验（404 语义与分组不存在一致按 400/404 区分：任务不存在 404）
+        from ..strategy_store import get_task
 
-        if get_instance(instance_id) is None:
-            raise HTTPException(status_code=404, detail=f"策略实例 {instance_id} 不存在")
+        if get_task(task_id) is None:
+            raise HTTPException(status_code=404, detail=f"策略任务 {task_id} 不存在")
 
     result = create_monitor(
         code=code,
@@ -156,7 +156,7 @@ async def monitor_create(body: dict):
         monitor_start_time=monitor_start_time,
         group_id=group_id,
         source_type=source_type,
-        instance_id=instance_id,
+        task_id=task_id,
         signal_date=signal_date,
     )
     if not result:

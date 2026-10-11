@@ -1,6 +1,7 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import ElementPlus from 'element-plus'
+import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import 'element-plus/dist/index.css'
 import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 
@@ -26,7 +27,7 @@ async function bootstrap() {
   const app = createApp(App)
   app.use(createPinia())
   app.use(router)
-  app.use(ElementPlus, { size: 'default' })
+  app.use(ElementPlus, { size: 'default', locale: zhCn })
 
   // 注册所有 Element Plus 图标为全局组件
   for (const [key, comp] of Object.entries(ElementPlusIconsVue)) {

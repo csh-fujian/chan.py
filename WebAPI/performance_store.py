@@ -8,7 +8,7 @@ bsp_type / bsp_date / strategy_label 等上下文并完成字段映射）；聚�
 
 - bsp_type 原样聚合分组（原始枚举如 '2s'/'2'，前端负责映射文案，后端不改写）
 - source 过滤：'chan'/'strategy'/'watchlist' 精确匹配 source_type；
-  instance_id > 0 时与 source='strategy' 联合精确匹配
+  task_id > 0 时与 source='strategy' 联合精确匹配（strategy-task-redesign D6）
 - 归因摘要：list_attributions_map 一次拉全表，按 monitor_id 拼接（任务 3.3）
 - PG 不可用时 list_completed 返回 []，自然降级空集
 - group_id 过滤（design D9）：直接下推 list_completed 的 SQL WHERE
@@ -32,25 +32,25 @@ SAMPLE_INSUFFICIENT_THRESHOLD = 5
 def _filter_completed(
     items: list[dict],
     source: str = "",
-    instance_id: int = 0,
+    task_id: int = 0,
     bsp_type: str = "",
     kl_type: str = "",
 ) -> list[dict]:
-    """按来源/实例/类型/周期过滤 completed 样本。
+    """按来源/任务/类型/周期过滤 completed 样本。
 
     - source：非空时精确匹配 source_type（chan/strategy/watchlist）
-    - instance_id：> 0 时仅保留 source_type='strategy' 且 instance_id 相等的样本
+    - task_id：> 0 时仅保留 source_type='strategy' 且 task_id 相等的样本
     - bsp_type / kl_type：非空时精确匹配
     """
     result = items
     if source:
         result = [it for it in result if (it.get("source_type") or "chan") == source]
-    if instance_id and instance_id > 0:
+    if task_id and task_id > 0:
         result = [
             it
             for it in result
             if (it.get("source_type") or "chan") == "strategy"
-            and it.get("instance_id") == instance_id
+            and it.get("task_id") == task_id
         ]
     if bsp_type:
         result = [it for it in result if it.get("bsp_type") == bsp_type]
@@ -90,7 +90,7 @@ def _aggregate_group(items: list[dict]) -> dict[str, Any]:
 
 def get_performance_stats(
     source: str = "",
-    instance_id: int = 0,
+    task_id: int = 0,
     group_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """绩效统计：completed 样本按 (bsp_type, kl_type) GROUP BY 聚合。
@@ -104,7 +104,7 @@ def get_performance_stats(
     items = _filter_completed(
         list_completed(group_id=group_id),
         source=source,
-        instance_id=instance_id,
+        task_id=task_id,
     )
     groups: dict[tuple[str, str], list[dict]] = {}
     for it in items:
@@ -123,7 +123,7 @@ def get_performance_samples(
     bsp_type: str = "",
     kl_type: str = "",
     source: str = "",
-    instance_id: int = 0,
+    task_id: int = 0,
     group_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """绩效样本明细：completed 样本行映射（对齐前端 PerformanceSample 契约）。
@@ -139,7 +139,7 @@ def get_performance_samples(
     items = _filter_completed(
         list_completed(group_id=group_id),
         source=source,
-        instance_id=instance_id,
+        task_id=task_id,
         bsp_type=bsp_type,
         kl_type=kl_type,
     )

@@ -1,0 +1,2 @@
+﻿code,a_date,p_date,b_date,b_bar_time,entry_mode,buy_price,vp_bar_ratio,spring,drift_bucket,wick_box,box_days,vol_gate,box_r,a_ret,stop_loss_low
+sz.000014,2004-03-30,2004-03-31,2004-04-09,,daily,3.3586333,,False,mid,0.04849884526558895,7,mean,0.030023094688221588,0.0900692840646653,3.00742596
