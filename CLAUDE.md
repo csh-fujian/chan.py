@@ -115,6 +115,7 @@ CChan (ChanAnalyse/Chan.py)  ← 门面，接收 stock code + CChanConfig
 仓库的 K 线数据分层（来自 openspec 变更 `persist-kl-to-duckdb`，已归档）：
 
 - **原始 K 线 → DuckDB 单文件** `Data/kl_store.duckdb`（`ChanAnalyse/DataAPI/KLineStore.py`）：表 `kline`，主键 `(code, kl_type, autype, time_key)`；`kl_type`/`autype` 存枚举 `.name` 字符串（如 `"K_DAY"`/`"QFQ"`）；`time_key` 存无时区北京时间字符串 `"YYYY-MM-DD HH:MM:SS"`（避免 DuckDB TIMESTAMP 隐式时区问题）。幂等写入 `INSERT OR REPLACE`。
+- **已是最新就不请求接口**：增量灌数先按交易日历推算「此刻本应存在的最新 K 线」（`IngestUtil.expected_latest_time_key`，日线按收盘+`bar_lag_minutes` 判定可见、周/月线只认已走完的周/月、分钟级按 bar 边界递推），水位已覆盖则整条任务跳过、连 BaoStock 登录都不做（重复请求同段数据会触发限频）。`--force` 强制请求，`--begin/--end` 显式区间亦不跳过，日历不可用时失败开放（照常请求）。
 - **离线回读 → `ChanAnalyse/DataAPI/DuckDBAPI.py`** 的 `CDuckDB`（继承 `CCommonStockApi`），接入方式 `data_src = "custom:DuckDBAPI.CDuckDB"`，逐根 yield `CKLine_Unit`，使计算流水线对数据来源无感知。
 - **分钟级盘中 → `ChanAnalyse/DataAPI/MinuteAPI.py`** 的 `CMinute`（akshare 东财 `stock_zh_a_hist_min_em`），经 `custom:MinuteAPI.CMinute` 接入。
 - **操作态 → PostgreSQL**：`ChanAnalyse/DataAPI/RecomputeCursor.py` 把「已处理时间」游标 `recompute_cursor` 表存 PG（psycopg2 裸 SQL），避免与灌数进程抢 DuckDB 单写锁。

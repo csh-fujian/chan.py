@@ -14,6 +14,7 @@ Stock DAO — stock / stock_industry / stock_financial_report / stock_holder_num
 import json
 import logging
 import os
+import re
 
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -45,6 +46,77 @@ def _get_pg_conn():
 
 # PG 连接失败降级状态（仅状态翻转时记一次日志，防止每个请求刷屏）
 _pg_down = False
+
+
+# ---------------------------------------------------------------------------
+# ST 股票排除（exclude-st-stocks）：名称派生判定，单一来源，不新增存储列
+# ---------------------------------------------------------------------------
+
+class StockNameSourceUnavailable(RuntimeError):
+    """股票名称来源（PG stock 表）不可用，无法判定 ST 状态。
+
+    批量入口（灌数配置导出、策略扫描、买卖点补算）据此失败关闭：
+    宁可不输出集合，也不输出未经过滤的集合。
+    """
+
+
+_ST_NAME_RE = re.compile(r"^\*?ST", re.IGNORECASE)
+
+
+def is_st_name(name: Optional[str]) -> bool:
+    """名称前缀判定 ST/*ST（大小写不敏感，忽略首尾空白）。
+
+    名称缺失（None/空串）不算 ST —— 与 ST_EXCLUDE_SQL 的 COALESCE 语义一致。
+    """
+    return _ST_NAME_RE.match((name or "").strip()) is not None
+
+
+# COALESCE 必须有：name 为 NULL 时 NOT LIKE 结果为 NULL，会把无名股票误排除。
+# 用 LEFT() 前缀比较而非 LIKE 'ST%'：本片段被拼进「带参数」的 execute()
+# （list_stocks / list_pool_codes 传 params 列表），psycopg2 会对整条 SQL 做
+# % 格式化，字面量 % 会被当作占位符 → IndexError: list index out of range。
+# 故本片段必须**不含 %**（既不需要 %% 转义，无参数调用点也安全）。
+ST_EXCLUDE_SQL = (
+    "LEFT(UPPER(TRIM(COALESCE(s.name, ''))), 2) <> 'ST' "
+    "AND LEFT(UPPER(TRIM(COALESCE(s.name, ''))), 3) <> '*ST'"
+)
+
+
+def exclude_st_codes(codes: list[str]) -> list[str]:
+    """从 codes 中剔除 ST 股票，保持输入顺序。
+
+    不在 stock 表中或名称为空/为 NULL 的代码保留（「名称缺失不算 ST」规则）。
+    PG 不可用时抛 StockNameSourceUnavailable（失败关闭）。
+    """
+    if not codes:
+        return []
+    conn = _get_pg_conn()
+    if conn is None:
+        raise StockNameSourceUnavailable("PG 不可用，无法读取股票名称以排除 ST")
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT code, name FROM stock WHERE code = ANY(%s)", (list(codes),))
+            names = {r[0]: r[1] for r in cur.fetchall()}
+    finally:
+        conn.close()
+    return [c for c in codes if not is_st_name(names.get(c))]
+
+
+def get_stock_name(code: str) -> Optional[str]:
+    """按代码取股票名称；行不存在返回 None。
+
+    PG 不可用时抛 StockNameSourceUnavailable，由调用方决定降级策略。
+    """
+    conn = _get_pg_conn()
+    if conn is None:
+        raise StockNameSourceUnavailable("PG 不可用，无法读取股票名称")
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT name FROM stock WHERE code=%s", (code,))
+            row = cur.fetchone()
+            return row[0] if row else None
+    finally:
+        conn.close()
 
 
 def gen_name_py(name: str) -> str:
@@ -363,9 +435,10 @@ def list_stocks(
     _ensure_tables()
     conn = _get_pg_conn()
     if conn is None:
-        return _fallback_list_stocks(q, page, page_size)
+        # 无名称来源即无法排除 ST：失败关闭，不返回未过滤列表（spec: 名称来源不可用 → 503）
+        raise StockNameSourceUnavailable("PG 不可用，无法读取股票名称以排除 ST")
 
-    conditions = []
+    conditions = [ST_EXCLUDE_SQL]
     params: list[Any] = []
 
     if q:
@@ -723,18 +796,30 @@ def code_exists(code: str) -> bool:
         conn.close()
 
 
-def list_pool_codes(enabled: Optional[bool] = None) -> list[str]:
-    """列出股票池代码；enabled=None 表示全部行（identity 域用）。"""
+def list_pool_codes(enabled: Optional[bool] = None, exclude_st: bool = False) -> list[str]:
+    """列出股票池代码；enabled=None 表示全部行（identity 域用）。
+
+    exclude_st=True 时排除 ST 股票（逐股元数据域用）；identity 域不排除，
+    以便识别新股、更名与 ST 进入/退出。
+    """
     _ensure_tables()
     conn = _get_pg_conn()
     if conn is None:
         return []
+    conditions = []
+    params: list[Any] = []
+    if enabled is not None:
+        conditions.append("s.enabled = %s")
+        params.append(enabled)
+    if exclude_st:
+        conditions.append(ST_EXCLUDE_SQL)
+    where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
     try:
         with conn.cursor() as cur:
-            if enabled is None:
-                cur.execute("SELECT code FROM stock ORDER BY code")
-            else:
-                cur.execute("SELECT code FROM stock WHERE enabled = %s ORDER BY code", (enabled,))
+            cur.execute(
+                f"SELECT s.code FROM stock s {where_clause} ORDER BY s.code",
+                params,
+            )
             return [r[0] for r in cur.fetchall()]
     finally:
         conn.close()
@@ -1382,54 +1467,13 @@ def _get_latest_close_from_duckdb(codes: list[str]) -> dict[str, dict]:
 
 
 def _fallback_list_stocks(q: str = "", page: int = 1, page_size: int = 20) -> dict:
-    """PG 不可用时从 DuckDB 读取股票列表兜底。"""
-    from .config import DUCKDB_PATH
-    import os
+    """PG 不可用时的兜底：已移除。
 
-    if not os.path.exists(DUCKDB_PATH):
-        return {"items": [], "total": 0, "page": page, "page_size": page_size}
-
-    try:
-        import duckdb
-
-        conn = duckdb.connect(DUCKDB_PATH, read_only=True)
-        try:
-            # 取所有唯一的 code，按 code 排序
-            rows = conn.execute(
-                "SELECT DISTINCT code FROM kline ORDER BY code"
-            ).fetchall()
-            all_codes = [r[0] for r in rows]
-
-            # 过滤
-            if q:
-                q_lower = q.lower()
-                all_codes = [c for c in all_codes if q_lower in c.lower()]
-
-            total = len(all_codes)
-            offset = (page - 1) * page_size
-            page_codes = all_codes[offset : offset + page_size]
-
-            items = [
-                {
-                    "code": c,
-                    "name": c,
-                    "exchange": c.split(".")[0] if "." in c else "",
-                    "enabled": True,
-                    "kl_types": [],
-                    "autypes": [],
-                    "tags": [],
-                    "notes": "",
-                    "industries": [],
-                    "created_at": None,
-                    "updated_at": None,
-                }
-                for c in page_codes
-            ]
-            return {"items": items, "total": total, "page": page, "page_size": page_size}
-        finally:
-            conn.close()
-    except Exception:
-        return {"items": [], "total": 0, "page": page, "page_size": page_size}
+    原 DuckDB 兜底列表只有 code、没有 name（name 回填为 code），无法判定 ST，
+    返回它等于静默违反排除规则 —— 改为失败关闭（exclude-st-stocks design D2）。
+    保留函数名以免下游旧引用直接 ImportError。
+    """
+    raise StockNameSourceUnavailable("PG 不可用，无法读取股票名称以排除 ST")
 
 
 def _fallback_stock(code: str, name: str = "", exchange: str = "", enabled: bool = True) -> dict:

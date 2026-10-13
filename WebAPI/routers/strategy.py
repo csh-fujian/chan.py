@@ -37,6 +37,7 @@ from datetime import datetime
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 
 from ..bsp_store import get_industries_for_codes
+from ..stock_store import StockNameSourceUnavailable
 from ..strategy_engines.scheduler import run_task
 from ..strategy_store import (
     compute_outcome_kv_stats,
@@ -55,6 +56,7 @@ from ..strategy_store import (
     query_stock_results,
     resolve_scope_codes,
     resume_task,
+    set_task_status,
     start_task,
     update_task,
 )
@@ -84,9 +86,25 @@ def _get_task_or_404(task_id: int) -> dict:
 
 
 def _run_task_background(task_id: int) -> None:
-    """后台执行任务的包装（失败只记日志不影响响应，幂等可重入）。"""
+    """后台执行任务的包装（失败只记日志不影响响应，幂等可重入）。
+
+    exclude-st-stocks：扫描开始前要先解析 code 集合，而该步骤需按名称排除
+    ST（失败关闭）——PG 名称来源不可用时 `_task_codes` 抛
+    `StockNameSourceUnavailable`，扫描一行都没跑。start_task/resume_task 已把
+    状态置为 running，此处若不复位，任务会永久停在 running（阻塞暂停/删除/
+    再次启动）。故捕获该异常后把任务复位为 paused（可续跑），而不是笼统吞掉。
+    """
     try:
         run_task(task_id)
+    except StockNameSourceUnavailable as e:
+        log.error(
+            "任务扫描未开始：ST 判定名称来源（PG）不可用 task=%s: %s", task_id, e
+        )
+        try:
+            # 复位为 paused（非 running）：任务未执行任何 code，可待 PG 恢复后续跑。
+            set_task_status(task_id, "paused")
+        except Exception:
+            log.exception("任务状态复位失败 task=%s", task_id)
     except Exception:
         log.exception("任务后台扫描失败 task=%s", task_id)
 

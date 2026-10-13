@@ -9,13 +9,14 @@
   （存 PG，见 DataAPI/RecomputeCursor.py）→ 触发重算。
 - 限频（poll_interval 间隔）、指数退避、单股票失败隔离。
 
-用法：
+用法（需 --pg-dsn 以排除 ST 股票，缺省/不可达即失败关闭）：
     python Data/intraday_poll.py --config ingest_config.json --pg-dsn "host=... dbname=..."
-    python Data/intraday_poll.py --config ingest_config.json --once     # 单轮（测试/手动补拉）
+    python Data/intraday_poll.py --config ingest_config.json --pg-dsn "host=... dbname=..." --once  # 单轮（测试/手动补拉）
 """
 
 import argparse
 import logging
+import re
 import sys
 import time
 from datetime import datetime
@@ -85,6 +86,57 @@ def iter_intraday_jobs(cfg: dict):
     for code, kt, au in iter_ingest_jobs(cfg):
         if kt.value < KL_TYPE.K_DAY.value:
             yield code, kt, au
+
+
+# ---------------------------------------------------------------------------
+# ST 股票排除（exclude-st-stocks）：名称来源为 PG stock 表，失败关闭
+# ---------------------------------------------------------------------------
+# 语义与 WebAPI/stock_store.is_st_name 一致（来源：WebAPI/stock_store.py L63-L71）。
+# 本脚本直接以 psycopg2 裸 SQL 连 PG（沿用 RecomputeCursor 的连接风格），
+# 不依赖 WebAPI/stock_store.py 的 `_get_pg_conn` 连接方式，保持文件内一致性。
+_ST_NAME_RE = re.compile(r"^\*?ST", re.IGNORECASE)
+
+
+def _is_st_name(name) -> bool:
+    """名称前缀判定 ST/*ST（大小写不敏感，忽略首尾空白）；None/空串不算 ST。"""
+    return _ST_NAME_RE.match((name or "").strip()) is not None
+
+
+def exclude_st_codes_from_cfg(cfg: dict, pg_dsn: str) -> list[str]:
+    """剔除配置中的 ST 股票并打印剔除清单（就地修改 cfg["stocks"]）。
+
+    名称来源为 PG stock 表；未提供 --pg-dsn 或 PG 不可达时抛 RuntimeError（失败关闭，
+    不输出未经过滤的集合）。返回被剔除的代码列表（升序）。
+    """
+    stocks = cfg.get("stocks", [])
+    if not stocks:
+        return []
+
+    codes = list(dict.fromkeys(s["code"] for s in stocks))  # 去重保序
+
+    if not pg_dsn:
+        raise RuntimeError("未提供 --pg-dsn，无法查询股票名称以排除 ST（失败关闭）")
+
+    import psycopg2
+
+    try:
+        conn = psycopg2.connect(pg_dsn)
+    except Exception as e:
+        raise RuntimeError(f"PG 不可达，无法查询股票名称以排除 ST：{e}")
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT code, name FROM stock WHERE code = ANY(%s)", (codes,))
+            names = {r[0]: r[1] for r in cur.fetchall()}
+    finally:
+        conn.close()
+
+    st_codes = sorted(c for c in codes if _is_st_name(names.get(c)))
+    if st_codes:
+        st_set = set(st_codes)
+        cfg["stocks"] = [s for s in stocks if s["code"] not in st_set]
+        print(f"剔除 ST 股票 {len(st_codes)} 只：{', '.join(st_codes)}")
+    return st_codes
 
 
 def run_once(cfg, store, minute_cls, cursor, recompute_fn, now, backoff=None, begin=None):
@@ -165,7 +217,7 @@ def main(argv=None):
     p = argparse.ArgumentParser(description="盘中分钟级接入 + 水位通知重算")
     p.add_argument("--config", required=True, help="JSON 配置文件路径")
     p.add_argument("--db-path", default=DEFAULT_DB_PATH, help="DuckDB 库路径")
-    p.add_argument("--pg-dsn", default=None, help="PostgreSQL 连接串；缺省用内存游标（测试）")
+    p.add_argument("--pg-dsn", default=None, help="PostgreSQL 连接串；用于排除 ST 股票（必需），缺省/不可达则失败关闭")
     p.add_argument("--once", action="store_true", help="只跑一轮后退出（而非常驻循环）")
     p.add_argument("--no-recompute", action="store_true", help="仅落库不触发重算")
     p.add_argument("--verbose", action="store_true", help="打印 DEBUG 日志")
@@ -178,6 +230,13 @@ def main(argv=None):
 
     cfg = load_config(args.config)
     db_path = cfg.get("db_path", args.db_path)
+
+    # ST 股票排除（失败关闭：无名称来源即非零退出，不输出未经过滤的集合）
+    try:
+        exclude_st_codes_from_cfg(cfg, args.pg_dsn)
+    except RuntimeError as e:
+        log.error("ST 排除失败：%s", e)
+        return 1
 
     # 分钟数据源：akshare 东财（延迟导入）
     from ChanAnalyse.DataAPI.MinuteAPI import CMinute

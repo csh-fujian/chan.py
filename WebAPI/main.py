@@ -15,6 +15,7 @@ FastAPI 应用 — chan-web-viewer 后端入口。
   - /api/klines          K线 + 缠论计算
 """
 
+import logging
 from typing import Optional
 
 from fastapi import Depends, HTTPException, Query
@@ -31,6 +32,9 @@ from .chan_service import (
     resolve_sub_level,
 )
 from .serializer import serialize_chan
+from .stock_store import StockNameSourceUnavailable, get_stock_name, is_st_name
+
+log = logging.getLogger("main")
 
 
 @app.get("/api/health")
@@ -122,6 +126,17 @@ async def get_klines(
     """
     kl_type = _resolve_kl_type(period)
     data_src = _resolve_data_src(period)
+
+    # ST 股票排除（exclude-st-stocks design D5）：在任何缓存读写之前判定。
+    # ST 直接 404，既不读缓存也不写缓存；PG 名称来源不可用时放行（记 warning），
+    # 因 /api/klines 纯 DuckDB 计算、不依赖 PG，不应因 PG 故障而失败。
+    try:
+        name = get_stock_name(symbol)
+    except StockNameSourceUnavailable:
+        log.warning("跳过 ST 判定：股票名称来源（PG）不可用（symbol=%s）", symbol)
+    else:
+        if is_st_name(name):
+            raise HTTPException(status_code=404, detail="已排除：ST 股票")
 
     # 尝试缓存命中
     cache = get_chan_cache()

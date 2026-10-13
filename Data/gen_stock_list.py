@@ -17,6 +17,7 @@
 
 import argparse
 import json
+import re
 import sys
 import collections
 from datetime import date
@@ -40,6 +41,19 @@ def is_a_share_stock(code: str) -> bool:
     if prefixes is None:  # bj：全部视为股票
         return True
     return num[:3] in prefixes
+
+
+# ST/*ST 名称前缀判定（exclude-st-stocks）。
+# 语义与 WebAPI/stock_store.is_st_name 完全一致（来源：WebAPI/stock_store.py L63-L71）。
+# 此处复制等价实现而非 `from WebAPI.stock_store import is_st_name`：
+# stock_store 模块加载时会执行 `_ensure_tables()`（stock_store.py L1493）连接 PG 建表，
+# 本脚本是纯 BaoStock 枚举脚本，不应在导入时引入 DB 连接/DDL 副作用。
+_ST_NAME_RE = re.compile(r"^\*?ST", re.IGNORECASE)
+
+
+def is_st_name(name: str) -> bool:
+    """名称前缀判定 ST/*ST（大小写不敏感，忽略首尾空白）；None/空串不算 ST。"""
+    return _ST_NAME_RE.match((name or "").strip()) is not None
 
 
 def latest_trading_day() -> str:
@@ -74,6 +88,17 @@ def query_all_a_share(day: str, include_index: bool):
             if not include_index and not is_a_share_stock(code):
                 continue
             out.append((code, code_name))
+        # 完整性校验（exclude-st-stocks D4「已知风险」）：BaoStock 流被服务端截断时
+        # error_code 会转为非 '0'（如 10001001），此时 while 条件恰好为假而退出，
+        # 循环「正常」结束且不抛错——函数会静默返回**部分**列表，进而写出一份
+        # 「股票不全」的配置（本仓库曾发生的事故成因）。此处显式校验退出原因，
+        # 让截断以异常暴露而非静默降级。
+        if rs.error_code != "0":
+            raise RuntimeError(
+                f"query_all_stock 流被截断：error_code={rs.error_code}, "
+                f"error_msg={rs.error_msg}（已读到 {len(out)} 只）。"
+                "请重试；若持续出现请检查网络/代理。"
+            )
         return out
     finally:
         bs.logout()
@@ -114,6 +139,15 @@ def main(argv=None):
 
     print(f"查询交易日：{day}  （include_index={args.include_index}）")
     stocks = query_all_a_share(day, args.include_index)
+
+    # 剔除 ST/*ST（名称前缀判定）。发生在 --limit 截断之前：
+    # --limit 是最终输出规模的调试上限，应先满足「排除 ST」这一正确性约束，
+    # 保证 `--limit 20` 得到的是 20 只非 ST 股票（而非「20 只原始证券再剔 ST」）。
+    st_codes = {code for code, name in stocks if is_st_name(name)}
+    if st_codes:
+        print(f"剔除 ST 股票 {len(st_codes)} 只：{', '.join(sorted(st_codes))}")
+    stocks = [(code, name) for code, name in stocks if code not in st_codes]
+
     if args.limit:
         stocks = stocks[: args.limit]
     print(f"命中证券 {len(stocks)} 只")

@@ -283,6 +283,14 @@ def recompute_stock(
     if not PG_DSN:
         raise RuntimeError("PG_DSN 未配置，补算引擎需要 PostgreSQL")
 
+    # exclude-st-stocks D6：入口处判定 ST（最低层兜底，单只 catch-up 与 CLI 也经此）。
+    # 名称来源不可用抛 StockNameSourceUnavailable（失败关闭，不写入任何结果）。
+    from . import stock_store
+
+    if stock_store.is_st_name(stock_store.get_stock_name(code)):
+        log.info("skip %s %s: ST 股票已排除", code, period)
+        return None
+
     canonical, kl_type, kl_type_db = _period_vocab(period)
     autype_db = AUTYPE[autype].name
 
@@ -375,6 +383,20 @@ def _load_cursor_map() -> dict[tuple[str, str, str], str]:
     return {(c, k, a): t for c, k, a, t in rows}
 
 
+def _exclude_st_keys(
+    keys: list[tuple[str, str, str]],
+) -> list[tuple[str, str, str]]:
+    """从待补算键中剔除 ST 股票（exclude-st-stocks D6）。
+
+    PG 不可用抛 StockNameSourceUnavailable（失败关闭——catch_up 据此不写入任何结果）。
+    """
+    from . import stock_store
+
+    codes = list({code for code, _, _ in keys})
+    non_st = set(stock_store.exclude_st_codes(codes))
+    return [k for k in keys if k[0] in non_st]
+
+
 def list_stale_keys(
     codes: Optional[list[str]] = None,
     periods: Optional[list[str]] = None,
@@ -422,6 +444,9 @@ def list_stale_keys(
             continue  # src <= cur：数据无变化，跳过（重复触发幂等）
         stale.append((code, period_of_db_name(kl_type_db) or kl_type_db, autype_db))
 
+    # exclude-st-stocks D6：limit 截断之前过滤 ST（保证 limit 语义是「有效键数」；
+    # PG 不可用抛 StockNameSourceUnavailable，catch_up 据此失败关闭不写入任何结果）。
+    stale = _exclude_st_keys(stale)
     stale.sort()
     if limit and limit > 0:
         stale = stale[:limit]

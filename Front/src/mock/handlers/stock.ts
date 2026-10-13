@@ -31,14 +31,14 @@ export const stockHandlers = [
     const q = (url.searchParams.get('q') || '').toLowerCase()
     const page = Number(url.searchParams.get('page') || 1)
     const pageSize = Number(url.searchParams.get('page_size') || 30)
-    const matched = q
-      ? stocks.filter(
-          (s) =>
-            s.code.toLowerCase().includes(q) ||
-            s.name.toLowerCase().includes(q) ||
-            s.name_py.toLowerCase().includes(q),
-        )
-      : stocks
+    const matched = stocks.filter(
+      (s) =>
+        !/^\*?ST/i.test(s.name.trim()) &&
+        (!q ||
+          s.code.toLowerCase().includes(q) ||
+          s.name.toLowerCase().includes(q) ||
+          s.name_py.toLowerCase().includes(q)),
+    )
     const start = (page - 1) * pageSize
     return HttpResponse.json({
       items: matched.slice(start, start + pageSize),

@@ -76,7 +76,10 @@ async def stocks_export_config():
     if pg_conn is not None:
         try:
             with pg_conn.cursor() as cur:
-                cur.execute("SELECT code, kl_types, autypes FROM stock WHERE enabled = TRUE")
+                cur.execute(
+                    f"SELECT s.code, s.kl_types, s.autypes FROM stock s "
+                    f"WHERE s.enabled = TRUE AND {stock_store.ST_EXCLUDE_SQL}"
+                )
                 rows = cur.fetchall()
         finally:
             pg_conn.close()
@@ -89,27 +92,12 @@ async def stocks_export_config():
             for r in rows
         ]
 
-    from ..config import DUCKDB_PATH
-    import os
-
-    if os.path.exists(DUCKDB_PATH):
-        try:
-            import duckdb
-
-            conn = duckdb.connect(DUCKDB_PATH, read_only=True)
-            try:
-                rows = conn.execute(
-                    "SELECT DISTINCT code FROM kline ORDER BY code"
-                ).fetchall()
-                return [
-                    {"code": r[0], "kl_types": ["K_DAY"], "autypes": ["QFQ"]}
-                    for r in rows
-                ]
-            finally:
-                conn.close()
-        except Exception:
-            pass
-    return []
+    # DuckDB 兜底列表只有 code、没有 name，无法判定 ST：失败关闭，
+    # 不返回未过滤列表（exclude-st-stocks design D4）。
+    raise HTTPException(
+        status_code=503,
+        detail="无法排除 ST 股票：名称来源不可用",
+    )
 
 
 @router.post("/import")
@@ -288,14 +276,20 @@ async def list_stocks_endpoint(
     page_size: int = Query(20),
 ):
     """股票列表（筛选 + 分页）。"""
-    return list_stocks(
-        q=q,
-        exchange=exchange,
-        industry=industry,
-        enabled=enabled,
-        page=page,
-        page_size=page_size,
-    )
+    try:
+        return list_stocks(
+            q=q,
+            exchange=exchange,
+            industry=industry,
+            enabled=enabled,
+            page=page,
+            page_size=page_size,
+        )
+    except stock_store.StockNameSourceUnavailable:
+        raise HTTPException(
+            status_code=503,
+            detail="无法排除 ST 股票：名称来源不可用",
+        )
 
 
 @router.post("")

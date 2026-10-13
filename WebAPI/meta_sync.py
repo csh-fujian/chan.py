@@ -721,11 +721,15 @@ class _SyncCtx:
         cache = self._wm_cache.setdefault(domain, {})
         cache[code] = self.now
 
-    def pool_codes(self, enabled_only: bool) -> list[str]:
-        """单元目标池：给定 targets 则为其，否则 identity=全部行 / 其余=enabled=true。"""
+    def pool_codes(self, enabled_only: bool, exclude_st: bool = False) -> list[str]:
+        """单元目标池：给定 targets 则为其，否则 identity=全部行 / 其余=enabled=true。
+
+        exclude_st 仅在 targets=None（全市场池）时透传给 stock_store.list_pool_codes；
+        逐股域传 True，identity 域传 False。
+        """
         if self.targets is not None:
             return list(self.targets)
-        return stock_store.list_pool_codes(enabled=enabled_only)
+        return stock_store.list_pool_codes(enabled=enabled_only, exclude_st=exclude_st)
 
 
 # ---------------------------------------------------------------------------
@@ -821,7 +825,7 @@ def _sync_identity(ctx: _SyncCtx, ak) -> None:
         candidates = list(ctx.targets)
     else:
         # identity 域池 = 全部库内行 ∪ 名单并集（新码建档）
-        candidates = sorted(set(stock_store.list_pool_codes(enabled=None)) | set(known.keys()))
+        candidates = sorted(set(stock_store.list_pool_codes(enabled=None, exclude_st=False)) | set(known.keys()))
 
     for code in candidates:
         if not ctx.unit_due(code, "identity"):
@@ -882,7 +886,7 @@ def _fetch_profile(ak, code: str) -> dict:
 
 
 def _sync_profile(ctx: _SyncCtx, ak) -> None:
-    for code in ctx.pool_codes(enabled_only=True):
+    for code in ctx.pool_codes(enabled_only=True, exclude_st=True):
         if not ctx.unit_due(code, "profile"):
             ctx.skip()
             continue
@@ -953,7 +957,7 @@ def _fetch_board_cons(ak, board_name: str) -> list[str]:
 
 
 def _sync_industry(ctx: _SyncCtx, ak) -> None:
-    pool = ctx.pool_codes(enabled_only=True)
+    pool = ctx.pool_codes(enabled_only=True, exclude_st=True)
     targets_due = [c for c in pool if ctx.unit_due(c, "industry")]
     for _ in range(len(pool) - len(targets_due)):
         ctx.skip()
@@ -1026,7 +1030,7 @@ def _sync_industry(ctx: _SyncCtx, ak) -> None:
 
 
 def _sync_snapshot(ctx: _SyncCtx, ak) -> None:
-    pool = ctx.pool_codes(enabled_only=True)
+    pool = ctx.pool_codes(enabled_only=True, exclude_st=True)
     if not any(ctx.unit_due(c, "snapshot") for c in pool):
         for _ in pool:
             ctx.skip()
@@ -1194,7 +1198,7 @@ def _fetch_financial_sina(ak, code: str) -> dict[str, list[dict]]:
 
 
 def _sync_financial(ctx: _SyncCtx, ak) -> None:
-    for code in ctx.pool_codes(enabled_only=True):
+    for code in ctx.pool_codes(enabled_only=True, exclude_st=True):
         if not ctx.unit_due(code, "financial"):
             ctx.skip()
             continue
@@ -1241,7 +1245,7 @@ def _sync_financial(ctx: _SyncCtx, ak) -> None:
 
 
 def _sync_holders(ctx: _SyncCtx, ak) -> None:
-    pool = ctx.pool_codes(enabled_only=True)
+    pool = ctx.pool_codes(enabled_only=True, exclude_st=True)
     if not any(ctx.unit_due(c, "holders") for c in pool):
         for _ in pool:
             ctx.skip()
@@ -1416,7 +1420,10 @@ def due_domains(domains: Optional[list[str]] = None, now: Optional[datetime] = N
     for domain in check_list:
         if domain not in DOMAIN_INTERVALS:
             continue
-        codes = stock_store.list_pool_codes(enabled=None if domain == "identity" else True)
+        codes = stock_store.list_pool_codes(
+            enabled=None if domain == "identity" else True,
+            exclude_st=domain != "identity",
+        )
         if not codes:
             continue
         wms = stock_store.get_watermarks(codes, domain)

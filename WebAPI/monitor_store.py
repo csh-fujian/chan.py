@@ -152,6 +152,17 @@ def _ensure_tables():
                 ADD COLUMN IF NOT EXISTS signal_date DATE
                 """
             )
+            # 存量库补列：monitor 最早由本模块惰性建表，未含 updated_at；而
+            # init.sql 会无条件 DROP+CREATE 挂 trg_monitor_updated_at BEFORE UPDATE
+            # 触发器（该触发器会写 NEW.updated_at）。表已存在时 init.sql 的
+            # CREATE TABLE IF NOT EXISTS 是 no-op，于是出现「有触发器、无列」——
+            # 任何 UPDATE monitor 都报 UndefinedColumn。此处补列，与 init.sql 声明对齐。
+            cur.execute(
+                """
+                ALTER TABLE monitor
+                ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                """
+            )
             # FK 单独语句（ADD COLUMN IF NOT EXISTS 不支持内联 REFERENCES 的幂等性；
             # 约束名固定便于识别；已存在时 IF NOT EXISTS 幂等跳过；ON DELETE SET NULL
             # —— 删除策略任务时监控行来源置空，不级联删监控记录）

@@ -4,8 +4,12 @@ K 线灌数脚本：从 BaoStock 拉取原始 K 线 → 校验 → 幂等写入�
 
 职责（对应 openspec 变更 persist-kl-to-duckdb）：
 - 默认增量：断点 = 表内 max(time_key)，回看 N 个交易日自愈，二次运行只补尾部、无重复。
+- 已是最新则跳过：库内水位已覆盖「按交易日历推算、此刻本应存在的最新 K 线」时
+  直接跳过、不发请求，避免重复拉同一段数据触发数据源限频（见 --force / --bar-lag-minutes）。
 - --full：全量重刷（先清空该 code/kl_type/autype 再重拉）。
-- --begin/--end：区间重刷（仅删该区间后重写，其余历史不变）。
+- --begin/--end：区间重刷（只动 [begin, end]，其余历史不变）。指定任一端即进入该模式，
+  不再走增量续拉：先按子区间删除旧行再重写（删除发生在该子区间拉取成功之后），
+  使本地与数据源对齐；begin 缺省取库内最早一行，end 缺省取今天。
 - 首次全历史回填分批（按 chunk-days 分块），中断后重启自动从已入库最新 K 线续传。
 - 数据校验：OHLC 非法 / 时间乱序拒绝，异常跳变告警但保留。
 - 缺口检测：按 exchange_calendars 交易日历检测日线缺失交易日。
@@ -14,6 +18,7 @@ K 线灌数脚本：从 BaoStock 拉取原始 K 线 → 校验 → 幂等写入�
     python Data/download_kl.py --code sz.000001 --kl-type K_DAY --autype QFQ
     python Data/download_kl.py --code sz.000001 --kl-type K_DAY --autype QFQ --full
     python Data/download_kl.py --code sz.000001 --kl-type K_DAY --autype QFQ --begin 2024-01-01 --end 2024-06-30
+    python Data/download_kl.py --code sz.000001 --kl-type K_DAY --autype QFQ --force   # 强制请求
 """
 
 import argparse
@@ -26,9 +31,11 @@ import pandas as pd
 
 from ChanAnalyse.Common.CEnum import KL_TYPE
 from ChanAnalyse.DataAPI.IngestUtil import (
+    DEFAULT_BAR_LAG_MINUTES,
     DEFAULT_STALE_HOURS,
     EARLIEST,
     LOOKBACK_SESSIONS,
+    expected_latest_time_key,
     get_calendar,
     iter_ingest_jobs,
     klu_to_row,
@@ -150,6 +157,13 @@ def detect_gaps(store: KLineStore, code, kl_type, autype, cal):
     return [d.strftime("%Y-%m-%d") for d in missing]
 
 
+def warn_gaps(store: KLineStore, code, kl_type, autype, cal) -> None:
+    """检测并告警缺失交易日（同一 (code, kl_type, autype) 只查一次库）。"""
+    gaps = detect_gaps(store, code, kl_type, autype, cal)
+    if gaps:
+        log.warning("[%s] 检测到 %d 个缺失交易日：%s", code, len(gaps), gaps[:10])
+
+
 # ---------------------------------------------------------------------------
 # 断点与分块
 # ---------------------------------------------------------------------------
@@ -183,27 +197,75 @@ def chunk_range(start: str, stop: str, chunk_days):
 # ---------------------------------------------------------------------------
 def ingest(code, k_type, autype, store: KLineStore, *, begin=None, end=None,
            full=False, chunk_days=None, cal=None, check_gaps=False,
-           sleep=0.0, manage_auth=True, retries=DEFAULT_RETRY_ATTEMPTS):
+           sleep=0.0, manage_auth=True, retries=DEFAULT_RETRY_ATTEMPTS,
+           skip_fresh=True, bar_lag_minutes=DEFAULT_BAR_LAG_MINUTES,
+           now=None, stats=None):
     """灌数主流程，返回写入行数。
+
+    三种模式（优先级从高到低）：
+    - full=True：全量重刷，先清空该 (code, kl_type, autype) 全部行，再从 begin/EARLIEST 拉到 end/今天；
+    - 指定 begin 或 end：区间重刷，只处理 [begin/EARLIEST, end/今天]，按子区间删除旧行后重写；
+    - 都不指定：增量续拉，水位已覆盖「此刻本应存在的最新 K 线」时直接跳过、不请求接口。
 
     sleep: 每次接口请求之间的间隔秒数（BaoStock 限频保护），<=0 则不额外等待。
     manage_auth: 是否在本函数内 do_init/do_close；批量灌数由外层登录一次复用。
     retries: 单次拉取失败的重试次数（指数退避 + 重登会话），见 fetch_with_retry。
+    skip_fresh: 库内水位已覆盖「此刻本应存在的最新 K 线」时不请求接口（返回 0），
+        避免重复拉同一段数据触发限频。区间重刷（指定 --begin/--end）时该判定不生效。
+    bar_lag_minutes: 判定「本应存在」时对 now 回拨的分钟数（数据发布延迟），
+        见 IngestUtil.expected_latest_time_key。
+    now: 判定用的当前时间（缺省取系统时间），仅便于测试注入。
+    stats: 可选 dict 出参，回填 {"skipped": bool, "range_refresh": bool,
+        "watermark": str|None, "expected": str|None}。
     """
     kt_name, au_name = k_type.name, autype.name
+    wm = store.max_time_key(code, kt_name, au_name)
+
+    stop = end or date.today().strftime("%Y-%m-%d")
+    refresh = False   # 区间重刷：拉到的子区间先把旧行删掉再写（镜像数据源）
 
     if full:
         deleted = store.delete(code, kt_name, au_name)
         log.info("--full：清空 %s/%s/%s 已有 %d 行", code, kt_name, au_name, deleted)
         start = begin or EARLIEST
+    elif begin is not None or end is not None:
+        # 显式区间重刷：只动 [start, stop]，其余历史不变（与 --full 的全清区分）。
+        # start 缺省取库内最早一行（区间只覆盖已有历史），库内为空时才退到 EARLIEST。
+        # min_time_key 是完整的 "YYYY-MM-DD HH:MM:SS"，而接口只要日期，故取日期部分。
+        start = begin
+        if start is None:
+            earliest = store.min_time_key(code, kt_name, au_name)
+            start = earliest[:10] if earliest else EARLIEST
+        if start > stop:
+            log.warning("[%s] %s/%s 区间为空（起始 %s 晚于结束 %s），无操作",
+                        code, kt_name, au_name, start, stop)
+            if stats is not None:
+                stats.update(skipped=False, watermark=wm, expected=None, range_refresh=False)
+            return 0
+        refresh = True
+        log.info("[%s] %s/%s 区间重刷 [%s, %s]：先按子区间删除旧行再重写，其余历史不变",
+                 code, kt_name, au_name, start, stop)
+    elif wm is None:
+        start = begin or EARLIEST
     else:
-        wm = store.max_time_key(code, kt_name, au_name)
-        if wm is None:
-            start = begin or EARLIEST
-        else:
-            start = session_lookback(wm, LOOKBACK_SESSIONS, cal)
+        expected = None
+        if skip_fresh:
+            expected = expected_latest_time_key(
+                k_type, cal, now=now, lag_minutes=bar_lag_minutes
+            )
+        if expected is not None and wm >= expected:
+            # 已是最新：直接返回，不登录、不发请求（重复请求同一段数据会触发限频）
+            log.info("[%s] %s/%s 水位 %s 已覆盖应有最新 K 线 %s，跳过接口请求",
+                     code, kt_name, au_name, wm, expected)
+            if stats is not None:
+                stats.update(skipped=True, watermark=wm, expected=expected)
+            if check_gaps and cal is not None:
+                warn_gaps(store, code, k_type, autype, cal)
+            return 0
+        start = session_lookback(wm, LOOKBACK_SESSIONS, cal)
 
-    stop = end or date.today().strftime("%Y-%m-%d")
+    if stats is not None:
+        stats.update(skipped=False, watermark=wm, expected=None, range_refresh=refresh)
 
     from ChanAnalyse.DataAPI.BaoStockAPI import CBaoStock
 
@@ -214,6 +276,12 @@ def ingest(code, k_type, autype, store: KLineStore, *, begin=None, end=None,
         for c_begin, c_end in chunk_range(start, stop, chunk_days):
             klus = fetch_with_retry(code, k_type, autype, c_begin, c_end, retries=retries)
             if not klus:
+                # 数据源已答复该子区间无数据：区间重刷下同步删掉本地旧行（镜像数据源）
+                if refresh:
+                    removed = store.delete(code, kt_name, au_name, c_begin, c_end)
+                    if removed:
+                        log.warning("[%s] %s-%s 数据源无数据，删除本地 %d 行",
+                                    code, c_begin, c_end, removed)
                 # 空结果也按间隔限速，避免无数据时秒级连打
                 if sleep > 0:
                     time.sleep(sleep)
@@ -224,10 +292,13 @@ def ingest(code, k_type, autype, store: KLineStore, *, begin=None, end=None,
                 log.warning("[%s] %s", code, w)
             if rejected:
                 log.warning("[%s] 拒绝 %d 行非法数据", code, rejected)
+            # 删除放在拉取成功之后：拉取失败（异常）不会丢数据，只有数据源已答复的子区间才删
+            removed = store.delete(code, kt_name, au_name, c_begin, c_end) if refresh else 0
             if not valid.empty:
                 store.upsert(valid)
                 total += len(valid)
-            log.info("[%s] %s-%s 拉取 %d 写入 %d", code, c_begin, c_end, len(klus), len(valid))
+            log.info("[%s] %s-%s 拉取 %d 写入 %d%s", code, c_begin, c_end, len(klus), len(valid),
+                     "（区间重刷，删除旧行 %d）" % removed if refresh else "")
             if sleep > 0:
                 time.sleep(sleep)
     finally:
@@ -235,9 +306,7 @@ def ingest(code, k_type, autype, store: KLineStore, *, begin=None, end=None,
             CBaoStock.do_close()
 
     if check_gaps and cal is not None:
-        gaps = detect_gaps(store, code, k_type, autype, cal)
-        if gaps:
-            log.warning("[%s] 检测到 %d 个缺失交易日：%s", code, len(gaps), gaps[:10])
+        warn_gaps(store, code, k_type, autype, cal)
     return total
 
 
@@ -263,6 +332,8 @@ def ingest_from_config(cfg: dict) -> dict:
     sleep = cfg.get("request_interval_seconds", DEFAULT_REQUEST_INTERVAL)
     retries = cfg.get("retry_attempts", DEFAULT_RETRY_ATTEMPTS)
     abort_after = cfg.get("max_consecutive_failures", ABORT_AFTER)
+    skip_fresh = cfg.get("skip_fresh", True)
+    bar_lag_minutes = cfg.get("bar_lag_minutes", DEFAULT_BAR_LAG_MINUTES)
     results = {}
     fail_streak = 0   # 连续失败任务数：只有成功才清零，达到阈值中止批量
     backoff_level = 0  # 退避档位：成功或重登会话成功后清零
@@ -274,6 +345,7 @@ def ingest_from_config(cfg: dict) -> dict:
                 # 每个任务单独开合连接：DuckDB 的读写锁是「读写互斥」（read_only
                 # 连接也一样打不开），整批持锁会让后端在整个灌数期间读不到数据。
                 # 按任务开合把独占锁窗口压缩到秒级，读方（KLineStore 锁重试）可穿插进来。
+                job_stats = {}
                 with KLineStore(db_path) as store:
                     n = ingest(
                         code, kt, au, store,
@@ -285,9 +357,16 @@ def ingest_from_config(cfg: dict) -> dict:
                         sleep=sleep,
                         manage_auth=False,
                         retries=retries,
+                        skip_fresh=skip_fresh,
+                        bar_lag_minutes=bar_lag_minutes,
+                        stats=job_stats,
                     )
-                results[key] = {"status": "ok", "rows": n}
-                log.info("[%s] 完成，写入 %d 行", code, n)
+                if job_stats.get("skipped"):
+                    # 已是最新：既不算失败也不重置退避档位（本身就没发请求）
+                    results[key] = {"status": "skipped", "rows": 0}
+                else:
+                    results[key] = {"status": "ok", "rows": n}
+                    log.info("[%s] 完成，写入 %d 行", code, n)
                 fail_streak = 0
                 backoff_level = 0
             except Exception as e:
@@ -365,8 +444,10 @@ def main(argv=None):
     p.add_argument("--code", help="股票代码，如 sz.000001（配置文件模式可省略）")
     p.add_argument("--kl-type", help="K 线级别，如 K_DAY/K_60M/K_5M")
     p.add_argument("--autype", default="QFQ", help="复权类型 QFQ/HFQ/NONE")
-    p.add_argument("--begin", help="起始日期 YYYY-MM-DD")
-    p.add_argument("--end", help="结束日期 YYYY-MM-DD（默认今天）")
+    p.add_argument("--begin", help="起始日期 YYYY-MM-DD；与 --end 一起进入区间重刷"
+                                   "（该区间删除后重写，其余历史不变；缺省取库内最早一行）")
+    p.add_argument("--end", help="结束日期 YYYY-MM-DD（默认今天）；单独指定即重刷"
+                                 "「库内最早一行 ~ 该日期」")
     p.add_argument("--full", action="store_true", help="全量重刷（清空后重拉）")
     p.add_argument("--chunk-days", type=int, default=None, help="首次回填分块大小（天）")
     p.add_argument("--check-gaps", action="store_true", help="灌数后检测缺失交易日")
@@ -381,6 +462,12 @@ def main(argv=None):
                    help="单次拉取失败的重试次数（指数退避+重登会话，默认 %d）" % DEFAULT_RETRY_ATTEMPTS)
     p.add_argument("--abort-after", type=int, default=None,
                    help="连续失败任务数达到该值则中止批量（默认 %d）" % ABORT_AFTER)
+    p.add_argument("--force", action="store_true",
+                   help="忽略「已是最新」判定，总是请求接口（默认已是最新则跳过）")
+    p.add_argument("--bar-lag-minutes", type=int, default=None,
+                   help="判定「本应存在的最新 K 线」时对当前时间回拨的分钟数"
+                        "（数据源发布延迟，默认 %d；调大更保守、最新一根 bar 晚一轮入库）"
+                        % DEFAULT_BAR_LAG_MINUTES)
     p.add_argument("--verbose", action="store_true", help="打印 DEBUG 日志")
     args = p.parse_args(argv)
 
@@ -424,6 +511,10 @@ def main(argv=None):
             cfg["retry_attempts"] = args.retries
         if args.abort_after is not None:
             cfg["max_consecutive_failures"] = args.abort_after
+        if args.bar_lag_minutes is not None:
+            cfg["bar_lag_minutes"] = args.bar_lag_minutes
+        if args.force:
+            cfg["skip_fresh"] = False
         if args.full:
             cfg["full"] = True
         aborted = None
@@ -434,9 +525,10 @@ def main(argv=None):
             aborted = str(e)
             log.error("批量中止：%s", e)
         ok = sum(1 for r in results.values() if r["status"] == "ok")
-        failed = sum(1 for r in results.values() if r["status"] != "ok")
-        print(f"batch ingest done: {ok} ok, {failed} failed"
-              + (f"（已中止：{aborted}）" if aborted else ""))
+        skipped = sum(1 for r in results.values() if r["status"] == "skipped")
+        failed = sum(1 for r in results.values() if r["status"] == "failed")
+        print(f"batch ingest done: {ok} ok, {skipped} skipped（已是最新，未请求接口）, "
+              f"{failed} failed" + (f"（已中止：{aborted}）" if aborted else ""))
         return 0 if failed == 0 and aborted is None else 1
 
     if not args.code or not args.kl_type:
@@ -446,6 +538,7 @@ def main(argv=None):
     autype = parse_autype(args.autype)
     cal = get_calendar()
 
+    stats = {}
     with KLineStore(args.db_path) as store:
         n = ingest(
             args.code, k_type, autype, store,
@@ -453,8 +546,16 @@ def main(argv=None):
             chunk_days=args.chunk_days, cal=cal, check_gaps=args.check_gaps,
             sleep=args.sleep if args.sleep is not None else DEFAULT_REQUEST_INTERVAL,
             retries=args.retries if args.retries is not None else DEFAULT_RETRY_ATTEMPTS,
+            skip_fresh=not args.force,
+            bar_lag_minutes=(args.bar_lag_minutes if args.bar_lag_minutes is not None
+                             else DEFAULT_BAR_LAG_MINUTES),
+            stats=stats,
         )
-    print(f"done: wrote {n} rows for {args.code} {k_type.name} {autype.name}")
+    if stats.get("skipped"):
+        print(f"skip: {args.code} {k_type.name} {autype.name} 已是最新"
+              f"（水位 {stats['watermark']} ≥ 应有 {stats['expected']}），未请求接口")
+    else:
+        print(f"done: wrote {n} rows for {args.code} {k_type.name} {autype.name}")
     return 0
 
 

@@ -25,3 +25,14 @@ venv/
 Data/kl_store.duckdb
 Data/kl_store.duckdb.wal
 .~临时记录.docx
+kl_store.duckdb
+*.duckdb
+
+# 灌数配置：各机器本地生成/维护，股票池规模不同，不参与 git 同步
+Data/ingest_config.all_stocks.json
+Data/ingest_config.minute.json
+Data/ingest_config.vp_entry_pool.json
+Data/ingest_config.all_stocks.json
+Data/ingest_config.example.json
+Data/ingest_config.minute.json
+kl_store.duckdb

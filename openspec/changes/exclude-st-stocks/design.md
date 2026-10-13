@@ -25,8 +25,9 @@
 
 **D1 判定规则与谓词**
 - Python：`stock_store.is_st_name(name)` = `re.match(r"^\*?ST", (name or "").strip(), re.IGNORECASE)`。
-- SQL（PG）：`UPPER(TRIM(COALESCE(s.name, ''))) NOT LIKE 'ST%' AND UPPER(TRIM(COALESCE(s.name, ''))) NOT LIKE '*ST%'`，以常量 `ST_EXCLUDE_SQL` 形式在 `stock_store.py` 集中定义，别名 `s` 通过参数化或固定别名约定使用。
-- 必须 `COALESCE`：`name` 为 NULL 时 `NOT LIKE` 结果为 NULL，会把无名股票误排除。规则定义为"无名不算 ST"（spec 中 "名称缺失" 场景）。
+- SQL（PG）：`LEFT(UPPER(TRIM(COALESCE(s.name, ''))), 2) <> 'ST' AND LEFT(UPPER(TRIM(COALESCE(s.name, ''))), 3) <> '*ST'`，以常量 `ST_EXCLUDE_SQL` 形式在 `stock_store.py` 集中定义，别名 `s` 通过参数化或固定别名约定使用。
+  - **实施修正（原设计用 `NOT LIKE 'ST%'`，已否决）**：该片段被拼进**带 params 的** `cur.execute(sql, params)`（`list_stocks` / `list_pool_codes` 都传参数列表），而 psycopg2 在 `params is not None` 时会对**整条 SQL** 做 `%` 格式化 —— 字面量 `%` 会被当作占位符，直接抛 `ValueError: unsupported format character` 或 `TypeError: not enough arguments`。故 `ST_EXCLUDE_SQL` **必须不含 `%`**：改用 `LEFT(..., n) <> '前缀'` 做前缀比较（语义与 `NOT LIKE` 等价，且免去 `%%` 转义，无参数调用点同样安全）。
+- 必须 `COALESCE`：`name` 为 NULL 时前缀比较结果为 NULL，`<> 'ST'` 即为 NULL 而非 TRUE，会把无名股票误排除。规则定义为"无名不算 ST"（spec 中 "名称缺失" 场景）。
 - 替代方案：`name_py` 或 `name` 上的 generated column / 新列。否决：需要 DDL 与回填，且判定是名称的纯函数，查询时派生成本可忽略（stock 表规模 ~5000 行）。
 
 **D2 股票查询（`/api/stocks`）**
@@ -42,8 +43,10 @@
 
 **D4 K 线灌数配置**
 - `gen_stock_list.query_all_a_share` 返回后，用 `is_st_name(code_name)` 过滤（与 `is_a_share_stock` 同层，在 `main` 中 `stocks` 构造处），生成的 `ingest_config.all_stocks.json` 不含 ST。`--include-st` 不提供（需求不允许分析 ST）。
+  - **实施取舍**：过滤发生在 `--limit` 截断**之前**（`--limit` 是输出规模的上限，「排除 ST」是正确性约束，约束先满足）。判定函数在脚本内**复制等价正则并注明来源**，未 `from WebAPI.stock_store import is_st_name`：`stock_store` 模块底部无条件执行 `_ensure_tables()`（连 PG + 建表 DDL），一个纯 BaoStock 枚举脚本不应被引入 DB 连接与建表副作用。
+  - **已知风险 → 已修复（9.1）**：`query_all_a_share` 的 `while rs.error_code == "0" and rs.next()` 在**流被截断时静默返回部分列表**（服务端 error_code 转为 `10001001` 时循环恰好退出，函数不校验退出原因），会让「股票池被截断」完全静默地发生 —— 经比对确认即本次事故成因（40 只版本全为 `sh.600xxx`/仅 `K_DAY`，与默认参数下的截断特征吻合；且与 `vp_entry_pool.json` 的 `sz.000xxx` 集合不相交，排除了「被覆盖」的旧猜测）。现已在循环后校验 `rs.error_code == '0'`，否则抛 `RuntimeError`（含 error_code/error_msg/已读行数），使截断以异常暴露而非静默降级。
 - `GET /api/stocks/export-config`：PG 路径 SQL 追加 `ST_EXCLUDE_SQL`；DuckDB 兜底路径无名称 → 503（同 D2）。
-- `ingest_config.minute.json`：仓库无生成器，选择在消费端过滤——`Data/intraday_poll.py` 在加载配置后，用 `--pg-dsn` 查询名称，剔除 ST 代码并打印剔除清单；PG 不可达则退出并报错（与 D2 失败关闭一致）。替代方案：一次性改写 JSON 文件。否决：下一次外部重新生成会回退，且无法自动跟随摘帽/戴帽。
+- `ingest_config.minute.json`：仓库无生成器，选择在消费端过滤——`Data/intraday_poll.py` 在加载配置后，用 `--pg-dsn` 查询名称，剔除 ST 代码并打印剔除清单；PG 不可达则退出并报错（与 D2 失败关闭一致）。原替代方案「一次性改写 JSON 文件」因「下一次外部重新生成会回退」而被否决；**该否决前提已随 9.3 脱管（`minute.json` 不再被 git 同步覆盖）而减弱**，故补做了 9.4：用 PG 名称把文件内 199 只 ST 一并清洗（5220 → 5021），消费端过滤仍保留为兜底。
 - `download_kl.py` 不改，只消费已过滤配置。注意：`download_kl` 的 `--config` 路径目前不做名称过滤，所以所有 ST 排除必须在生成/导出侧完成，这是有意的单一来源。
 
 **D5 K 线分析接口（`GET /api/klines`）**
@@ -58,6 +61,8 @@
 - `incremental_engine.list_stale_keys`：结果列表按 `exclude_st_codes` 过滤（先过滤再 `limit`，保证 limit 语义是"有效键数"）。
 - `incremental_engine.recompute_stock`：入口处再次判定（ST 直接返回 None 并 log.info）。理由：`recompute_stock` 也被 `POST /api/bsp/catch-up` 的单只路径与 CLI 间接调用，在最低层兜底避免漏网。代价：每次调用多一次 PG 点查，可接受（补算本身远重于此）。
 - 需在实施中核对 `WebAPI/routers/bsp.py` 与 `routers/strategy.py` 是否还有直接调用 `recompute_stock` / `scan_instance` 的路径，并确认它们都经过上述 choke point。
+- **失败关闭的副作用处理（9.2）**：`_task_codes` 在扫描前解析 code 集合时若 PG 不可用会抛 `StockNameSourceUnavailable`，此时 `start_task`/`resume_task` 已把任务置为 `running`，若不处理和 7.5 旧实现（降级放行）不同，任务会永久卡 `running`。故 `routers/strategy._run_task_background` 捕获该异常并把任务复位为 `paused`（可续跑），`scheduler.run_eod_tasks` 同类异常也复位 `paused`（其他异常仍复位 `done`，保持原行为）。
+  - **未使用 `failed`**：`strategy-task-redesign` spec 把任务状态域钉死为 `pending/running/paused/done`，新增 `failed` 需要改 CHECK 约束 + `update.sql` DDL + 前端渲染，且跨变更，超出本变更范围。`paused` 的语义（可续跑、非完成）比 `done` 更贴合「未执行任何 code 的临时环境故障」。
 
 **D7 存量数据与列表型读侧**
 - 存量 DuckDB K 线与 PG 股票行保留（非破坏性；删除不可逆且 DuckDB 9.2GB 单文件不宜做大删改）。

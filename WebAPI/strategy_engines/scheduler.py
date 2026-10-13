@@ -53,7 +53,11 @@ def _duckdb_path() -> str:
 
 
 def list_all_codes() -> list[str]:
-    """枚举 DuckDB 日线全部 code（扫描键集合，design D3 复用 catchup 键枚举思路）。"""
+    """枚举 DuckDB 日线全部 code（扫描键集合，design D3 复用 catchup 键枚举思路）。
+
+    exclude-st-stocks D6：枚举后经 stock_store.exclude_st_codes 剔除 ST；
+    PG 不可用抛 StockNameSourceUnavailable（失败关闭）。
+    """
     try:
         from ChanAnalyse.DataAPI.KLineStore import KLineStore
 
@@ -62,53 +66,52 @@ def list_all_codes() -> list[str]:
                 "SELECT DISTINCT code FROM kline WHERE kl_type = ?",
                 [DEFAULT_KL_TYPE_DB],
             )
-        return [r[0] for r in rows]
+        codes = [r[0] for r in rows]
     except Exception as e:
         log.warning("枚举 DuckDB code 失败: %s", e)
         return []
+    from .. import stock_store
+
+    return stock_store.exclude_st_codes(codes)
 
 
 def _filter_st_codes(codes: list[str]) -> list[str]:
-    """'all' 范围的 ST/*ST 过滤（design D3：按 stock_store 名称前缀匹配）。
+    """ST/*ST 过滤（exclude-st-stocks：单一判定来源 stock_store.exclude_st_codes）。
 
-    名称缺失的股票放行（宁多勿漏——股票元数据新鲜度不构成漏扫理由）；
-    stock_store 不可用时全量放行（降级不阻塞扫描）。
+    名称缺失 / 不在 stock 表的代码放行（「名称缺失不算 ST」）；PG 不可用抛
+    StockNameSourceUnavailable（失败关闭——批量入口不输出未经过滤的集合）。
     """
-    try:
-        from .scope_resolver import get_stock_names
+    from .. import stock_store
 
-        names = get_stock_names(codes)
-    except Exception as e:
-        log.warning("读取股票名称失败，ST 过滤降级为全量放行: %s", e)
-        return codes
-    return [
-        c for c in codes
-        if not _is_st_name(names.get(c))
-    ]
+    return stock_store.exclude_st_codes(codes)
 
 
 def _is_st_name(name: Optional[str]) -> bool:
-    """名称前缀匹配 ST/*ST（None = 元数据缺失，放行不算 ST）。"""
-    if not name:
-        return False
-    n = name.strip().upper()
-    return n.startswith("ST") or n.startswith("*ST")
+    """名称前缀匹配 ST/*ST（None = 元数据缺失，放行不算 ST）。
+
+    委托 stock_store.is_st_name（exclude-st-stocks 单一判定来源）。
+    """
+    from .. import stock_store
+
+    return stock_store.is_st_name(name)
 
 
 def _task_codes(task: dict) -> tuple[list[str], bool]:
     """解析任务的待扫 code 集合（design D3/D4）。
 
     返回 (codes, explicit_scope)：
-    - 显式范围（manual/watchlist/bsp_query）：直接用固化快照 scope_codes，
+    - 显式范围（manual/watchlist/bsp_query）：固化快照 scope_codes 经 ST 过滤，
       explicit_scope=True（调度写逐股结果）
-    - 'all'：枚举 DuckDB 日线全量 + ST 过滤，explicit_scope=False（不落逐股结果）
+    - 'all'：枚举 DuckDB 日线全量（list_all_codes 内部已 ST 过滤），
+      explicit_scope=False（不落逐股结果）
+
+    exclude-st-stocks D6：解析后统一过滤（含调用方显式传入的 codes）。
     """
     scope_type = task.get("scope_type") or "all"
     if scope_type != "all" and task.get("scope_codes"):
-        return list(task["scope_codes"]), True
+        return _filter_st_codes(list(task["scope_codes"])), True
 
     codes = list_all_codes()
-    codes = _filter_st_codes(codes)
     return codes, False
 
 
@@ -311,9 +314,14 @@ def run_eod_tasks(batch: int = 0) -> list[dict]:
             })
         except Exception as e:
             log.exception("策略扫描失败 task=%s", task["id"])
-            # 异常时任务状态复位（不留 running 残留态）
+            # 异常时任务状态复位（不留 running 残留态）。
+            # exclude-st-stocks：PG 名称来源不可用属可重试的环境故障（扫描未
+            # 真正开始），复位为 paused 而非 done——done 会被误读为「已扫完」。
+            from ..stock_store import StockNameSourceUnavailable
+
+            reset_to = "paused" if isinstance(e, StockNameSourceUnavailable) else "done"
             try:
-                strategy_store.set_task_status(task["id"], "done")
+                strategy_store.set_task_status(task["id"], reset_to)
             except Exception:
                 pass
             summaries.append({

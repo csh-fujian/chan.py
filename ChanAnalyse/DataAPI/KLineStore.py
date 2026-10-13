@@ -264,9 +264,19 @@ class KLineStore:
 
         无任何数据时返回 None。
         """
+        return self._bound_time_key("max", code, kl_type, autype)
+
+    def min_time_key(self, code, kl_type, autype):
+        """返回某 (code, kl_type, autype) 最早一行 time_key（区间重刷的起始边界）。
+
+        无任何数据时返回 None。
+        """
+        return self._bound_time_key("min", code, kl_type, autype)
+
+    def _bound_time_key(self, agg, code, kl_type, autype):
         with self._open() as conn:
             row = conn.execute(
-                "SELECT max(time_key) FROM kline WHERE code = ? AND kl_type = ? AND autype = ?",
+                f"SELECT {agg}(time_key) FROM kline WHERE code = ? AND kl_type = ? AND autype = ?",
                 [code, kl_type, autype],
             ).fetchone()
         return row[0] if row else None

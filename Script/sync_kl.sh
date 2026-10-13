@@ -7,6 +7,9 @@
 #
 # 说明:
 # - 增量语义: 按库内水位回看 3 个交易日续拉；中断/失败后重跑同一选项即断点续传。
+# - 已是最新则跳过: 库内水位已覆盖「按交易日历推算、此刻本应存在的最新 K 线」时不请求
+#   接口（日志显示 "skip: ... 已是最新"），重复跑同一选项不再触发数据源限频；
+#   需要强制重拉用 `Data/download_kl.py --force`，日线数据源发布偏晚可加 --bar-lag-minutes。
 # - 首次全历史回填请改用 Data/download_kl.py 加 --full（本脚本只做增量）。
 # - DuckDB 单文件只允许一个写进程，脚本启动前会检查是否已有灌数进程在跑。
 # - 可用 --code-prefix 按市场过滤（见 Data/download_kl.py），本脚本默认全市场。
@@ -91,7 +94,7 @@ task_all_daily() {    # $1=sleep  $2=logfile
 
 task_single_minute() {  # $1=code  $2=sleep  $3=logfile → 失败级别数作为退出码
     local code="$1" sleep_s="$2" logfile="$3" kt rc=0
-    for kt in K_30M K_60M; do
+    for kt in K_5M K_15M K_30M K_60M; do
         run_cmd "$logfile" "$PY" Data/download_kl.py \
             --code "$code" --kl-type "$kt" --autype QFQ --sleep "$sleep_s" || rc=$((rc + 1))
     done
@@ -114,7 +117,7 @@ while true; do
     cat <<'EOF'
 
 ======== K 线灌数同步（增量续跑）========
-1) 所有股票 · 分钟级      K_5M / K_15M / K_30M / K_60M 暂停5分钟和15分钟的同步
+1) 所有股票 · 分钟级      K_5M / K_15M / K_30M / K_60M
 2) 所有股票 · 日线及以上   K_DAY / K_WEEK / K_MON
 3) 指定股票 · 分钟级
 4) 指定股票 · 日线及以上
