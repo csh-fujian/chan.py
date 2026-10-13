@@ -149,12 +149,19 @@ CChan (ChanAnalyse/Chan.py)  ← 门面，接收 stock code + CChanConfig
 
 所有技术指标均为手写实现（MACD, BOLL, RSI, KDJ, DeMark, TrendLine），不依赖 talib。
 
-### 数据库 DDL 变更规范（WebAPI/update.sql）
+### 数据库 DDL 变更规范（WebAPI/update-mac.sql / update-win.sql）
 
-代码对数据库表做 DDL 变更时（建表、加列、加索引、加约束等），必须在 `WebAPI/update.sql` 中追加对应 SQL 语句：
+代码对数据库表做 DDL 变更时（建表、加列、加索引、加约束等），或变更**数据库初始化数据**时（枚举或字典，如 `strategy` 定义行、`permission` 权限项、`role` 角色项），必须按**发生变更的机器**在对应文件追加 SQL：
+
+- 在 **macOS** 上运行期间产生的变更 → `WebAPI/update-mac.sql`
+- 在 **Windows** 上运行期间产生的变更 → `WebAPI/update-win.sql`
+
+（原先的 `WebAPI/update.sql` 已废弃并删除。）
 
 - 每次追加需在语句前注释**执行时间**（如 `-- 2026-10-04 xxx 表加列`）。
-- 所有 SQL 必须幂等，可重复执行：建表用 `CREATE TABLE IF NOT EXISTS`，加列/加索引/加约束用 `IF NOT EXISTS` 或先查 `information_schema`/`pg_attribute` 再执行的 DO 块判断，禁止裸 `CREATE/ALTER` 直接报错重跑。
+- 所有 SQL 必须幂等，可重复执行：建表用 `CREATE TABLE IF NOT EXISTS`，加列/加索引/加约束用 `IF NOT EXISTS` 或先查 `information_schema`/`pg_attribute` 再执行的 DO 块判断，字典数据用 `ON CONFLICT ... DO NOTHING`/`DO UPDATE`，禁止裸 `CREATE/ALTER` 直接报错重跑。
+
+> **惰性 DDL 才是真正的 schema 契约**：各 store 模块（`bsp_store` / `monitor_store` / `strategy_store` / `stock_store` / `watchlist_store` / `qa_store` / `llm_store`）在**模块导入时**执行 `_ensure_tables()`（`CREATE TABLE IF NOT EXISTS` + `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`），运行时自动补表补列。因此新增表/列时**必须先改对应模块的 `_ensure_tables()`**，两个 `update-*.sql` 只是变更记录。另注意 `WebAPI/init.sql` 已与实物漂移（如它为 `bsp_index`/`chan_structure`/`chan_snapshot` 声明了 `id`/`created_at`，而实际表由惰性 DDL 建成、没有这些列），**不要以 `init.sql` 判断实际表结构**。
 
 ## 前端（`Front/`）
 
