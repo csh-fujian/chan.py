@@ -34,7 +34,9 @@ import asyncio
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+
+from ..auth import get_current_user
 
 from ..bsp_store import get_industries_for_codes
 from ..stock_store import StockNameSourceUnavailable
@@ -46,8 +48,10 @@ from ..strategy_store import (
     count_stock_results,
     create_task,
     delete_task,
+    get_b_events_for_signals,
     get_definitions_with_tasks,
     get_signal_for_monitor,
+    get_signal_task_id,
     get_task,
     list_tasks,
     pause_task,
@@ -124,7 +128,7 @@ async def strategy_definitions():
 # ----------------------------------------------------------------------
 
 @router.post("/tasks")
-async def strategy_create_task(body: dict):
+async def strategy_create_task(body: dict, current_user: dict = Depends(get_current_user)):
     """创建任务（spec「创建任务」：params 校验通过后进入 pending）。
 
     - params 按 params_schema 校验（非法 → 422，spec「参数非法被拒绝」）
@@ -134,6 +138,7 @@ async def strategy_create_task(body: dict):
       * scope_type='bsp_query'：body.bsp_query 查询条件 dict，调 bsp 查询固化
       * scope_type='all'（缺省）：全量 A 股，执行时排除 ST/*ST
     - user_group：纯组织性标签（新字符串即新建分组，spec「自定义分组」）
+    - created_by：取当前登录用户 username（鉴权态注入，不由前端透传）
 
     创建后不自动执行（spec「启动任务」：用户显式 start）。
     """
@@ -142,7 +147,7 @@ async def strategy_create_task(body: dict):
     params = body.get("params", {})
     scope_type = body.get("scope_type", "all")
     user_group = body.get("user_group", "")
-    created_by = body.get("created_by")
+    created_by = current_user.get("username") or ""
 
     if not strategy_id or not isinstance(strategy_id, str):
         raise HTTPException(status_code=422, detail="strategy_id is required")
@@ -352,15 +357,15 @@ async def strategy_promote_task(task_id: int):
 
 
 @router.post("/tasks/{task_id}/copy")
-async def strategy_copy_task(task_id: int, body: dict):
+async def strategy_copy_task(task_id: int, body: dict, current_user: dict = Depends(get_current_user)):
     """复制任务（spec「复制任务调参」：继承参数与范围为新的 test 任务，
-    可自由编辑；信号/进度/水位不复制，从零扫描）。"""
+    可自由编辑；信号/进度/水位不复制，从零扫描）。副本 created_by 取当前操作者。"""
     _get_task_or_404(task_id)
     label = body.get("label")
     if label is not None and (not isinstance(label, str) or not label.strip()):
         raise HTTPException(status_code=422, detail="label 不能为空")
     try:
-        return copy_task(task_id, label=label)
+        return copy_task(task_id, label=label, created_by=current_user.get("username") or "")
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
     except RuntimeError as e:
@@ -386,7 +391,7 @@ async def strategy_task_detail(task_id: int):
     - signals_page：信号列表分页（同 /api/strategy/signals 契约）；
       数据源只取匹配信号（matched_only=True，state ∈ triggered/running——
       expired 策略放弃态不出现在任务详情，strategy-signal-outcome spec
-      「任务详情只展示匹配信号」）；行透传绩效四字段 ret_7d/ret_14d/ret_30d/
+      「任务详情只展示匹配信号」）；行透传绩效四字段 ret_5d/ret_10d/ret_15d/
       outcome（NULL 表示无绩效/数据不足，前端显示 '--'）
     - kv_payload：定义 detail_schema 含 kv 块时返回（vp-entry-strategy
       design D5：vp_entry 由 compute_vp_entry_kv_stats 服务端聚合基底
@@ -413,8 +418,16 @@ async def strategy_task_detail(task_id: int):
         matched_only=True,
     )
     industries_map = get_industries_for_codes([i["code"] for i in result["items"]])
+    # B 级事件全集（strategy-volume-breakout-pullback D7/3.3：任务详情信号行
+    # 嵌 b_events 供 B 列弹窗——detail 页 20 行 × 平均 2~4 事件体积可控；
+    # /signals 列表页不嵌，只取 payload earliest 摘要渲染 b_col）
+    b_events_map = get_b_events_for_signals([i["id"] for i in result["items"]])
     signals_list = []
     for it in result["items"]:
+        payload = dict(it["payload"])
+        if "b_events" not in payload:
+            # 新口径信号：全集由 b_event 表补齐（payload 只带 earliest 摘要）
+            payload["b_events"] = b_events_map.get(it["id"], [])
         signals_list.append({
             "id": it["id"],
             "code": it["code"],
@@ -426,12 +439,12 @@ async def strategy_task_detail(task_id: int):
             "direction": "buy" if it["is_buy"] else "sell",
             "entry_ref_price": it["entry_ref_price"],
             "stop_ref_price": it["stop_ref_price"],
-            "payload": it["payload"],
+            "payload": payload,
             "frozen": it["frozen"],
             "params_version": it["params_version"],
-            "ret_7d": it["ret_7d"],
-            "ret_14d": it["ret_14d"],
-            "ret_30d": it["ret_30d"],
+            "ret_5d": it["ret_5d"],
+            "ret_10d": it["ret_10d"],
+            "ret_15d": it["ret_15d"],
             "outcome": it["outcome"],
         })
 
@@ -555,9 +568,9 @@ async def strategy_signals(
             "payload": it["payload"],
             "frozen": it["frozen"],
             "params_version": it["params_version"],
-            "ret_7d": it["ret_7d"],
-            "ret_14d": it["ret_14d"],
-            "ret_30d": it["ret_30d"],
+            "ret_5d": it["ret_5d"],
+            "ret_10d": it["ret_10d"],
+            "ret_15d": it["ret_15d"],
             "outcome": it["outcome"],
         })
 
@@ -572,6 +585,19 @@ async def strategy_signals(
 # ----------------------------------------------------------------------
 # 信号回查（monitor 加监控上下文定位用，routers/monitor 消费同一 store 函数）
 # ----------------------------------------------------------------------
+
+
+@router.get("/signals/{signal_id}/b-events")
+async def strategy_signal_b_events(signal_id: int):
+    """单信号 B 级事件全集（B 列弹窗数据源，strategy-volume-breakout-pullback 3.3）。
+
+    返回 {signal_id, b_events: [...]}（按 b_time 升序）；信号不存在 404；
+    旧口径信号（无 b_event 行）返回空列表，前端弹窗按「旧口径信号」提示。
+    """
+    if get_signal_task_id(signal_id) is None:
+        raise HTTPException(status_code=404, detail=f"信号 {signal_id} 不存在")
+    events = get_b_events_for_signals([signal_id]).get(signal_id, [])
+    return {"signal_id": signal_id, "b_events": events}
 
 
 @router.get("/signals/for-monitor")

@@ -1,16 +1,29 @@
 <template>
   <el-dialog
     v-model="visibleRef"
-    :title="`新建任务 · ${definition?.name || ''}`"
+    :title="`新建任务 · ${currentDefinition?.name || ''}`"
     width="640px"
     append-to-body
     :close-on-click-modal="false"
   >
-    <div v-if="definition" class="task-dialog-body">
+    <div v-if="definitions.length" class="task-dialog-body">
       <p class="dialog-hint">
         任务为策略执行的原子单位：参数与范围创建后可暂停编辑，历史信号按参数版本归因。
       </p>
-      <el-form ref="formRef" :model="form" :rules="rules" label-width="110px">
+      <el-form ref="formRef" :model="form" :rules="rules" label-width="140px">
+        <!-- 第一步：策略任务类型（strategy-task-list-redesign 4.1：级联两级
+             策略大类 → 策略定义，选中叶子后联动展示配置；未选类型不展示） -->
+        <el-form-item label="策略任务类型" prop="typePath">
+          <el-cascader
+            v-model="form.typePath"
+            :options="typeCascadeOptions"
+            placeholder="选择策略大类与策略"
+            :props="{ emitPath: false }"
+            style="width: 300px"
+            @change="onTypeChange"
+          />
+        </el-form-item>
+        <template v-if="currentDefinition">
         <el-form-item label="任务名" prop="label">
           <el-input v-model="form.label" placeholder="如：回调5日" maxlength="20" style="width: 260px" />
         </el-form-item>
@@ -41,7 +54,7 @@
              vp-entry-strategy-integration D4）；min/max 与选项集由输入控件与后端双侧校验；
              desc 悬浮 tooltip 图标（design D6：desc 透出给前端） -->
         <el-form-item
-          v-for="p in definition.params_schema"
+          v-for="p in currentDefinition?.params_schema || []"
           :key="p.key"
           :label="p.label"
           :prop="`params.${p.key}`"
@@ -186,17 +199,19 @@
             全量范围任务仅维护聚合计数，不落逐股结果。
           </p>
         </el-form-item>
+        </template>
       </el-form>
     </div>
     <template #footer>
       <el-button @click="visibleRef = false">取消</el-button>
-      <el-button type="primary" :loading="saving" @click="onSave">创建任务</el-button>
+      <!-- 未选类型时提交不可用（spec：先选策略任务类型） -->
+      <el-button type="primary" :loading="saving" :disabled="!currentDefinition" @click="onSave">创建任务</el-button>
     </template>
   </el-dialog>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch } from 'vue'
+import { ref, reactive, computed, watch } from 'vue'
 import { ElMessage, type FormInstance, type FormRules, type FormItemRule } from 'element-plus'
 import { QuestionFilled } from '@element-plus/icons-vue'
 import { createStrategyTask, type CreateStrategyTaskPayload } from '@/api/modules/strategy'
@@ -206,7 +221,10 @@ import { ALL_BSP_LABELS } from '@/utils/bsp'
 import type { StrategyDefinition, StrategyParamSchema } from '@/api/types'
 
 /**
- * 新建任务弹窗（strategy-task-redesign 4.3）：
+ * 新建任务弹窗（strategy-task-redesign 4.3 + strategy-task-list-redesign 4.1）：
+ * - 第一步选策略任务类型（级联两级：策略大类 → 策略定义），选中后联动展示配置；
+ *   未选类型不展示配置、提交不可用；切换类型参数重置为新定义缺省值
+ *   （分组与范围选择保留，spec「切换类型重置表单」）
  * - 表单项由 definition.params_schema 声明驱动渲染（int/float → el-input-number），
  *   desc 悬浮 tooltip 说明；min/max 前端拦截（422 后端校验兜底由拦截器提示）
  * - 任务命名 + 分组选择/新建（spec：自定义分组，新分组名直接创建）
@@ -215,7 +233,8 @@ import type { StrategyDefinition, StrategyParamSchema } from '@/api/types'
  */
 const props = defineProps<{
   visible: boolean
-  definition: StrategyDefinition | null
+  /** 全部策略定义（弹窗内级联选择类型，选中后联动渲染配置） */
+  definitions: StrategyDefinition[]
   /** 已有分组名（下拉可选项来源；新建分组直接输入名称） */
   knownGroups: string[]
 }>()
@@ -231,6 +250,23 @@ watch(visibleRef, (v) => emit('update:visible', v))
 const formRef = ref<FormInstance>()
 const saving = ref(false)
 
+/** 级联选项：策略大类（group_name）→ 策略定义（叶子 value = definition id） */
+const typeCascadeOptions = computed(() => {
+  const groups: { value: string; label: string; children: { value: string; label: string }[] }[] = []
+  for (const def of props.definitions) {
+    const g = groups.find((x) => x.value === def.group_name)
+    if (g) g.children.push({ value: def.id, label: def.name })
+    else groups.push({ value: def.group_name, label: def.group_name, children: [{ value: def.id, label: def.name }] })
+  }
+  return groups
+})
+
+/** 当前选中定义（级联叶子 id 查表；未选/切换时为 null → 配置区不渲染） */
+const currentDefinition = computed<StrategyDefinition | null>(() => {
+  if (!form.typePath) return null
+  return props.definitions.find((d) => d.id === form.typePath) || null
+})
+
 /** 自选文件夹（watchlist 来源下拉数据） */
 const folders = ref<{ id: number; name: string; codes: string[] }[]>([])
 
@@ -244,6 +280,8 @@ const klOptions = [
 ]
 
 const form = reactive({
+  /** 策略任务类型级联选中叶子（definition id），空 = 未选 */
+  typePath: '' as string | null,
   label: '',
   /** 分组模式：'new' 新建 / 'none' 不分组 / 已有分组名（直接作为值） */
   user_groupMode: 'none',
@@ -266,6 +304,8 @@ const form = reactive({
 const bspDateRange = ref<[string, string] | null>(null)
 
 const rules: FormRules = {
+  /** 第一步必选策略任务类型（spec：先选类型，未选提交不可用） */
+  typePath: [{ required: true, message: '请选择策略任务类型', trigger: 'change' }],
   label: [{ required: true, message: '请输入任务名', trigger: 'blur' }],
 }
 
@@ -329,18 +369,16 @@ function paramRules(p: StrategyParamSchema): FormItemRule[] {
   ]
 }
 
-// 打开时按 schema 重置表单（默认值取声明 default）
+// 打开时重置表单（类型未选；参数默认值在选中类型时按 schema 填充）
 watch(
   () => props.visible,
   async (v) => {
-    if (!v || !props.definition) return
+    if (!v) return
+    form.typePath = null
     form.label = ''
     form.user_groupMode = 'none'
     form.user_group = ''
     form.params = {}
-    for (const p of props.definition.params_schema) {
-      form.params[p.key] = p.default
-    }
     form.scopeSource = 'all'
     form.scopeCodes = []
     form.folderId = null
@@ -357,6 +395,18 @@ watch(
     }
   },
 )
+
+/** 类型切换（spec「切换类型重置表单」）：参数重置为新定义 default；
+ *  分组与股票范围选择保留 */
+function onTypeChange() {
+  const def = currentDefinition.value
+  form.params = {}
+  if (def) {
+    for (const p of def.params_schema) {
+      form.params[p.key] = p.default
+    }
+  }
+}
 
 // ---- manual 股票搜索（el-autocomplete 模糊下拉选 code） ----
 interface StockSuggestion {
@@ -399,7 +449,7 @@ function removeCode(code: string) {
 
 // ---- 保存 ----
 async function onSave() {
-  if (!formRef.value || !props.definition) return
+  if (!formRef.value || !currentDefinition.value) return
   try {
     await formRef.value.validate()
   } catch {
@@ -411,7 +461,7 @@ async function onSave() {
     const scopeSource =
       form.scopeSource === 'manual' && form.scopeCodes.length === 0 ? 'all' : form.scopeSource
     const payload: CreateStrategyTaskPayload = {
-      strategy_id: props.definition.id,
+      strategy_id: currentDefinition.value.id,
       label: form.label.trim(),
       // 分组：新建模式传输入名；'none' 传空串（未分组）；已有分组名直接作为值
       user_group:

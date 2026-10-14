@@ -903,20 +903,20 @@ onBeforeUnmount(() => {
 })
 
 /**
- * 时间段定位（不改数据，只滚视口）：K 线始终加载至最新，选完时间段后把
- * begin 滚到视口左缘、区间向右自然展开（右侧超出部分仍可继续向右查看
- * 直至最新一根）。
+ * 日期定位（不改数据，只滚视口）：K 线始终加载至最新，选完日期后把
+ * 该日期对应的 K 线滚到视口**中央**，前后各展开约半屏，便于查看该日
+ * 前后走势。
  *
  * klinecharts 的 scrollToDataIndex(i) 语义是把第 i 根 bar 放到**右缘**，
- * 故目标索引 = beginIdx + 一屏 bar 数（左缘留 2 根边距）；begin 之后不足
- * 一屏时直接 scrollToRealTime 滚到最新（此时 begin 本就在最后一屏内）。
- * 时间戳不在数据范围时由 nearestIndexByTimestamp 吸附最近一根，不报错。
+ * 故目标索引 = dateIdx + floor(visibleBars / 2)，让 dateIdx 落在视口中心。
+ * 日期不在数据范围时由 nearestIndexByTimestamp 吸附最近一根（非交易日
+ * 自动吸附到相邻交易日），不报错。日期在最后半屏内无法居中时，滚到最新。
  */
-function scrollToRange(begin: number): void {
+function scrollToDate(ts: number): void {
   if (!chart) return
   const klines = chart.getDataList()
   if (klines.length === 0) return
-  if (begin > klines[klines.length - 1].timestamp) {
+  if (ts > klines[klines.length - 1].timestamp) {
     chart.scrollToRealTime()
     return
   }
@@ -924,8 +924,8 @@ function scrollToRange(begin: number): void {
   const size = chart.getSize(undefined, DomPosition.Main)
   const bar = chart.getBarSpace()
   const visibleBars = size && bar > 0 ? Math.floor(size.width / bar) : 80
-  const beginIdx = nearestIndexByTimestamp(klines, begin)
-  const target = beginIdx + visibleBars - 3 // 左缘留 2 根边距
+  const dateIdx = nearestIndexByTimestamp(klines, ts)
+  const target = dateIdx + Math.floor(visibleBars / 2) // dateIdx 居中
   if (target >= klines.length - 1) {
     chart.scrollToRealTime()
     return
@@ -958,7 +958,7 @@ defineExpose({
   addSubIndicator,
   removeSubIndicator,
   syncSubIndicators,
-  scrollToRange,
+  scrollToDate,
 })
 </script>
 

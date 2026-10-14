@@ -416,8 +416,9 @@ def run_http_smoke(codes, codes5):
 
     base = f"http://127.0.0.1:{port}"
 
-    def req(method: str, path: str, body=None, params=None):
-        """发请求返回 (status, json)。"""
+    # 朴素版请求（登录自身不带 token）
+    def req(method: str, path: str, body=None, params=None, auth=True):
+        """发请求返回 (status, json)。auth=True 时带 Bearer token。"""
         url = base + path
         if params:
             url += "?" + "&".join(f"{k}={urllib.request.quote(str(v))}" for k, v in params.items())
@@ -425,6 +426,8 @@ def run_http_smoke(codes, codes5):
         r = urllib.request.Request(url, data=data, method=method)
         if data:
             r.add_header("Content-Type", "application/json")
+        if auth and token_holder.get("token"):
+            r.add_header("Authorization", f"Bearer {token_holder['token']}")
         try:
             with urllib.request.urlopen(r, timeout=120) as resp:
                 text = resp.read().decode()
@@ -435,6 +438,19 @@ def run_http_smoke(codes, codes5):
                 return e.code, (_json.loads(text) if text else None)
             except Exception:
                 return e.code, text
+
+    # 登录拿 token（POST /tasks 等写接口挂 get_current_user 守卫）。
+    # 冒烟服务器挂的是 WebAPI.app（/api/auth/* 在 WebAPI.main 上），
+    # 直接用 auth 模块签发（种子账号 admin/admin123）
+    from WebAPI.auth import _authenticate, _make_token
+
+    token_holder: dict = {}
+    try:
+        user = _authenticate("admin", "admin123")
+        token_holder["token"] = _make_token(user["id"], user["username"])
+        check("HTTP 签发 token", True)
+    except Exception as e:
+        check("HTTP 签发 token", False, str(e))
 
     try:
         # definitions：detail_schema/params desc 透出
@@ -459,7 +475,8 @@ def run_http_smoke(codes, codes5):
         })
         check("POST tasks 200", st == 200, str(st))
         tid_h = task["id"]
-        check("HTTP 创建补默认参数", task["params"]["pullback_max_days"] == 5)
+        # D7 默认值修订（2026-10-14 用户反馈）：pullback_max_days 5→13
+        check("HTTP 创建补默认参数", task["params"]["pullback_max_days"] == 13)
 
         # 校验失败路径
         st, _ = req("POST", "/api/strategy/tasks", body={"strategy_id": "vol_breakout_pullback", "label": "", "scope_type": "all"})
@@ -517,7 +534,7 @@ def run_http_smoke(codes, codes5):
             row = body["list"][0]
             check(
                 "signals 行含绩效四字段",
-                all(k in row for k in ("ret_7d", "ret_14d", "ret_30d", "outcome")),
+                all(k in row for k in ("ret_5d", "ret_10d", "ret_15d", "outcome")),
                 str(sorted(row.keys())),
             )
             matched_rows = [r for r in body["list"] if r["state"] in ("triggered", "running")]
@@ -552,7 +569,7 @@ def run_http_smoke(codes, codes5):
         check(
             "detail signals_page 行含绩效四字段",
             "list" in sp and all(
-                all(k in r for k in ("ret_7d", "ret_14d", "ret_30d", "outcome"))
+                all(k in r for k in ("ret_5d", "ret_10d", "ret_15d", "outcome"))
                 for r in sp.get("list", [])
             ),
             str(sorted((sp.get("list") or [{}])[0].keys())),

@@ -173,11 +173,13 @@ def validate_params(
 # 通用绩效计算（strategy-signal-outcome design D3）
 # ----------------------------------------------------------------------
 
-# 绩效三时段窗口（交易日数，spec 定死：入场日后 +7/+14/+30）
-OUTCOME_HORIZONS = (7, 14, 30)
-# 加权求和权重（spec 定死，D13：7日×50% + 14日×30% + 30日×20%，不做参数）
-OUTCOME_WEIGHTS = (0.5, 0.3, 0.2)
-# 成功判定阈值（D13：加权总收益 > 5% 判成功，不做参数）
+# 绩效三时段窗口（交易日数，spec 定死：入场日后 +5/+10/+15；
+# 2026-10-15 修订，原 7/14/30，见 strategy-signal-outcome tasks 8.x）
+OUTCOME_HORIZONS = (5, 10, 15)
+# 加权求和权重（spec 定死：5日×30% + 10日×50% + 15日×20%，不做参数；
+# 2026-10-15 修订，原 50/30/20）
+OUTCOME_WEIGHTS = (0.3, 0.5, 0.2)
+# 成功判定阈值（加权总收益 > 5% 判成功，不做参数，维持不变）
 OUTCOME_THRESHOLD = 0.05
 
 
@@ -189,14 +191,15 @@ def compute_outcome(
     - kl 为 (time_key, open, high, low, close, volume) 元组列表（引擎手上的
       全历史日线）；entry_idx 为入场日在 kl 中的索引；entry_price 为买入
       基准价（= 信号行 entry_ref_price 口径，各策略自定义）
-    - 收益率 = kl[entry_idx + d].close / entry_price - 1（d ∈ 7/14/30），
-      越界（未来数据不足）的时段收益率为 None，对应收盘价同为 None
+    - 收益率 = kl[entry_idx + d].close / entry_price - 1（d ∈ 5/10/15，
+      2026-10-15 修订，原 7/14/30），越界（未来数据不足）的时段收益率为
+      None，对应收盘价同为 None
     - outcome 规则（D13 加权求和，spec「信号存储与状态机」）：
-      总收益 = ret_7d×0.5 + ret_14d×0.3 + ret_30d×0.2；总收益 > 0.05 →
+      总收益 = ret_5d×0.3 + ret_10d×0.5 + ret_15d×0.2；总收益 > 0.05 →
       'success'，否则 'failed'；三时段任一不可得 → 'pending'（数据不足，
       不做权重归一化、不按 0 计入——口径无隐式假设）
 
-    返回 (ret_7d, ret_14d, ret_30d, outcome, close_7d, close_14d, close_30d)，
+    返回 (ret_5d, ret_10d, ret_15d, outcome, close_5d, close_10d, close_15d)，
     close_* 为对应时段的收盘价过程字段（D10 消费，越界为 None）。
     """
     n = len(kl)
@@ -218,9 +221,9 @@ def compute_outcome(
         total = sum(r * w for r, w in zip(rets, OUTCOME_WEIGHTS))
         outcome = "success" if total > OUTCOME_THRESHOLD else "failed"
 
-    ret_7d, ret_14d, ret_30d = rets
-    close_7d, close_14d, close_30d = closes
-    return ret_7d, ret_14d, ret_30d, outcome, close_7d, close_14d, close_30d
+    ret_5d, ret_10d, ret_15d = rets
+    close_5d, close_10d, close_15d = closes
+    return ret_5d, ret_10d, ret_15d, outcome, close_5d, close_10d, close_15d
 
 
 # ----------------------------------------------------------------------
@@ -267,25 +270,43 @@ register_definition(StrategyDefinition(
         # validate_params 不消费（见其 docstring）；desc 为普通用户白话
         # （含义 + 调高/调低后果，strategy-signal-outcome 6.9）
         {"key": "pullback_max_days", "label": "回调天数上限", "type": "int",
-         "default": 5, "min": 1, "max": 20, "precision": 0, "step": 1,
-         "desc": "启动日之后最多观察多少个交易日的回调，超过这个天数还没企稳就放弃。"
-                 "调高（如 10）愿意等更久，信号更多但等待期变长；调低（如 3）只接受"
-                 "很快止跌的形态，信号更少但更干脆。默认 5 个交易日。"},
+         "default": 13, "min": 1, "max": 20, "precision": 0, "step": 1,
+         "desc": "启动日之后最多观察多少个交易日的回调，B 级买点必须落在这个窗口内，"
+                 "窗口走完还没有任何 B 级确认就判定失效。调高（如 18）愿意等更久，"
+                 "能捕捉回调慢的形态但资金等待期变长；调低（如 8）只接受快速企稳的"
+                 "形态，信号更少但更干脆。默认 13 个交易日。"},
+        {"key": "pullback_min_days", "label": "回调天数下限", "type": "int",
+         "default": 4, "min": 0, "max": 19, "precision": 0, "step": 1,
+         "desc": "最早出现的 B 级买点距启动日至少多少个交易日，不足则视为回调不"
+                 "充分、信号不成立。调高（如 6）要求回调更扎实，信号更少；调低"
+                 "（如 0）不设下限，启动次日就出买点也算。默认 4 个交易日。"},
         {"key": "volume_ratio_min", "label": "启动放量倍数下限", "type": "float",
-         "default": 2.0, "min": 1.0, "max": 10.0, "precision": 1, "step": 0.1,
+         "default": 2.3, "min": 1.0, "max": 10.0, "precision": 1, "step": 0.1,
          "desc": "启动日成交量需要达到前 20 日平均成交量的多少倍。调高（如 3.0）"
                  "要求放量大更猛，信号更少但启动力度更强；调低（如 1.5）轻微放量"
-                 "也算，信号更多但质量参差。默认 2.0 倍。"},
+                 "也算，信号更多但质量参差。默认 2.3 倍。"},
         {"key": "a_pct_min", "label": "启动日涨幅门槛", "type": "float",
          "default": 0.05, "min": 0.03, "max": 0.15, "precision": 2, "step": 0.01,
          "desc": "启动日当天收盘涨幅的最低要求。调高（如 0.098）只筛选接近涨停的"
                  "强势上涨日，信号更少但更强；调低（如 0.03）纳入温和上涨日，"
                  "信号更多但强度较弱。默认 0.05 即当天至少涨 5%。"},
-        {"key": "volume_shrink_max", "label": "回调缩量阈值", "type": "float",
-         "default": 0.8, "min": 0.1, "max": 1.0, "precision": 1, "step": 0.1,
-         "desc": "回调期间成交量需要缩到启动日成交量的多少比例以下才算有效缩量。"
-                 "调高（如 0.9）允许回调中保留较多量能，容易通过但缩量形态不纯；"
-                 "调低（如 0.5）要求回调明显缩量，形态更标准但信号更少。默认 0.8。"},
+        {"key": "pullback_pct_max", "label": "回调涨幅门阈值", "type": "float",
+         "default": 0.04, "min": 0.02, "max": 0.10, "precision": 2, "step": 0.01,
+         "desc": "B 级买点确认之前，回调期间单日收盘涨幅的上限，超过就判失效"
+                 "（回调中不该出现大涨，大涨说明已经不是回调）。调高（如 0.06）"
+                 "容忍回调中反弹更猛；调低（如 0.03）要求回调走势更平稳。"
+                 "默认 0.04 即单日涨幅不超过 4%。"},
+        {"key": "volume_trend_ratio", "label": "量能趋势门倍数", "type": "float",
+         "default": 1.1, "min": 1.05, "max": 2.0, "precision": 2, "step": 0.05,
+         "desc": "启动日第 4 个交易日起，当日 3 日均量超过前 3 日均量的这个倍数就"
+                 "判失效（回调期量能应该逐步萎缩，连续放量抬升说明主力在出货）。"
+                 "调高（如 1.3）允许量能波动大一些不易触发；调低（如 1.05）对放量"
+                 "抬升更敏感、淘汰更严格。默认 1.1 倍。"},
+        {"key": "breakout_vol_ratio", "label": "突破量比", "type": "float",
+         "default": 0.4, "min": 0.2, "max": 1.0, "precision": 1, "step": 0.1,
+         "desc": "B 级确认（放量突破回调期高点）要求的当日成交量下限，等于启动日"
+                 "成交量的这个比例。调高（如 0.6）要求突破时放量更足，确认更可靠"
+                 "但更难出现；调低（如 0.25）轻微放量也算突破。默认 0.4 倍。"},
     ],
     states=[
         {"value": "watching", "label": "回调中", "color": "info"},
@@ -296,21 +317,23 @@ register_definition(StrategyDefinition(
     columns=[
         {"key": "pullback_days", "label": "回调天数", "type": "int"},
         {"key": "volume_ratio", "label": "放量倍数", "type": "float"},
-        # A/B 点与绩效列（strategy-signal-outcome 2.4 + 6.1 D12 返工：价格+涨幅
-        # 合并为 price_pct 单列，声明 priceKey/pctKey 双 key，值从行/payload 取；
-        # 不再有独立价格 float 列与独立涨幅 pct 列）
-        {"key": "a_date", "label": "A日", "type": "date"},
-        {"key": "a_price", "label": "A日股价", "type": "price_pct",
-         "priceKey": "a_close", "pctKey": "a_pct"},
-        {"key": "b_date", "label": "B日", "type": "date"},
-        {"key": "b_price", "label": "B日股价", "type": "price_pct",
-         "priceKey": "b_close", "pctKey": "b_day_pct"},
-        {"key": "close_7d_price", "label": "7日股价", "type": "price_pct",
-         "priceKey": "close_7d", "pctKey": "ret_7d"},
-        {"key": "close_14d_price", "label": "14日股价", "type": "price_pct",
-         "priceKey": "close_14d", "pctKey": "ret_14d"},
-        {"key": "close_30d_price", "label": "30日股价", "type": "price_pct",
-         "priceKey": "close_30d", "pctKey": "ret_30d"},
+        # A/B 列整合（strategy-volume-breakout-pullback D7）：A 日日期+价格+涨幅
+        # 合并为 a_col 单列（date_price_pct 列型，三值取 payload a_date/a_close/
+        # a_pct）；B 列 b_col 同构（值取 payload 最早 B 事件——b_time/price/
+        # day_pct 由 detail API 展平进 payload），popup: 'b_events' 标记点击
+        # 弹出多 B 事件详情表；「信号日期」列由 BlockSignals display 层黑名单
+        # 裁剪（与 A 日冲突），不再单独声明
+        {"key": "a_col", "label": "A日", "type": "date_price_pct",
+         "dateKey": "a_date", "priceKey": "a_close", "pctKey": "a_pct"},
+        {"key": "b_col", "label": "B日", "type": "date_price_pct",
+         "dateKey": "b_date", "priceKey": "b_close", "pctKey": "b_day_pct",
+         "popup": "b_events"},
+        {"key": "close_5d_price", "label": "5日股价", "type": "price_pct",
+         "priceKey": "close_5d", "pctKey": "ret_5d"},
+        {"key": "close_10d_price", "label": "10日股价", "type": "price_pct",
+         "priceKey": "close_10d", "pctKey": "ret_10d"},
+        {"key": "close_15d_price", "label": "15日股价", "type": "price_pct",
+         "priceKey": "close_15d", "pctKey": "ret_15d"},
         {"key": "outcome", "label": "成功判定", "type": "outcome"},
     ],
     # 任务详情积木块（strategy-task-redesign design D5 v1 声明）：
@@ -323,14 +346,14 @@ register_definition(StrategyDefinition(
         {"type": "per_stock"},
         {"type": "signals"},
         {"type": "kv", "items": [
-            # 绩效准确率统计项（D6：值由 detail API compute_outcome_kv_stats 聚合）
+            # 绩效准确率统计项（D6：值由 detail API compute_outcome_kv_stats 聚合；
+            # 2026-10-15 修订：删 pending_cnt 数据不足数，平均收益随窗口改 5/10/15）
             {"key": "accuracy", "label": "准确率", "fmt": "pct"},
             {"key": "success_cnt", "label": "成功数", "fmt": "int"},
             {"key": "failed_cnt", "label": "失败数", "fmt": "int"},
-            {"key": "pending_cnt", "label": "数据不足数", "fmt": "int"},
-            {"key": "avg_ret_7d", "label": "平均7日收益", "fmt": "pct"},
-            {"key": "avg_ret_14d", "label": "平均14日收益", "fmt": "pct"},
-            {"key": "avg_ret_30d", "label": "平均30日收益", "fmt": "pct"},
+            {"key": "avg_ret_5d", "label": "平均5日收益", "fmt": "pct"},
+            {"key": "avg_ret_10d", "label": "平均10日收益", "fmt": "pct"},
+            {"key": "avg_ret_15d", "label": "平均15日收益", "fmt": "pct"},
         ]},
     ],
 ))
@@ -407,12 +430,12 @@ register_definition(StrategyDefinition(
         {"key": "b_date", "label": "B日", "type": "date"},
         {"key": "b_price", "label": "B日股价", "type": "price_pct",
          "priceKey": "b_close", "pctKey": "b_day_pct"},
-        {"key": "close_7d_price", "label": "7日股价", "type": "price_pct",
-         "priceKey": "close_7d", "pctKey": "ret_7d"},
-        {"key": "close_14d_price", "label": "14日股价", "type": "price_pct",
-         "priceKey": "close_14d", "pctKey": "ret_14d"},
-        {"key": "close_30d_price", "label": "30日股价", "type": "price_pct",
-         "priceKey": "close_30d", "pctKey": "ret_30d"},
+        {"key": "close_5d_price", "label": "5日股价", "type": "price_pct",
+         "priceKey": "close_5d", "pctKey": "ret_5d"},
+        {"key": "close_10d_price", "label": "10日股价", "type": "price_pct",
+         "priceKey": "close_10d", "pctKey": "ret_10d"},
+        {"key": "close_15d_price", "label": "15日股价", "type": "price_pct",
+         "priceKey": "close_15d", "pctKey": "ret_15d"},
         {"key": "outcome", "label": "成功判定", "type": "outcome"},
     ],
     # 任务详情积木块（design D5）：summary → per_stock（显式范围）→ signals →
@@ -434,14 +457,14 @@ register_definition(StrategyDefinition(
             {"key": "avg_box_days", "label": "平均蓄势天数", "fmt": "float"},
             {"key": "avg_a_ret", "label": "平均 A 日涨幅", "fmt": "str"},
             {"key": "alive_signals", "label": "存活信号数", "fmt": "int"},
-            # 绩效准确率统计项（strategy-signal-outcome 3.2/D6）
+            # 绩效准确率统计项（strategy-signal-outcome 3.2/D6；2026-10-15 修订：
+            # 删 pending_cnt 数据不足数，平均收益随窗口改 5/10/15）
             {"key": "accuracy", "label": "准确率", "fmt": "pct"},
             {"key": "success_cnt", "label": "成功数", "fmt": "int"},
             {"key": "failed_cnt", "label": "失败数", "fmt": "int"},
-            {"key": "pending_cnt", "label": "数据不足数", "fmt": "int"},
-            {"key": "avg_ret_7d", "label": "平均7日收益", "fmt": "pct"},
-            {"key": "avg_ret_14d", "label": "平均14日收益", "fmt": "pct"},
-            {"key": "avg_ret_30d", "label": "平均30日收益", "fmt": "pct"},
+            {"key": "avg_ret_5d", "label": "平均5日收益", "fmt": "pct"},
+            {"key": "avg_ret_10d", "label": "平均10日收益", "fmt": "pct"},
+            {"key": "avg_ret_15d", "label": "平均15日收益", "fmt": "pct"},
         ]},
     ],
 ))

@@ -53,3 +53,10 @@
 - [x] 7.3 前端 tooltip：BlockSignals 的 outcome 列头加 QuestionFilled 悬浮 tooltip（复用 TaskDialog 参数说明图标交互），文案 = 加权求和规则白话；BlockKv 的 SUCCESS_CRITERION 常量改新口径注释，verify: `npm run build` 通过
 - [x] 7.4 mock 样例 outcome 值按新口径换算（success/failed 样例重算，三态分布保持），verify: build 通过 + mock 模式成功判定列与悬浮提示可见
 - [x] 7.5 全回归：后端三冒烟 + 前端 build 全绿，verify: 0 失败
+
+## 8. 绩效窗口 5/10/15 修订（2026-10-15 用户反馈）
+
+> 8.x 为 2026-10-15 口径修订：绩效窗口 7/14/30 → 5/10/15、权重 50/30/20 → 30/50/20（阈值 5% 不变）、kv 块删数据不足数。实现统一由 strategy-volume-breakout-pullback 变更的 tasks 6.x 落地（该变更同步 apply），本组任务为其验收锚点。
+
+- [x] 8.1 OUTCOME_HORIZONS=(5,10,15)、OUTCOME_WEIGHTS=(0.3,0.5,0.2)（`WebAPI/strategy_engines/__init__.py`），verify: 构造 (+10%,+2%,+9%) 总收益 10%×30%+2%×50%+9%×20%=5.8% → success、(+4%,+2%,-1%) 总收益 2.0% → failed、(+10%,None,+9%) → pending
+- [x] 8.2 绩效列与 kv 键切换：strategy_signal 与 strategy_signal_b_event 幂等加列 ret_5d/ret_10d/ret_15d（旧列废弃不删）、payload close_5d/close_10d/close_15d、两策略 columns/kv items（删 pending_cnt、avg_ret_5d/10d/15d）与前端渲染/mock 同步，verify: 重扫任务绩效按 5/10/15 落库、kv 无数据不足数、build 通过

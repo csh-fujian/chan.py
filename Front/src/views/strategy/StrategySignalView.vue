@@ -1,57 +1,7 @@
 <template>
   <div class="page-layout">
-    <!-- 左侧策略任务树（strategy-task-redesign 4.2）：
-         策略大类（group_name）→ 策略定义 → 任务节点（按 user_group 分组组织，含信号计数） -->
-    <aside class="panel sidebar reveal reveal--1">
-      <div class="sidebar__head">
-        策略任务
-        <span class="spacer"></span>
-      </div>
-      <div class="tree">
-        <div v-for="group in groupedDefinitions" :key="group.name" class="sidebar__group">
-          <div class="sidebar__group-label">{{ group.name }}</div>
-          <div v-for="def in group.defs" :key="def.id" class="def-block">
-            <!-- 策略名（组标签）：点击过滤任务列表到该策略；+ 新建任务小按钮 -->
-            <div class="def-label" @click="onDefLabelClick(def)">
-              <span class="def-name" :title="def.name">{{ def.name }}</span>
-              <span class="spacer"></span>
-              <button
-                class="btn btn--ghost btn--sm def-add-btn"
-                title="新建任务"
-                @click="openCreateTask(def)"
-              >
-                <el-icon><Plus /></el-icon>
-              </button>
-            </div>
-            <!-- 任务节点：按 user_group 分组组织展示 -->
-            <div
-              v-for="ug in taskGroupsOf(def)"
-              :key="ug.name"
-              class="task-group"
-            >
-              <div v-if="ug.name" class="task-group-label">{{ ug.name }}</div>
-              <!-- 任务节点：点击切换任务（信号列表切换为该任务信号集，筛选保留、页码重置） -->
-              <div
-                v-for="task in ug.tasks"
-                :key="task.id"
-                class="tree__item"
-                :class="{ 'is-active': currentTaskId === task.id }"
-                @click="selectTask(task.id)"
-              >
-                <span class="task-label" :title="task.label">{{ task.label }}</span>
-                <span class="badge task-mode" :class="task.mode === 'persistent' ? 'badge--accent' : 'badge--default'">
-                  {{ task.mode === 'persistent' ? '长期' : '测试' }}
-                </span>
-                <span class="count">{{ task.signal_count }}</span>
-              </div>
-            </div>
-            <div v-if="def.tasks.length === 0" class="task-empty">暂无任务</div>
-          </div>
-        </div>
-      </div>
-    </aside>
-
-    <!-- 右侧主面板 -->
+    <!-- 主面板（strategy-task-list-redesign：删左侧策略任务树，单列布局；
+         类型过滤 → 任务列表查询条件级联，新建入口 → 列表上方按钮） -->
     <div class="main-panel">
       <div class="strategy-page">
         <!-- 视图 Tab：任务列表 | 信号列表 -->
@@ -68,15 +18,86 @@
         </div>
 
         <!-- ===== 任务列表 Tab ===== -->
-        <div v-show="activeView === 'tasks'" class="panel reveal reveal--2">
+        <div v-show="activeView === 'tasks'" class="task-view">
+          <!-- 工具栏：新建按钮 + 查询条件（strategy-task-list-redesign design D2/D3：
+               全量任务数据已在前端（allTasks），查询条件为内存过滤） -->
+          <div class="toolbar reveal reveal--1">
+            <button class="btn btn--primary" @click="openCreateTask()">
+              <el-icon><Plus /></el-icon>
+              新建策略任务
+            </button>
+            <span class="toolbar-spacer"></span>
+            <el-cascader
+              v-model="taskQuery.typePath"
+              :options="typeCascadeOptions"
+              placeholder="策略任务类型"
+              clearable
+              :props="{ emitPath: false }"
+              style="width: 220px"
+              @change="onTaskQueryChange"
+            />
+            <el-input
+              v-model="taskQuery.label"
+              placeholder="任务名"
+              clearable
+              style="width: 150px"
+              @change="onTaskQueryChange"
+            />
+            <el-input
+              v-model="taskQuery.group"
+              placeholder="分组"
+              clearable
+              style="width: 130px"
+              @change="onTaskQueryChange"
+            />
+            <el-select
+              v-model="taskQuery.mode"
+              placeholder="形态"
+              clearable
+              style="width: 100px"
+              @change="onTaskQueryChange"
+            >
+              <el-option label="长期" value="persistent" />
+              <el-option label="测试" value="test" />
+            </el-select>
+            <el-date-picker
+              v-model="taskDateRange"
+              type="daterange"
+              value-format="YYYY-MM-DD"
+              start-placeholder="创建开始"
+              end-placeholder="创建结束"
+              unlink-panels
+              clearable
+              style="width: 240px"
+              @change="onTaskQueryChange"
+            />
+            <el-select
+              v-model="taskQuery.accuracyBand"
+              placeholder="准确率"
+              clearable
+              style="width: 120px"
+              @change="onTaskQueryChange"
+            >
+              <el-option label="80-100" value="high" />
+              <el-option label="60-80" value="mid" />
+              <el-option label="60 以下" value="low" />
+              <el-option label="无数据" value="none" />
+            </el-select>
+          </div>
+
+          <div class="panel reveal reveal--2">
           <div class="tbl-wrap" v-loading="tasksLoading">
             <el-table :data="filteredTasks" empty-text="暂无任务" row-key="id">
-              <el-table-column label="任务名" min-width="150">
+              <el-table-column label="任务名" min-width="130">
                 <template #default="{ row }">
-                  <div class="cell-task">
-                    <span class="nm">{{ row.label }}</span>
-                    <span class="sub">{{ defNameOf(row.strategy_id) }}</span>
-                  </div>
+                  <span class="cell-task-nm">{{ row.label }}</span>
+                </template>
+              </el-table-column>
+              <!-- 策略任务类型列（strategy-task-list-redesign：group_name:name
+                   分层展示；原任务名下的策略名子文本由本列承接） -->
+              <el-table-column label="策略任务类型" min-width="170">
+                <template #default="{ row }">
+                  <span class="num strategy-type">{{ strategyTypeOf(row.strategy_id) }}</span>
                 </template>
               </el-table-column>
               <el-table-column label="分组" width="110" align="center">
@@ -118,6 +139,13 @@
               <el-table-column label="信号数" width="80" align="right" class-name="col-num">
                 <template #default="{ row }">
                   <span class="num link" @click="gotoSignals(row)">{{ row.signal_count }}</span>
+                </template>
+              </el-table-column>
+              <!-- 准确率列（strategy-task-list-redesign：列表节点批量聚合；
+                   无样本 null → '--'，口径同任务详情绩效统计） -->
+              <el-table-column label="准确率" width="90" align="right" class-name="col-num">
+                <template #default="{ row }">
+                  <span class="num" :class="accuracyClass(row.accuracy)">{{ fmtAccuracy(row.accuracy) }}</span>
                 </template>
               </el-table-column>
               <el-table-column label="创建人" width="80" align="center">
@@ -167,9 +195,10 @@
                 </template>
               </el-table-column>
               <template #empty>
-                <EmptyState description="暂无任务，点击左侧策略名旁的 + 新建" />
+                <EmptyState description="暂无任务，点击上方「新建策略任务」创建" />
               </template>
             </el-table>
+          </div>
           </div>
         </div>
 
@@ -258,11 +287,8 @@
                     <IndustryBadges :industries="row.industries" />
                   </template>
                 </el-table-column>
-                <el-table-column label="信号日期" width="110" align="center">
-                  <template #default="{ row }">
-                    <span class="num">{{ row.signal_date }}</span>
-                  </template>
-                </el-table-column>
+                <!-- 信号日期列删除（strategy-volume-breakout-pullback D7：与
+                     A 日列冲突——A 日即信号日期，a_col 三值合并列已含日期分量） -->
                 <!-- 状态列：states 声明 color 映射 badge 样式类 -->
                 <el-table-column label="状态" width="90" align="center">
                   <template #default="{ row }">
@@ -293,15 +319,18 @@
                   </template>
                 </el-table-column>
                 <!-- 私有列（columns 声明驱动，row.payload[key] 取值渲染；
-                     pct/price_pct/outcome 新列型兜底（D7/D12）：主列表仍按
+                     pct/price_pct/outcome/date_price_pct 新列型兜底（D7/D12/
+                     strategy-volume-breakout-pullback D7）：主列表仍按
                      完整声明渲染全列（通用列不裁剪，仅任务详情裁剪）；
                      pct/price_pct 涨幅分量转百分比文本、price_pct 合并列
-                     「价格 | 涨跌幅」双值、outcome 中文标签，保持不报错） -->
+                     「价格 | 涨跌幅」双值、date_price_pct 三值合并列
+                     「日期 | 价格 | 涨幅」（b_col 可点击弹 B 事件表——
+                     走单信号 b-events 接口）、outcome 中文标签，保持不报错） -->
                 <el-table-column
                   v-for="col in currentDefinition?.columns || []"
                   :key="col.key"
                   :label="col.label"
-                  :width="col.type === 'date' ? 110 : col.type === 'outcome' ? 80 : col.type === 'price_pct' ? 140 : 90"
+                  :width="col.type === 'date' ? 110 : col.type === 'outcome' ? 80 : col.type === 'price_pct' ? 140 : col.type === 'date_price_pct' ? 230 : 90"
                   :align="col.type === 'date' ? 'center' : 'right'"
                   class-name="col-num"
                 >
@@ -315,6 +344,24 @@
                         {{ formatPayload(colValue(row, col.pctKey || ''), 'pct') }}
                       </span>
                     </template>
+                    <!-- date_price_pct：三值合并单元格「日期 | 价格 | 涨幅」
+                         （strategy-volume-breakout-pullback D7，A/B 日列整合）；
+                         b_col 带 popup 标记时点击弹出 B 级事件详情表 -->
+                    <template v-else-if="col.type === 'date_price_pct'">
+                      <span
+                        class="num dpc"
+                        :class="{ 'dpc--popup': col.popup === 'b_events' && bEventsOf(row).length }"
+                        @click.stop="col.popup === 'b_events' && openBDialog(row, col.label)"
+                      >
+                        {{ fmtDayComponent(colValue(row, col.dateKey || '')) }}
+                        <span class="pp-sep">|</span>
+                        {{ fmtPriceComponent(colValue(row, col.priceKey || '')) }}
+                        <span class="pp-sep">|</span>
+                        <span :class="pctClass(colValue(row, col.pctKey || ''))">
+                          {{ formatPayload(colValue(row, col.pctKey || ''), 'pct') }}
+                        </span>
+                      </span>
+                    </template>
                     <span
                       v-else
                       class="num"
@@ -326,7 +373,7 @@
                   <EmptyState description="暂无信号记录，请调整筛选条件" />
                 </template>
               </el-table>
-              <EmptyState v-else description="请在左侧选择策略任务" />
+              <EmptyState v-else description="请在任务列表点击信号数进入信号列表" />
             </div>
             <div class="pager" v-if="total > 0">
               <el-pagination
@@ -344,10 +391,11 @@
       </div>
     </div>
 
-    <!-- 新建任务弹窗（4.3：params_schema 驱动表单 + 范围三来源 + 全量兜底） -->
+    <!-- 新建任务弹窗（4.3：params_schema 驱动表单 + 范围三来源 + 全量兜底；
+         strategy-task-list-redesign 4.1：弹窗内先选策略任务类型级联联动） -->
     <TaskDialog
       v-model:visible="taskDialogVisible"
-      :definition="taskDialogDef"
+      :definitions="definitions"
       :known-groups="knownGroups"
       @saved="reloadDefinitions"
     />
@@ -381,11 +429,72 @@
       :definition="currentDefinition"
       :task="currentTask"
     />
+
+    <!-- B 级事件详情弹窗（strategy-volume-breakout-pullback D7/4.2）：主列表
+         B 列点击展开，数据走单信号 b-events 接口（列表行不嵌全集） -->
+    <el-dialog
+      v-model="bDialogVisible"
+      :title="bDialogTitle"
+      width="720px"
+      append-to-body
+      class="b-events-dialog"
+    >
+      <el-table v-if="bDialogEvents.length" :data="bDialogEvents" size="small">
+        <el-table-column label="等级" width="70" align="center">
+          <template #default="{ row }">
+            <span class="badge badge--accent">{{ row.b_level }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="时间" width="150" align="center">
+          <template #default="{ row }">
+            <span class="num">{{ fmtBTime(row.b_time) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="周期" width="64" align="center">
+          <template #default="{ row }">
+            <span class="num">{{ row.b_kl_type }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="价格" width="90" align="right">
+          <template #default="{ row }">
+            <span class="num">{{ formatPrice(row.price) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="当日涨幅" width="90" align="right">
+          <template #default="{ row }">
+            <span class="num" :class="pctClass(row.day_pct)">{{ formatPayload(row.day_pct, 'pct') }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="5日收益" width="90" align="right">
+          <template #default="{ row }">
+            <span class="num" :class="pctClass(row.ret_5d)">{{ formatPayload(row.ret_5d, 'pct') }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="10日收益" width="90" align="right">
+          <template #default="{ row }">
+            <span class="num" :class="pctClass(row.ret_10d)">{{ formatPayload(row.ret_10d, 'pct') }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="15日收益" width="90" align="right">
+          <template #default="{ row }">
+            <span class="num" :class="pctClass(row.ret_15d)">{{ formatPayload(row.ret_15d, 'pct') }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="判定" width="70" align="center">
+          <template #default="{ row }">
+            <span class="badge" :class="outcomeBadgeClass(row.outcome)">{{ outcomeLabel(row.outcome) }}</span>
+          </template>
+        </el-table-column>
+      </el-table>
+      <div v-else class="b-events-empty">
+        旧口径信号：无 B 级事件明细（该信号产生于 B 点分级判定上线前，可重新运行任务按新口径产出）
+      </div>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
 import type { AutocompleteInstance } from 'element-plus'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Plus } from '@element-plus/icons-vue'
@@ -399,6 +508,7 @@ import SignalDrawer from './SignalDrawer.vue'
 import {
   getStrategyDefinitions,
   getStrategySignals,
+  getSignalBEvents,
   startStrategyTask,
   pauseStrategyTask,
   promoteStrategyTask,
@@ -411,13 +521,16 @@ import type {
   StrategyTask,
   StrategySignalRow,
   StrategyColumnDecl,
+  BEventRow,
 } from '@/api/types'
 
 /**
- * 策略任务页（strategy-task-redesign 4.2）：
- * - 侧栏：策略大类 → 策略定义 → 任务树（任务按 user_group 分组组织、含信号计数）
- * - 主区 Tab：任务列表（基础信息/形态/状态/进度条/创建人/创建时间 + 启停/续跑/编辑/转正/复制/删除/详情）
- *   与信号列表（按 task_id 服务端分页，沿用原筛选骨架）
+ * 策略任务页（strategy-task-redesign 4.2 / strategy-task-list-redesign 单列化）：
+ * - 单列布局：视图 Tab（任务列表/信号列表）；原左侧策略任务树已删除——
+ *   类型过滤迁移到任务列表查询条件级联，新建入口迁移到列表上方按钮
+ * - 任务列表：查询条件（策略类型级联/任务名/分组/形态/创建时间/准确率分档）
+ *   前端内存过滤 + 准确率/策略任务类型列 + 启停/续跑/编辑/转正/复制/删除/详情
+ * - 信号列表：按 task_id 服务端分页，沿用原筛选骨架
  * - 私有列 / 状态着色 / 任务表单全部由定义声明驱动渲染（新策略接入零前端改动）
  * - running 任务进度轮询 3s（design D4）
  */
@@ -434,17 +547,6 @@ const viewTabs = [
   { key: 'signals' as const, label: '信号列表' },
 ]
 
-/** 按 group_name 分组（组内按 sort 升序，对齐后端返回顺序） */
-const groupedDefinitions = computed(() => {
-  const groups: { name: string; defs: StrategyDefinition[] }[] = []
-  for (const def of definitions.value) {
-    const g = groups.find((x) => x.name === def.group_name)
-    if (g) g.defs.push(def)
-    else groups.push({ name: def.group_name, defs: [def] })
-  }
-  return groups
-})
-
 /** 已知分组名集合（创建/编辑弹窗分组下拉可选项来源） */
 const knownGroups = computed<string[]>(() => {
   const set = new Set<string>()
@@ -456,38 +558,109 @@ const knownGroups = computed<string[]>(() => {
   return Array.from(set)
 })
 
-/** 定义下任务按 user_group 分组组织（空 user_group 归「未分组」，不显示子标签） */
-function taskGroupsOf(def: StrategyDefinition): { name: string; tasks: StrategyTask[] }[] {
-  const groups: { name: string; tasks: StrategyTask[] }[] = []
-  for (const t of def.tasks) {
-    const name = t.user_group || ''
-    const g = groups.find((x) => x.name === name)
-    if (g) g.tasks.push(t)
-    else groups.push({ name, tasks: [t] })
-  }
-  return groups
-}
-
-/** 任务列表数据（全定义任务按创建时间倒序） */
+/** 任务列表数据（全定义任务按创建时间倒序；真实后端 created_at 为 ISO
+ *  字符串、mock 为毫秒时间戳，统一经 Date 归一化比较） */
 const allTasks = computed<StrategyTask[]>(() =>
-  definitions.value.flatMap((d) => d.tasks).sort((a, b) => b.created_at - a.created_at),
+  definitions.value
+    .flatMap((d) => d.tasks)
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()),
 )
 
-/** 任务列表展示集：当前侧栏选中定义时仅显示该定义任务，否则全部 */
-const filteredTasks = computed<StrategyTask[]>(() => {
-  if (selectedDefId.value) return allTasks.value.filter((t) => t.strategy_id === selectedDefId.value)
-  return allTasks.value
+// ---- 任务列表查询条件（design D2：全量任务在前端，内存过滤） ----
+const taskQuery = reactive({
+  /** 策略任务类型级联选中叶子（definition id），空 = 全部 */
+  typePath: '' as string | null,
+  /** 任务名模糊 */
+  label: '',
+  /** 分组模糊 */
+  group: '',
+  /** 形态：persistent/test，空 = 全部 */
+  mode: '' as 'persistent' | 'test' | '',
+  /** 准确率分档：high(>=0.8) / mid(0.6~0.8) / low(<0.6) / none(null) */
+  accuracyBand: '' as 'high' | 'mid' | 'low' | 'none' | '',
+  /** 创建时间区间（YYYY-MM-DD 闭区间） */
+  date_from: '',
+  date_to: '',
 })
 
-/** 侧栏定义节点选中态（点策略名行切换任务列表过滤；实现见 onDefLabelClick） */
-const selectedDefId = ref<string>('')
+const taskDateRange = ref<[string, string] | null>(null)
+watch(taskDateRange, (v) => {
+  taskQuery.date_from = v?.[0] || ''
+  taskQuery.date_to = v?.[1] || ''
+})
 
-function onDefLabelClick(def: StrategyDefinition) {
-  selectedDefId.value = selectedDefId.value === def.id ? '' : def.id
+/** 级联选项：策略大类（group_name）→ 策略定义（叶子 value = definition id） */
+const typeCascadeOptions = computed(() => {
+  const groups: { value: string; label: string; children: { value: string; label: string }[] }[] = []
+  for (const def of definitions.value) {
+    const g = groups.find((x) => x.value === def.group_name)
+    if (g) g.children.push({ value: def.id, label: def.name })
+    else groups.push({ value: def.group_name, label: def.group_name, children: [{ value: def.id, label: def.name }] })
+  }
+  return groups
+})
+
+function onTaskQueryChange() {
+  // 级联/输入即时生效（computed 过滤链自动重算，无需额外请求）
 }
 
-function defNameOf(strategyId: string): string {
-  return definitions.value.find((d) => d.id === strategyId)?.name || strategyId
+/** 任务列表展示集：查询条件内存过滤（strategy-task-list-redesign design D2/D3；
+ *  准确率分档语义：null 仅命中「无数据」档，不命中任何数值档） */
+const filteredTasks = computed<StrategyTask[]>(() => {
+  let list = allTasks.value
+  if (taskQuery.typePath) list = list.filter((t) => t.strategy_id === taskQuery.typePath)
+  if (taskQuery.label.trim()) {
+    const kw = taskQuery.label.trim().toLowerCase()
+    list = list.filter((t) => t.label.toLowerCase().includes(kw))
+  }
+  if (taskQuery.group.trim()) {
+    const kw = taskQuery.group.trim().toLowerCase()
+    list = list.filter((t) => (t.user_group || '').toLowerCase().includes(kw))
+  }
+  if (taskQuery.mode) list = list.filter((t) => t.mode === taskQuery.mode)
+  if (taskQuery.date_from || taskQuery.date_to) {
+    const from = taskQuery.date_from ? new Date(taskQuery.date_from + 'T00:00:00').getTime() : -Infinity
+    const to = taskQuery.date_to ? new Date(taskQuery.date_to + 'T23:59:59').getTime() : Infinity
+    list = list.filter((t) => t.created_at >= from && t.created_at <= to)
+  }
+  if (taskQuery.accuracyBand) {
+    list = list.filter((t) => {
+      const a = t.accuracy
+      switch (taskQuery.accuracyBand) {
+        case 'high': return a != null && a >= 0.8
+        case 'mid': return a != null && a >= 0.6 && a < 0.8
+        case 'low': return a != null && a < 0.6
+        case 'none': return a == null
+        default: return true
+      }
+    })
+  }
+  return list
+})
+
+/** 准确率格式化（null → '--'，小数 → 百分比） */
+function fmtAccuracy(a: number | null | undefined): string {
+  if (a == null || !Number.isFinite(a)) return '--'
+  return `${(a * 100).toFixed(1)}%`
+}
+
+/** 准确率着色（A 股语义：高准确率红涨色标） */
+function accuracyClass(a: number | null | undefined): string {
+  if (a == null || !Number.isFinite(a)) return ''
+  if (a >= 0.8) return 'text-rise'
+  if (a >= 0.6) return ''
+  return 'text-fall'
+}
+
+/** 任务名查定义（策略任务类型列 group_name:name 拼接用） */
+function defOf(strategyId: string): StrategyDefinition | undefined {
+  return definitions.value.find((d) => d.id === strategyId)
+}
+
+/** 策略任务类型分层展示（「策略大类:策略名」，如「量价策略:放量启动回调」） */
+function strategyTypeOf(strategyId: string): string {
+  const d = defOf(strategyId)
+  return d ? `${d.group_name}:${d.name}` : strategyId
 }
 
 /** 当前任务（操作与加监控上下文用） */
@@ -659,11 +832,17 @@ async function onDeleteTask(task: StrategyTask) {
   }
 }
 
-/** 点击信号数跳到信号列表 Tab（选中该任务） */
+/** 点击信号数跳到信号列表 Tab（选中该任务；切换任务语义：筛选保留、
+ *  状态取值域随新定义回退、页码重置） */
 function gotoSignals(task: StrategyTask) {
   if (currentTaskId.value !== task.id) {
     currentTaskId.value = task.id
     query.page = 1
+    // 状态筛选取值域随定义变化：不在新定义 states 内的值回退「全部」
+    const def = currentDefinition.value
+    if (def && query.state && !def.states.some((s) => s.value === query.state)) {
+      query.state = ''
+    }
   }
   activeView.value = 'signals'
   loadList()
@@ -724,19 +903,6 @@ async function loadList() {
   }
 }
 
-// ---- 切换任务（spec：信号列表切换为该任务信号集，筛选条件保留） ----
-async function selectTask(id: number) {
-  if (currentTaskId.value === id) return
-  currentTaskId.value = id
-  // 状态筛选取值域随定义变化：不在新定义 states 内的值回退「全部」
-  const def = currentDefinition.value
-  if (def && query.state && !def.states.some((s) => s.value === query.state)) {
-    query.state = ''
-  }
-  query.page = 1
-  if (activeView.value === 'signals') await loadList()
-}
-
 // ---- 状态着色 / 文案（states 声明驱动） ----
 const COLOR_CLASS: Record<string, string> = {
   info: 'badge--info',
@@ -783,10 +949,10 @@ function fmtPriceComponent(v: number | string | null | undefined): string {
 }
 
 /** 列取值兜底（strategy-signal-outcome 5.1）：先 payload[key]，无键回退行级
- *  字段（ret_7d 等绩效列与 outcome 不在 payload） */
+ *  字段（ret_5d 等绩效列与 outcome 不在 payload） */
 function colValue(row: StrategySignalRow, key: string): number | string | null | undefined {
   const pv = row.payload?.[key]
-  if (pv !== undefined) return pv
+  if (pv !== undefined) return Array.isArray(pv) ? undefined : pv
   return row[key as keyof StrategySignalRow] as number | string | null | undefined
 }
 
@@ -801,6 +967,69 @@ function pctClass(v: number | string | null | undefined): string {
 function formatPrice(v: number | null | undefined) {
   if (v == null) return '--'
   return v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+// ---- B 级事件弹窗（strategy-volume-breakout-pullback D7/4.2） ----
+/** 主列表 B 列点击 → 走单信号 b-events 接口取全集（列表行不嵌） */
+const bDialogVisible = ref(false)
+const bDialogTitle = ref('')
+const bDialogEvents = ref<BEventRow[]>([])
+
+/** 行内已有 b_events（payload 嵌入的任务详情路径）或按 b_count 判断可弹窗 */
+function bEventsOf(row: StrategySignalRow): BEventRow[] {
+  const v = row.payload?.b_events
+  return Array.isArray(v) ? (v as BEventRow[]) : []
+}
+
+async function openBDialog(row: StrategySignalRow, colLabel: string): Promise<void> {
+  bDialogTitle.value = `${row.name}（${row.code}）· ${colLabel}级买点详情`
+  bDialogVisible.value = true
+  const embedded = bEventsOf(row)
+  if (embedded.length) {
+    bDialogEvents.value = embedded
+    return
+  }
+  // 主列表行无嵌入全集：payload.b_count > 0 或旧口径（b_count 缺省视为旧口径
+  // 也可点击尝试，接口返回空列表时弹「旧口径信号」提示）
+  if (row.id == null) {
+    bDialogEvents.value = []
+    return
+  }
+  try {
+    const res = await getSignalBEvents(row.id)
+    bDialogEvents.value = res.b_events || []
+  } catch {
+    bDialogEvents.value = []
+    ElMessage.error('B 级事件查询失败')
+  }
+}
+
+/** B 事件时间展示（D4）：30m 判定（b_time 含非零时刻）展示 'MM-DD HH:MM'；
+ *  日线判定（00:00:00）只展示日期 'YYYY-MM-DD' */
+function fmtBTime(t: string): string {
+  if (!t) return '--'
+  if (t.length >= 19 && !t.endsWith('00:00:00')) return t.slice(5, 16)
+  return t.slice(0, 10)
+}
+
+/** date_price_pct 日期分量格式化（D7）：截 10 位日期（b_date 30m 时间列内
+ *  只展示日期分量，时刻在弹窗展示） */
+function fmtDayComponent(v: number | string | null | undefined): string {
+  if (v == null || v === '') return '--'
+  return String(v).slice(0, 10)
+}
+
+const OUTCOME_BADGE: Record<string, string> = {
+  success: 'badge--fall',
+  failed: 'badge--rise',
+  pending: 'badge--disabled',
+}
+const OUTCOME_LABELS: Record<string, string> = { success: '成功', failed: '失败', pending: '待定' }
+function outcomeLabel(v: string | null | undefined) {
+  return OUTCOME_LABELS[v || ''] || '--'
+}
+function outcomeBadgeClass(v: string | null | undefined) {
+  return OUTCOME_BADGE[v || ''] || 'badge--disabled'
 }
 
 // ---- 股票搜索（el-autocomplete 模糊下拉选 code，复制 BspView 实现模式） ----
@@ -871,12 +1100,11 @@ function onReset() {
   loadList()
 }
 
-// ---- 新建任务（4.3 TaskDialog 承载） ----
+// ---- 新建任务（4.3 TaskDialog 承载；strategy-task-list-redesign 4.1：
+//      弹窗内先选策略任务类型，definitions 全量传入） ----
 const taskDialogVisible = ref(false)
-const taskDialogDef = ref<StrategyDefinition | null>(null)
 
-function openCreateTask(def: StrategyDefinition) {
-  taskDialogDef.value = def
+function openCreateTask() {
   taskDialogVisible.value = true
 }
 
@@ -958,55 +1186,23 @@ onUnmounted(stopPolling)
   border-color: var(--accent-border);
   font-weight: 500;
 }
-/* ---- 策略树（大类 → 策略 → 任务按 user_group 分组） ---- */
-.def-block {
-  padding: 2px 0 6px;
-}
-.def-label {
-  display: flex;
-  align-items: center;
-  padding: 4px 10px 2px;
-  cursor: pointer;
-}
-.def-name {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.def-add-btn {
-  padding: 0 4px;
-  min-width: 22px;
-  height: 20px;
-}
-.task-group {
-  padding: 0;
-}
-.task-group-label {
-  padding: 3px 10px 1px 18px;
-  font-size: 11px;
-  color: var(--text-disabled);
-}
-.task-label {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.task-mode {
-  flex-shrink: 0;
-  margin-left: 4px;
-  transform: scale(0.86);
-}
-.task-empty {
-  padding: 4px 10px;
-  font-size: 11px;
-  color: var(--text-disabled);
-}
 /* ---- 任务列表 ---- */
+.task-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-lg);
+}
+.toolbar-spacer {
+  flex: 1;
+}
+.cell-task-nm {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+.strategy-type {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
 .cell-task {
   display: flex;
   flex-direction: column;
@@ -1070,6 +1266,22 @@ onUnmounted(stopPolling)
 .pp-sep {
   color: var(--text-disabled);
   margin: 0 2px;
+}
+/* date_price_pct 三值合并单元格（strategy-volume-breakout-pullback D7）：
+   B 列带事件时可点击弹窗（下划线提示） */
+.dpc--popup {
+  cursor: pointer;
+  border-bottom: 1px dashed var(--text-disabled);
+}
+.dpc--popup:hover {
+  border-bottom-color: var(--text-primary);
+}
+/* B 级事件弹窗旧口径提示文案 */
+.b-events-empty {
+  color: var(--text-disabled);
+  font-size: 12px;
+  padding: 12px 0;
+  text-align: center;
 }
 .pager {
   display: flex;

@@ -5,9 +5,11 @@ import type {
   StrategyTaskStockResult,
   StrategyTaskDetail,
   StrategyParamSchema,
+  BEventRow,
 } from '@/api/types'
 import { stocks, findStock } from './stocks'
 import { watchFolders } from './watchlist'
+import { mockUsers, userIdFromRequest } from './auth'
 
 /**
  * 策略任务 mock 数据（strategy-task-redesign design D1/D5 / 任务 4.1 +
@@ -45,7 +47,9 @@ function dateStr(ts: number): string {
 // ---------------------------------------------------------------------------
 
 /** 定义一：放量启动回调（vol_breakout_pullback）— states: watching/triggered/expired/running；
- *  策略名与 a_pct_min 参数对齐后端 strategy-signal-outcome D11（原名「放量首板回调」） */
+ *  策略名与 a_pct_min 参数对齐后端 strategy-signal-outcome D11（原名「放量首板回调」）；
+ *  params_schema/columns 对齐后端 strategy-volume-breakout-pullback D8/D7
+ *  （13/4/2.3 默认值、三新参数、删 volume_shrink_max、A/B 三值合并列 + B 弹窗） */
 const volBreakoutDef: StrategyDefinition = {
   id: 'vol_breakout_pullback',
   name: '放量启动回调',
@@ -53,12 +57,16 @@ const volBreakoutDef: StrategyDefinition = {
   sort: 0,
   params_schema: [
     {
-      key: 'pullback_days', label: '回调天数上限', type: 'int', default: 5, min: 1, max: 20,
-      desc: '启动日之后允许回调的最长交易日数。调高：等回踩的时间更充裕、信号更多但介入更晚；调低：介入更快但容易错过还没回调到位的股票。例：设 3 时第 4 天才回踩到位的股票会被漏掉；设 10 时需忍受 8 天不涨的等待。',
+      key: 'pullback_max_days', label: '回调天数上限', type: 'int', default: 13, min: 1, max: 20,
+      desc: '启动日之后最多观察多少个交易日的回调，B 级买点必须落在这个窗口内，窗口走完还没有任何 B 级确认就判定失效。调高：愿意等更久、能捕捉回调慢的形态但资金等待期变长；调低：只接受快速企稳的形态，信号更少但更干脆。例：设 8 时第 9 天才出现 B3 买点的信号会被漏掉。',
     },
     {
-      key: 'vol_ratio', label: '放量倍数', type: 'float', default: 2.0, min: 1.0, max: 10.0, precision: 1, step: 0.1,
-      desc: '启动日成交量要达到前期平均量的几倍。调高：只认放量大、假启动少，但信号明显变少；调低：信号多但容易混入普通波动的假启动。例：设 3.0 时多数日子平淡的股票难有信号；设 1.5 时几乎每次温和放量都会报信号。',
+      key: 'pullback_min_days', label: '回调天数下限', type: 'int', default: 4, min: 0, max: 19,
+      desc: '最早出现的 B 级买点距启动日至少多少个交易日，不足则视为回调不充分、信号不成立。调高：要求回调更扎实、信号更少；调低：不设下限，启动次日就出买点也算。例：设 6 时第 4 天出现 B1 的信号会被淘汰。',
+    },
+    {
+      key: 'volume_ratio_min', label: '启动放量倍数下限', type: 'float', default: 2.3, min: 1.0, max: 10.0, precision: 1, step: 0.1,
+      desc: '启动日成交量要达到前 20 日平均量的几倍。调高：只认放量大、假启动少，但信号明显变少；调低：信号多但容易混入普通波动的假启动。例：设 3.0 时多数日子平淡的股票难有信号；设 1.5 时几乎每次温和放量都会报信号。',
     },
     {
       // strategy-signal-outcome D11：涨幅门槛参数化（默认 5%）
@@ -66,8 +74,16 @@ const volBreakoutDef: StrategyDefinition = {
       desc: '启动日收盘涨幅至少要达到多少。调高：只认涨得猛的启动（如 0.098 只抓接近涨停的大阳线），信号少而强；调低：涨幅温和也算启动，信号多但更弱。例：0.05 时涨 6% 的日子符合条件；0.098 时同一天不再符合。',
     },
     {
-      key: 'shrink_threshold', label: '回调量缩阈值', type: 'float', default: 0.6, min: 0.1, max: 1.0, precision: 1, step: 0.1,
-      desc: '回调期间成交量要萎缩到启动日量的几成。调高：允许回调时量能缩得不太彻底、信号更多；调低：要求回调彻底缩量、形态更标准但容易等不到。例：0.8 时回调量还有启动量八成的也通过；0.4 时必须缩到四成以下。',
+      key: 'pullback_pct_max', label: '回调涨幅门阈值', type: 'float', default: 0.04, min: 0.02, max: 0.1, precision: 2, step: 0.01,
+      desc: 'B 级买点确认之前，回调期间单日收盘涨幅的上限，超过就判失效（回调中不该出现大涨）。调高：容忍回调中反弹更猛；调低：要求回调走势更平稳。例：设 0.06 时回调中某天涨 5% 仍可继续观察；默认 0.04 时同一天信号失效。',
+    },
+    {
+      key: 'volume_trend_ratio', label: '量能趋势门倍数', type: 'float', default: 1.1, min: 1.05, max: 2.0, precision: 2, step: 0.05,
+      desc: '启动日第 4 个交易日起，当日 3 日均量超过前 3 日均量的这个倍数就判失效（回调期量能应逐步萎缩）。调高：允许量能波动大一些不易触发；调低：对放量抬升更敏感、淘汰更严格。例：设 1.3 时连续温和放量可存活；默认 1.1 时连续放量抬升即失效。',
+    },
+    {
+      key: 'breakout_vol_ratio', label: '突破量比', type: 'float', default: 0.4, min: 0.2, max: 1.0, precision: 1, step: 0.1,
+      desc: 'B 级确认（放量突破回调期高点）要求的当日成交量下限，等于启动日成交量的这个比例。调高：要求突破时放量更足、确认更可靠但更难出现；调低：轻微放量也算突破。例：设 0.6 时缩量创新高不算 B；设 0.25 时基本只要创新高就算。',
     },
   ],
   states: [
@@ -77,23 +93,21 @@ const volBreakoutDef: StrategyDefinition = {
     { value: 'running', label: '已启动', color: 'success' },
   ],
   columns: [
-    { key: 'pullback_days_used', label: '回调天数', type: 'int' },
-    { key: 'vol_ratio', label: '放量倍数', type: 'float' },
-    // A/B 点过程与绩效列（strategy-signal-outcome D12 合并列声明：
-    // price_pct 单列渲染「价格 | 涨跌幅」，价格/涨幅分量双 key 显式声明；
-    // first_board_date 与 a_date 重复已删（a_date 保留）；方向/入场参考价
-    // 两通用列由 BlockSignals display 层黑名单裁剪，声明层不再出现）
-    { key: 'a_date', label: 'A日', type: 'date' },
-    { key: 'a_price', label: 'A日股价', type: 'price_pct', priceKey: 'a_close', pctKey: 'a_pct' },
-    { key: 'b_date', label: 'B点时间', type: 'date' },
-    { key: 'b_price', label: 'B日股价', type: 'price_pct', priceKey: 'b_close', pctKey: 'b_day_pct' },
-    { key: 'p7', label: '7日股价', type: 'price_pct', priceKey: 'close_7d', pctKey: 'ret_7d' },
-    { key: 'p14', label: '14日股价', type: 'price_pct', priceKey: 'close_14d', pctKey: 'ret_14d' },
-    { key: 'p30', label: '30日股价', type: 'price_pct', priceKey: 'close_30d', pctKey: 'ret_30d' },
+    { key: 'pullback_days', label: '回调天数', type: 'int' },
+    { key: 'volume_ratio', label: '放量倍数', type: 'float' },
+    // A/B 列整合（strategy-volume-breakout-pullback D7）：A 日日期+价格+涨幅
+    // 合并为 a_col 三值列；B 列 b_col 同构 + popup 标记（点击弹多 B 事件表）；
+    // 「信号日期」列删除（与 A 日冲突，BlockSignals 已不渲染）
+    { key: 'a_col', label: 'A日', type: 'date_price_pct', dateKey: 'a_date', priceKey: 'a_close', pctKey: 'a_pct' },
+    { key: 'b_col', label: 'B日', type: 'date_price_pct', dateKey: 'b_date', priceKey: 'b_close', pctKey: 'b_day_pct', popup: 'b_events' },
+    { key: 'close_5d_price', label: '5日股价', type: 'price_pct', priceKey: 'close_5d', pctKey: 'ret_5d' },
+    { key: 'close_10d_price', label: '10日股价', type: 'price_pct', priceKey: 'close_10d', pctKey: 'ret_10d' },
+    { key: 'close_15d_price', label: '15日股价', type: 'price_pct', priceKey: 'close_15d', pctKey: 'ret_15d' },
     { key: 'outcome', label: '成功判定', type: 'outcome' },
   ],
   // design D5 v1 声明：[summary, per_stock, signals, kv(绩效准确率统计)]——
-  // D12：删首板日分布/平均放量倍数/平均回调天数三个形态统计项，聚焦绩效
+  // D12：删首板日分布/平均放量倍数/平均回调天数三个形态统计项，聚焦绩效；
+  // 2026-10-15 修订：删 pending_cnt 数据不足数、平均收益随窗口改 5/10/15
   detail_schema: [
     { type: 'summary' },
     { type: 'per_stock' },
@@ -107,10 +121,9 @@ const volBreakoutDef: StrategyDefinition = {
         { key: 'accuracy', label: '准确率', fmt: 'pct' },
         { key: 'success_cnt', label: '成功数', fmt: 'int' },
         { key: 'failed_cnt', label: '失败数', fmt: 'int' },
-        { key: 'pending_cnt', label: '数据不足数', fmt: 'int' },
-        { key: 'avg_ret_7d', label: '平均7日收益', fmt: 'pct' },
-        { key: 'avg_ret_14d', label: '平均14日收益', fmt: 'pct' },
-        { key: 'avg_ret_30d', label: '平均30日收益', fmt: 'pct' },
+        { key: 'avg_ret_5d', label: '平均5日收益', fmt: 'pct' },
+        { key: 'avg_ret_10d', label: '平均10日收益', fmt: 'pct' },
+        { key: 'avg_ret_15d', label: '平均15日收益', fmt: 'pct' },
       ],
     },
   ],
@@ -205,9 +218,9 @@ const vpEntryDef: StrategyDefinition = {
     { key: 'a_price', label: 'A日股价', type: 'price_pct', priceKey: 'a_close', pctKey: 'a_pct' },
     { key: 'b_date', label: 'B点时间', type: 'date' },
     { key: 'b_price', label: 'B日股价', type: 'price_pct', priceKey: 'b_close', pctKey: 'b_day_pct' },
-    { key: 'p7', label: '7日股价', type: 'price_pct', priceKey: 'close_7d', pctKey: 'ret_7d' },
-    { key: 'p14', label: '14日股价', type: 'price_pct', priceKey: 'close_14d', pctKey: 'ret_14d' },
-    { key: 'p30', label: '30日股价', type: 'price_pct', priceKey: 'close_30d', pctKey: 'ret_30d' },
+    { key: 'p5', label: '5日股价', type: 'price_pct', priceKey: 'close_5d', pctKey: 'ret_5d' },
+    { key: 'p10', label: '10日股价', type: 'price_pct', priceKey: 'close_10d', pctKey: 'ret_10d' },
+    { key: 'p15', label: '15日股价', type: 'price_pct', priceKey: 'close_15d', pctKey: 'ret_15d' },
     { key: 'outcome', label: '成功判定', type: 'outcome' },
   ],
   // design D5：[summary, per_stock, signals, kv(基底特征统计 + 绩效准确率)]——无 timeline
@@ -228,14 +241,14 @@ const vpEntryDef: StrategyDefinition = {
         { key: 'avg_box_days', label: '平均蓄势天数', fmt: 'float' },
         { key: 'avg_a_ret', label: '平均 A 日涨幅', fmt: 'float' },
         { key: 'alive_count', label: '存活信号数', fmt: 'int' },
-        // 绩效准确率统计项（D6：与后端 compute_outcome_kv_stats 键一一对齐）
+        // 绩效准确率统计项（D6：与后端 compute_outcome_kv_stats 键一一对齐；
+        // 2026-10-15 修订：删 pending_cnt 数据不足数、平均收益随窗口改 5/10/15）
         { key: 'accuracy', label: '准确率', fmt: 'pct' },
         { key: 'success_cnt', label: '成功数', fmt: 'int' },
         { key: 'failed_cnt', label: '失败数', fmt: 'int' },
-        { key: 'pending_cnt', label: '数据不足数', fmt: 'int' },
-        { key: 'avg_ret_7d', label: '平均7日收益', fmt: 'pct' },
-        { key: 'avg_ret_14d', label: '平均14日收益', fmt: 'pct' },
-        { key: 'avg_ret_30d', label: '平均30日收益', fmt: 'pct' },
+        { key: 'avg_ret_5d', label: '平均5日收益', fmt: 'pct' },
+        { key: 'avg_ret_10d', label: '平均10日收益', fmt: 'pct' },
+        { key: 'avg_ret_15d', label: '平均15日收益', fmt: 'pct' },
       ],
     },
   ],
@@ -271,7 +284,7 @@ const volTask1: StrategyTask = {
   strategy_id: 'vol_breakout_pullback',
   label: '回调5日',
   user_group: '首板测试',
-  params: { pullback_days: 5, vol_ratio: 2.0, a_pct_min: 0.05, shrink_threshold: 0.6 },
+  params: { pullback_max_days: 13, pullback_min_days: 4, volume_ratio_min: 2.3, a_pct_min: 0.05, pullback_pct_max: 0.04, volume_trend_ratio: 1.1, breakout_vol_ratio: 0.4 },
   params_version: 2,
   scope_type: 'manual',
   scope_codes: ['sz.000001', 'sh.600036', 'sz.002594', 'sh.600887', 'sz.000651', 'sh.601012'],
@@ -280,6 +293,7 @@ const volTask1: StrategyTask = {
   progress_scanned: 6,
   progress_total: 6,
   signal_count: 0, // 生成信号后回填
+  accuracy: null, // 同上：生成信号后按 outcome 分布回填
   created_by: 'admin',
   created_at: now - 32 * 86400000,
   updated_at: now - 20 * 86400000,
@@ -291,7 +305,7 @@ const volTask2: StrategyTask = {
   strategy_id: 'vol_breakout_pullback',
   label: '回调3日',
   user_group: '首板测试',
-  params: { pullback_days: 3, vol_ratio: 2.5, a_pct_min: 0.05, shrink_threshold: 0.5 },
+  params: { pullback_max_days: 8, pullback_min_days: 3, volume_ratio_min: 2.5, a_pct_min: 0.05, pullback_pct_max: 0.05, volume_trend_ratio: 1.2, breakout_vol_ratio: 0.5 },
   params_version: 1,
   scope_type: 'watchlist',
   scope_codes: ['sh.600519', 'sz.000858', 'sz.000568', 'sh.600809', 'sz.002594'],
@@ -300,6 +314,7 @@ const volTask2: StrategyTask = {
   progress_scanned: 3,
   progress_total: 5,
   signal_count: 0,
+  accuracy: null,
   created_by: 'trader',
   created_at: now - 15 * 86400000,
   updated_at: now - 2 * 86400000,
@@ -311,7 +326,7 @@ const volTask3: StrategyTask = {
   strategy_id: 'vol_breakout_pullback',
   label: '全量首板扫描',
   user_group: '长期任务',
-  params: { pullback_days: 5, vol_ratio: 2.0, a_pct_min: 0.05, shrink_threshold: 0.6 },
+  params: { pullback_max_days: 13, pullback_min_days: 4, volume_ratio_min: 2.3, a_pct_min: 0.05, pullback_pct_max: 0.04, volume_trend_ratio: 1.1, breakout_vol_ratio: 0.4 },
   params_version: 1,
   scope_type: 'all',
   scope_codes: null,
@@ -320,6 +335,7 @@ const volTask3: StrategyTask = {
   progress_scanned: 3218,
   progress_total: 5000,
   signal_count: 0,
+  accuracy: null,
   created_by: 'admin',
   created_at: now - 8 * 86400000,
   updated_at: now - 3600000,
@@ -340,6 +356,7 @@ const maTask1: StrategyTask = {
   progress_scanned: 4,
   progress_total: 4,
   signal_count: 0,
+  accuracy: null,
   created_by: 'trader',
   created_at: now - 25 * 86400000,
   updated_at: now - 10 * 86400000,
@@ -364,6 +381,7 @@ const vpTask1: StrategyTask = {
   progress_scanned: 6,
   progress_total: 6,
   signal_count: 0,
+  accuracy: null,
   created_by: 'admin',
   created_at: now - 10 * 86400000,
   updated_at: now - 5 * 86400000,
@@ -385,6 +403,7 @@ const vpTask2: StrategyTask = {
   progress_scanned: 2,
   progress_total: 4,
   signal_count: 0,
+  accuracy: null,
   created_by: 'trader',
   created_at: now - 6 * 86400000,
   updated_at: now - 86400000,
@@ -426,57 +445,104 @@ function genSignals(
     // 绩效四字段（strategy-signal-outcome D1 行级字段，非 payload）：仅匹配态
     // （triggered/running）携带——expired/watching 态无绩效，detail 信号页也不展示
     const isMatched = state === 'triggered' || state === 'running'
-    let ret7: number | null = null
-    let ret14: number | null = null
-    let ret30: number | null = null
+    let ret5: number | null = null
+    let ret10: number | null = null
+    let ret15: number | null = null
     let outcome: 'success' | 'failed' | 'pending' | null = null
     if (def.id === 'vol_breakout_pullback') {
       // 首板日 = 信号日前推若干交易日（回调窗口语义）——payload 保留
       // first_board_date 键（per_stock 消息等处引用），columns 声明已删该列（D12）
       const boardTs = signalTs - (3 + Math.floor(r * 6)) * 86400000
       payload.first_board_date = dateStr(boardTs)
-      payload.pullback_days_used = Math.floor(r * Number(task.params.pullback_days || 5)) + 1
-      payload.vol_ratio = +(1.8 + r * 1.5).toFixed(2)
-      // A/B 点过程字段 + 绩效（D10/D12 口径：匹配态才有，三态轮转覆盖）
-      // A 日 = 首板日；B 点 = 回调窗口结束日（入场日，绩效起算）
-      const bTs = signalTs - 2 * 86400000
+      // 回调天数换锚（strategy-volume-breakout-pullback：最早 B 事件日 − A 日）
+      payload.pullback_days = Math.floor(4 + r * Number(task.params.pullback_max_days || 13) * 0.6)
+      payload.volume_ratio = +(1.8 + r * 1.5).toFixed(2)
+      // A 日过程字段（D7 三值合并列 a_col：a_date/a_close/a_pct）
       payload.a_date = dateStr(boardTs)
       payload.a_close = +(stock.price * (0.9 + r * 0.06)).toFixed(2)
       payload.a_pct = +(0.05 + r * 0.05).toFixed(4)
-      payload.b_date = dateStr(bTs)
-      // B 日 OHLC + 当日涨跌幅（D10：b_day_pct = b_close/b_open - 1 引擎直出口径）
-      payload.b_open = +(payload.a_close as number * (0.94 + r * 0.04)).toFixed(2)
-      payload.b_close = +(payload.b_open as number * (1.02 + r * 0.03)).toFixed(2)
-      payload.b_day_pct = +((payload.b_close as number) / (payload.b_open as number) - 1).toFixed(4)
+      // ---- B 级事件生成（strategy-volume-breakout-pullback D1/D7） ----
+      // 五级独立事件集合：非匹配态（watching）零事件（窗口未走完不打标），
+      // 匹配态 1~3 个事件（B3 30m 缠论买点带时刻 / B1 日线 / B 放量突破轮转）
+      const bEvents: BEventRow[] = []
       if (isMatched) {
-        // 绩效三态轮转（D13 加权口径）：0/1 成功（总收益 = 10%×0.5 + 3%×0.3 +
-        // 12%×0.2 = 9.5% > 5%）、2/4 失败（总收益 ≤ 5%）、3 待定（三时段不齐）；
+        const bTs = signalTs - 2 * 86400000
+        const levels: BEventRow['b_level'][] = ['B1', 'B2', 'B3', 'B4', 'B']
+        const eventCount = 1 + Math.floor(r * 3) // 1~3 个
+        for (let k = 0; k < eventCount; k++) {
+          const level = levels[(i + k) % levels.length]
+          // 30m 判定（B2/B3）带时刻，日线判定（B1/B4/B）日期 00:00
+          const isMinute = level === 'B2' || level === 'B3'
+          const dayOffset = 1 + Math.floor(r * 8)
+          const eTs = signalTs - dayOffset * 86400000
+          const ePrice = +(payload.a_close as number * (0.86 + r * 0.08)).toFixed(2)
+          const e5 = +(0.02 + r * 0.12).toFixed(4)
+          const e10 = +(0.01 + r * 0.15).toFixed(4)
+          const e15 = +(r > 0.3 ? 0.02 + r * 0.2 : -0.02 + r * 0.05).toFixed(4)
+          // 事件独立绩效三态轮转（与信号级同口径，2026-10-15 窗口 5/10/15）
+          const eOutcome: BEventRow['outcome'] =
+            k % 3 === 0 ? 'success' : k % 3 === 1 ? 'failed' : 'pending'
+          bEvents.push({
+            b_level: level,
+            b_time: isMinute
+              ? `${dateStr(eTs)} ${['10:00:00', '10:30:00', '13:30:00', '15:00:00'][(i + k) % 4]}`
+              : `${dateStr(eTs)} 00:00:00`,
+            b_kl_type: isMinute ? '30m' : 'D',
+            price: ePrice,
+            day_pct: +((r - 0.5) * 0.08).toFixed(4),
+            ret_5d: eOutcome === 'pending' ? e5 : e5,
+            ret_10d: eOutcome === 'pending' ? null : e10,
+            ret_15d: eOutcome === 'pending' ? null : e15,
+            outcome: eOutcome,
+          })
+        }
+        // payload 摘要（D1：payload 只留 earliest 摘要 + b_count，全集弹窗取）
+        payload.b_count = bEvents.length
+        payload.earliest_b_level = bEvents[0].b_level
+        // B 列展平键（b_col 三值合并列：最早事件）
+        const first = bEvents[0]
+        payload.b_date = first.b_time
+        payload.b_close = first.price
+        payload.b_day_pct = first.day_pct
+      } else {
+        payload.b_count = 0
+        payload.earliest_b_level = null
+        payload.b_date = null
+        payload.b_close = null
+        payload.b_day_pct = null
+      }
+      // b_events 全集（任务详情 detail 行嵌入形态；主列表页不带——mock 信号池
+      // 单一形态两用，前端 bEventsOf 兼容有/无两种形态）
+      ;(payload as Record<string, number | string | null | BEventRow[]>).b_events = bEvents
+      if (isMatched) {
+        // 绩效三态轮转（2026-10-15 加权口径 30/50/20）：0/1 成功（总收益 = 10%×0.3 +
+        // 3%×0.5 + 12%×0.2 = 8.1% > 5%）、2/4 失败（总收益 ≤ 5%）、3 待定（三时段不齐）；
         // 保证 success/failed/pending 各至少若干条（任务详情联调用）
         const bucket = i % 5
         if (bucket === 0 || bucket === 1) {
-          ret7 = 0.1
-          ret14 = 0.03
-          ret30 = 0.12
+          ret5 = 0.1
+          ret10 = 0.03
+          ret15 = 0.12
           outcome = 'success'
         } else if (bucket === 3) {
-          ret7 = +(0.04 + r * 0.03).toFixed(4)
-          ret14 = null
-          ret30 = null
+          ret5 = +(0.04 + r * 0.03).toFixed(4)
+          ret10 = null
+          ret15 = null
           outcome = 'pending'
         } else {
-          // 失败样例：总收益 = 4%×0.5 + 1%×0.3 + 3%×0.2 = 2.9% ≤ 5%
-          ret7 = +(0.02 + r * 0.02).toFixed(4)
-          ret14 = +(0.01 + r * 0.01).toFixed(4)
-          ret30 = +(0.03 + r * 0.01).toFixed(4)
+          // 失败样例：总收益 = 4%×0.3 + 1%×0.5 + 3%×0.2 = 2.5% ≤ 5%
+          ret5 = +(0.04 + r * 0.02).toFixed(4)
+          ret10 = +(0.01 + r * 0.01).toFixed(4)
+          ret15 = +(0.03 + r * 0.01).toFixed(4)
           outcome = 'failed'
         }
-        payload.close_7d = ret7 != null ? +(entry * (1 + ret7)).toFixed(2) : null
-        payload.close_14d = ret14 != null ? +(entry * (1 + ret14)).toFixed(2) : null
-        payload.close_30d = ret30 != null ? +(entry * (1 + ret30)).toFixed(2) : null
+        payload.close_5d = ret5 != null ? +(entry * (1 + ret5)).toFixed(2) : null
+        payload.close_10d = ret10 != null ? +(entry * (1 + ret10)).toFixed(2) : null
+        payload.close_15d = ret15 != null ? +(entry * (1 + ret15)).toFixed(2) : null
       } else {
-        payload.close_7d = null
-        payload.close_14d = null
-        payload.close_30d = null
+        payload.close_5d = null
+        payload.close_10d = null
+        payload.close_15d = null
       }
     } else if (def.id === 'vp_entry') {
       // 量价三段式 payload（SignalEvent 基底特征，D2 事件转换契约）：
@@ -500,33 +566,33 @@ function genSignals(
       payload.b_close = +(payload.b_open as number * (1.01 + r * 0.04)).toFixed(2)
       payload.b_day_pct = +((payload.b_close as number) / (payload.b_open as number) - 1).toFixed(4)
       if (isMatched) {
-        // 三态轮转（D13 加权口径）：0/2 成功（总收益 = 9%×0.5 + 11%×0.3 +
-        // 4%×0.2 = 8.1% > 5%）、1/4 失败（总收益 ≤ 5%）、3 待定（detail 信号页联调）
+        // 三态轮转（2026-10-15 加权口径 30/50/20）：0/2 成功（总收益 = 9%×0.3 +
+        // 11%×0.5 + 4%×0.2 = 8.5% > 5%）、1/4 失败（总收益 ≤ 5%）、3 待定（detail 信号页联调）
         const bucket = i % 5
         if (bucket === 0 || bucket === 2) {
-          ret7 = 0.09
-          ret14 = 0.11
-          ret30 = 0.04
+          ret5 = 0.09
+          ret10 = 0.11
+          ret15 = 0.04
           outcome = 'success'
         } else if (bucket === 3) {
-          ret7 = +(0.05 + r * 0.03).toFixed(4)
-          ret14 = null
-          ret30 = null
+          ret5 = +(0.05 + r * 0.03).toFixed(4)
+          ret10 = null
+          ret15 = null
           outcome = 'pending'
         } else {
-          // 失败样例：总收益 = 3%×0.5 + 0%×0.3 + 4%×0.2 = 2.3% ≤ 5%
-          ret7 = +(0.03 + r * 0.02).toFixed(4)
-          ret14 = +(-0.005 + r * 0.005).toFixed(4)
-          ret30 = +(0.04 + r * 0.02).toFixed(4)
+          // 失败样例：总收益 = 3%×0.3 + 0%×0.5 + 4%×0.2 = 1.7% ≤ 5%
+          ret5 = +(0.03 + r * 0.02).toFixed(4)
+          ret10 = +(-0.005 + r * 0.005).toFixed(4)
+          ret15 = +(0.04 + r * 0.02).toFixed(4)
           outcome = 'failed'
         }
-        payload.close_7d = ret7 != null ? +(entry * (1 + ret7)).toFixed(2) : null
-        payload.close_14d = ret14 != null ? +(entry * (1 + ret14)).toFixed(2) : null
-        payload.close_30d = ret30 != null ? +(entry * (1 + ret30)).toFixed(2) : null
+        payload.close_5d = ret5 != null ? +(entry * (1 + ret5)).toFixed(2) : null
+        payload.close_10d = ret10 != null ? +(entry * (1 + ret10)).toFixed(2) : null
+        payload.close_15d = ret15 != null ? +(entry * (1 + ret15)).toFixed(2) : null
       } else {
-        payload.close_7d = null
-        payload.close_14d = null
-        payload.close_30d = null
+        payload.close_5d = null
+        payload.close_10d = null
+        payload.close_15d = null
       }
     } else {
       // 金叉日 = 信号日前推若干交易日
@@ -535,6 +601,9 @@ function genSignals(
       payload.trend_strength = +(0.2 + r * 0.8).toFixed(2)
     }
     rows.push({
+      // 信号行 id（strategy-volume-breakout-pullback：B 事件弹窗接口按此查；
+      // mock 用 task.id * 10000 + 序号造全局唯一 id）
+      id: task.id * 10000 + i,
       code: stock.code,
       name: stock.name,
       industries: stock.industries,
@@ -545,10 +614,11 @@ function genSignals(
       stop_ref_price: stop,
       payload,
       params_version: paramsVersion,
-      // 绩效四字段（D1 行级列：非匹配态恒 null——对齐后端「匹配态才带值」）
-      ret_7d: ret7,
-      ret_14d: ret14,
-      ret_30d: ret30,
+      // 绩效四字段（D1 行级列：非匹配态恒 null——对齐后端「匹配态才带值」；
+      // 2026-10-15 修订：7/14/30 → 5/10/15）
+      ret_5d: ret5,
+      ret_10d: ret10,
+      ret_15d: ret15,
       outcome,
     })
   }
@@ -559,7 +629,7 @@ function genSignals(
 export const strategySignals: Record<number, StrategySignalRow[]> = {
   // 任务一：v1 旧参数 8 条 + v2 新参数 16 条 → 信号行版本标识联调
   1: [
-    ...genSignals(volBreakoutDef, { ...volTask1, params: { pullback_days: 5, vol_ratio: 1.8, shrink_threshold: 0.7 } } as StrategyTask, 8, 11, 1),
+    ...genSignals(volBreakoutDef, { ...volTask1, params: { pullback_max_days: 5, pullback_min_days: 4, volume_ratio_min: 1.8, a_pct_min: 0.05 } } as StrategyTask, 8, 11, 1),
     ...genSignals(volBreakoutDef, volTask1, 16, 23, 2),
   ],
   2: genSignals(volBreakoutDef, volTask2, 10, 23, 1),
@@ -573,10 +643,19 @@ export const strategySignals: Record<number, StrategySignalRow[]> = {
   ],
 }
 
-// 信号计数回填（侧栏 badge 与列表 total 用同一口径）
+// 信号计数与准确率回填（侧栏 badge / 列表 total / 准确率列同一口径；
+// accuracy 口径对齐后端 compute_outcome_kv_stats：仅匹配态行
+// （triggered/running）计入，success/(success+failed)，分母 0 → null）
 for (const def of strategyDefinitions) {
   for (const task of def.tasks) {
     task.signal_count = (strategySignals[task.id] || []).length
+    const matched = (strategySignals[task.id] || []).filter(
+      (s) => s.state === 'triggered' || s.state === 'running',
+    )
+    const successCnt = matched.filter((s) => s.outcome === 'success').length
+    const failedCnt = matched.filter((s) => s.outcome === 'failed').length
+    const denom = successCnt + failedCnt
+    task.accuracy = denom ? +(successCnt / denom).toFixed(4) : null
   }
 }
 
@@ -689,13 +768,14 @@ function volKvPayload(taskId: number): Record<string, number | string | null> {
 
 /** 通用绩效聚合（strategy-signal-outcome D6：对齐后端 compute_outcome_kv_stats 键，
  *  匹配态信号 outcome 分布聚合；accuracy = success/(success+failed)，
- *  pending 数据不足不入分母；avg_ret_* 为非 NULL 收益率均值，无样本为 null） */
+ *  pending 数据不足不入分母；avg_ret_* 为非 NULL 收益率均值，无样本为 null。
+ *  2026-10-15 修订：删 pending_cnt（kv 块不再展示数据不足数）、
+ *  avg_ret_* 随窗口改 5/10/15） */
 function outcomeKvStats(taskId: number): Record<string, number | null> {
   const signals = strategySignals[taskId] || []
   const successCnt = signals.filter((s) => s.outcome === 'success').length
   const failedCnt = signals.filter((s) => s.outcome === 'failed').length
-  const pendingCnt = signals.filter((s) => s.outcome === 'pending').length
-  const avg = (key: 'ret_7d' | 'ret_14d' | 'ret_30d'): number | null => {
+  const avg = (key: 'ret_5d' | 'ret_10d' | 'ret_15d'): number | null => {
     const vals = signals.map((s) => s[key]).filter((v): v is number => v != null)
     return vals.length ? +(vals.reduce((a, b) => a + b, 0) / vals.length).toFixed(6) : null
   }
@@ -703,11 +783,10 @@ function outcomeKvStats(taskId: number): Record<string, number | null> {
   return {
     success_cnt: successCnt,
     failed_cnt: failedCnt,
-    pending_cnt: pendingCnt,
     accuracy: denom ? +(successCnt / denom).toFixed(4) : null,
-    avg_ret_7d: avg('ret_7d'),
-    avg_ret_14d: avg('ret_14d'),
-    avg_ret_30d: avg('ret_30d'),
+    avg_ret_5d: avg('ret_5d'),
+    avg_ret_10d: avg('ret_10d'),
+    avg_ret_15d: avg('ret_15d'),
   }
 }
 
@@ -871,7 +950,8 @@ function resolveScope(payload: {
 }
 
 /** 新建任务：params 按定义 params_schema 校验（min/max 拒绝抛错 → handler 转 422）；
- *  创建后 pending 待执行（spec：创建即进入待执行状态，非隐式全量回算） */
+ *  创建后 pending 待执行（spec：创建即进入待执行状态，非隐式全量回算）。
+ *  created_by 取请求头 token 解析出的当前 mock 用户 username（对齐真后端鉴权注入） */
 export function addTask(payload: {
   strategy_id?: string
   label?: string
@@ -881,7 +961,7 @@ export function addTask(payload: {
   scope_codes?: string[]
   folder_id?: number
   mode?: string
-}): StrategyTask {
+}, request?: Request): StrategyTask {
   const def = findDefinition((payload.strategy_id || '').trim())
   if (!def) throw new Error(`策略定义 ${payload.strategy_id} 不存在`)
   const label = (payload.label || '').trim()
@@ -890,6 +970,8 @@ export function addTask(payload: {
   validateParams(def, params)
   const scope = resolveScope(payload)
   const total = scope.scope_codes ? scope.scope_codes.length : 5000 // mock：全量 A 股按 5000 档
+  const uid = request ? userIdFromRequest(request) : 1
+  const creator = mockUsers.find((m) => m.id === uid)?.username || 'admin'
   const task: StrategyTask = {
     id: nextTaskId++,
     strategy_id: def.id,
@@ -903,7 +985,8 @@ export function addTask(payload: {
     progress_scanned: 0,
     progress_total: total,
     signal_count: 0,
-    created_by: 'admin',
+    accuracy: null,
+    created_by: creator,
     created_at: Date.now(),
     updated_at: Date.now(),
   }
@@ -1051,10 +1134,12 @@ export function promoteTask(id: number): StrategyTask {
 }
 
 /** 复制任务（继承参数与范围为新的 test 任务，可自由编辑——调参路径） */
-export function copyTask(id: number): StrategyTask {
+export function copyTask(id: number, request?: Request): StrategyTask {
   const found = findTask(id)
   if (!found) throw new Error(`任务 ${id} 不存在`)
   const { def, task } = found
+  const uid = request ? userIdFromRequest(request) : 1
+  const creator = mockUsers.find((m) => m.id === uid)?.username || 'admin'
   const copy: StrategyTask = {
     id: nextTaskId++,
     strategy_id: task.strategy_id,
@@ -1069,7 +1154,8 @@ export function copyTask(id: number): StrategyTask {
     progress_scanned: 0,
     progress_total: task.progress_total,
     signal_count: 0,
-    created_by: 'admin',
+    accuracy: null,
+    created_by: creator,
     created_at: Date.now(),
     updated_at: Date.now(),
   }

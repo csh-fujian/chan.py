@@ -19,3 +19,34 @@
 -- 现状：暂无内容。Windows 机器的 chan 库为参考基准库（表结构正确）；历史上
 -- WebAPI/update.sql 的语句已废弃并删除。后续在 Windows 上产生的变更再记录于此。
 -- ============================================================================
+
+-- 2026-10-14 strategy-volume-breakout-pullback：新增 strategy_signal_b_event 表
+-- （B 级事件独立绩效，openspec 变更 strategy-volume-breakout-pullback design D1）。
+-- 实际建表由 strategy_store._ensure_tables 惰性 DDL 完成，此处为变更记录（幂等）。
+CREATE TABLE IF NOT EXISTS strategy_signal_b_event (
+    id         BIGSERIAL PRIMARY KEY,
+    signal_id  INT NOT NULL REFERENCES strategy_signal(id) ON DELETE CASCADE,
+    b_level    VARCHAR(8) NOT NULL,
+    b_time     VARCHAR(19) NOT NULL,
+    b_kl_type  VARCHAR(8) NOT NULL,
+    price      DOUBLE PRECISION,
+    day_pct    DOUBLE PRECISION,
+    ret_7d     DOUBLE PRECISION,
+    ret_14d    DOUBLE PRECISION,
+    ret_30d    DOUBLE PRECISION,
+    outcome    VARCHAR,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (signal_id, b_level, b_time)
+);
+
+-- 2026-10-15 strategy-volume-breakout-pullback / strategy-signal-outcome 修订：
+-- 绩效窗口 7/14/30 → 5/10/15（加权 30%/50%/20%，阈值 5% 不变）。
+-- strategy_signal 与 strategy_signal_b_event 幂等加新绩效列；旧列
+-- ret_7d/ret_14d/ret_30d 废弃不删（历史行不迁移，重扫自然覆盖）。
+-- 实际加列由 strategy_store._ensure_tables 惰性 DDL 完成，此处为变更记录。
+ALTER TABLE strategy_signal ADD COLUMN IF NOT EXISTS ret_5d  DOUBLE PRECISION;
+ALTER TABLE strategy_signal ADD COLUMN IF NOT EXISTS ret_10d DOUBLE PRECISION;
+ALTER TABLE strategy_signal ADD COLUMN IF NOT EXISTS ret_15d DOUBLE PRECISION;
+ALTER TABLE strategy_signal_b_event ADD COLUMN IF NOT EXISTS ret_5d  DOUBLE PRECISION;
+ALTER TABLE strategy_signal_b_event ADD COLUMN IF NOT EXISTS ret_10d DOUBLE PRECISION;
+ALTER TABLE strategy_signal_b_event ADD COLUMN IF NOT EXISTS ret_15d DOUBLE PRECISION;

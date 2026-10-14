@@ -128,11 +128,11 @@ function formatPayload(v: number | string | null | undefined, type: StrategyColu
 }
 
 /** 列取值兜底（strategy-signal-outcome 5.1/D12）：先 payload[key]，无键回退
- *  行级字段（ret_7d 等绩效列与 entry_ref_price 不在 payload）——price_pct
+ *  行级字段（ret_5d 等绩效列与 entry_ref_price 不在 payload）——price_pct
  *  合并列的价格/涨幅分量取值同此双路径 */
 function colValue(row: StrategySignalRow, key: string): number | string | null | undefined {
   const pv = row.payload?.[key]
-  if (pv !== undefined) return pv
+  if (pv !== undefined) return Array.isArray(pv) ? undefined : pv
   return row[key as keyof StrategySignalRow] as number | string | null | undefined
 }
 

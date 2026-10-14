@@ -73,7 +73,7 @@ export const strategyHandlers = [
         }
       | null
     try {
-      const task = addTask(body ?? {})
+      const task = addTask(body ?? {}, request)
       return HttpResponse.json(task)
     } catch (e) {
       return HttpResponse.json({ detail: (e as Error).message }, { status: 422 })
@@ -141,10 +141,10 @@ export const strategyHandlers = [
   }),
 
   // 复制任务（继承参数与范围为新的 test 任务）
-  http.post('/api/strategy/tasks/:id/copy', async ({ params }) => {
+  http.post('/api/strategy/tasks/:id/copy', async ({ params, request }) => {
     await delay(300)
     try {
-      const task = copyTask(Number(params.id))
+      const task = copyTask(Number(params.id), request)
       return HttpResponse.json(task)
     } catch (e) {
       return HttpResponse.json({ detail: (e as Error).message }, { status: 404 })
@@ -206,5 +206,20 @@ export const strategyHandlers = [
     const start = (page - 1) * pageSize
     const pageList = list.slice(start, start + pageSize)
     return HttpResponse.json({ list: pageList, total, page, page_size: pageSize })
+  }),
+
+  // 单信号 B 级事件全集（strategy-volume-breakout-pullback D7：B 列弹窗数据源；
+  // mock 信号 payload 已嵌 b_events，直接回取；跨任务线性查 id——mock 池小可接受）
+  http.get('/api/strategy/signals/:signalId/b-events', ({ params }) => {
+    const signalId = Number(params.signalId)
+    for (const rows of Object.values(strategySignals)) {
+      const row = rows.find((r) => r.id === signalId)
+      if (row) {
+        const v = row.payload?.b_events
+        const bEvents = Array.isArray(v) ? v : []
+        return HttpResponse.json({ signal_id: signalId, b_events: bEvents })
+      }
+    }
+    return HttpResponse.json({ detail: '信号不存在' }, { status: 404 })
   }),
 ]

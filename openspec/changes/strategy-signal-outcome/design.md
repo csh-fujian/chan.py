@@ -2,7 +2,7 @@
 
 ## Context
 
-strategy-task-redesign（任务模型 + detail_schema 积木块）与 vp-entry-strategy-integration（enum 参数 + vp_entry 引擎）均已实施完成待归档。用户定义了信号绩效口径：匹配信号（有入场参考价的 triggered/running）按入场日 +7/+14/+30 日收益（基准 = entry_ref_price）判成功（**加权求和：7日×50% + 14日×30% + 30日×20%，总收益 > 5%；2026-10-12 修订，原「≥2 个时段正且 >8%」口径废弃**），任务详情只展示匹配信号 + 绩效列 + 准确率。同时 vol_breakout_pullback 需补冲高豁免（量能峰锚定，对齐 vp_entry 语义）。
+strategy-task-redesign（任务模型 + detail_schema 积木块）与 vp-entry-strategy-integration（enum 参数 + vp_entry 引擎）均已实施完成待归档。用户定义了信号绩效口径：匹配信号（有入场参考价的 triggered/running）按入场日 +5/+10/+15 日收益（基准 = entry_ref_price）判成功（**加权求和：5日×30% + 10日×50% + 15日×20%，总收益 > 5%；2026-10-12 定稿加权口径、2026-10-15 修订窗口与权重，原「7日×50% + 14日×30% + 30日×20%」与更早「≥2 个时段正且 >8%」口径均废弃**），任务详情只展示匹配信号 + 绩效列 + 准确率（kv 块不展示数据不足数，2026-10-15 修订）。同时 vol_breakout_pullback 需补冲高豁免（量能峰锚定，对齐 vp_entry 语义）。
 
 ## Goals / Non-Goals
 
@@ -14,7 +14,7 @@ strategy-task-redesign（任务模型 + detail_schema 积木块）与 vp-entry-s
 
 **Non-Goals:**
 - 不做参数寻优/反馈学习（strategy-optimization 变更）
-- 不做动态出场（止损/止盈持有）口径——v1 固定 7/14/30 日窗口
+- 不做动态出场（止损/止盈持有）口径——v1 固定 5/10/15 日窗口（2026-10-15 修订，原 7/14/30）
 - 不改 vp_entry 的状态追踪逻辑（只加绩效计算）
 - 信号列表页（/signals 独立页）不加绩效列（proposal 已划出）
 
@@ -22,7 +22,7 @@ strategy-task-redesign（任务模型 + detail_schema 积木块）与 vp-entry-s
 
 ### D1. 绩效字段存 payload 还是独立列？
 
-**独立列**。strategy_signal 加 `ret_7d / ret_14d / ret_30d (numeric, NULL) + outcome (varchar: 'success'/'failed'/'pending')`：
+**独立列**。strategy_signal 加 `ret_5d / ret_10d / ret_15d (numeric, NULL) + outcome (varchar: 'success'/'failed'/'pending')`（2026-10-15 修订：新列幂等加列，原 ret_7d/ret_14d/ret_30d 列废弃不删）：
 
 - kv 准确率统计要 `COUNT(*) FILTER (WHERE outcome=...)` + AVG——走列一条 SQL；走 payload 是全行拉回内存解析 JSONB
 - signals 块排序/筛选（按成功率、按收益率）将来是自然诉求，payload key 无法索引
@@ -47,12 +47,12 @@ DDL 走 update.sql 幂等块（numeric NULL + varchar NULL，无约束）。
   compute_outcome(entry_day_idx, entry_price, kl):
       rets = [kl[i+d].close/entry_price - 1 for d in (7,14,30) if i+d < n]
       # 判定改为加权求和（2026-10-12 修订，D13）：
-      total = ret_7d*0.5 + ret_14d*0.3 + ret_30d*0.2
+      total = ret_5d*0.3 + ret_10d*0.5 + ret_15d*0.2
       outcome = 'success' if total > 0.05 else 'failed'
                 （三时段不全 → 'pending'，数据不足——不得用归一化权重或按 0 计入）
   ```
 - 加权权重（50%/30%/20%）与 5% 阈值为全策略统一口径（spec 定死），不做参数
-- **顺带产出过程字段**（D10 消费）：close_7d/close_14d/close_30d、b_date——同一循环里现成
+- **顺带产出过程字段**（D10 消费）：close_5d/close_10d/close_15d、b_date——同一循环里现成
 
 ### D4. 入场日口径（各引擎自定义，绩效共用）
 
@@ -66,22 +66,22 @@ DDL 走 update.sql 幂等块（numeric NULL + varchar NULL，无约束）。
 
 ### D5. upsert 与 frozen 语义扩展
 
-`upsert_signal` 的 ON CONFLICT 更新列**加入 ret_7d/14d/30d + outcome**，但 WHERE frozen = FALSE 保护不变（frozen 行整体不覆盖——绩效与 state 同生共死）。**pending → 终态的推进**依赖引擎全史重算：水位门只挡「无新 K」的 code，有新 K 时全量重算会重放该信号并给出新绩效，幂等覆盖（frozen 除外）。
+`upsert_signal` 的 ON CONFLICT 更新列**加入 ret_5d/10d/15d + outcome**，但 WHERE frozen = FALSE 保护不变（frozen 行整体不覆盖——绩效与 state 同生共死）。**pending → 终态的推进**依赖引擎全史重算：水位门只挡「无新 K」的 code，有新 K 时全量重算会重放该信号并给出新绩效，幂等覆盖（frozen 除外）。
 
 存量任务：旧行无绩效列值（NULL/'pending'），详情显示 '--'；用户可对任务 full 重扫（清信号重算）补全，或保持旧行不动——不强制迁移。
 
 ### D6. detail API 变化
 
 - signals_page 数据源加 `state IN ('triggered','running')` 过滤（store query_signals 加参数 matched_only）
-- 行结构透传 ret_7d/ret_14d/ret_30d/outcome
+- 行结构透传 ret_5d/ret_10d/ret_15d/outcome
 - kv 块新增通用统计（两策略 kv 都加）：准确率（success/(success+failed)）、成功数/失败数/待定数、平均三时段收益
 - summary 块 matched 语义不变（matched 本来就是匹配信号计数）
 
 ### D7. 前端渲染
 
 - BlockSignals 绩效列：**columns 声明扩展类型 `pct`**（涨跌百分比，正涨红负跌绿，NULL→'--'）与 `outcome`（badge：success 绿/failed 红/pending 灰）——声明驱动，两策略 columns 各自声明绩效列
-- ~~**7/14/30 日价格列**：columns 现有 `float` 类型即可承载~~（D12 修订：价格+涨幅合并为 `price_pct` 列型单列展示，不再「价格列 + 相邻 pct 列」两列拆分）
-- BlockKv：kv_payload 键（accuracy/success_cnt/failed_cnt/pending_cnt/avg_ret_7d/14/30d）由定义 kv items 声明，值由 detail API 聚合
+- ~~**5/10/15 日价格列**：columns 现有 `float` 类型即可承载~~（D12 修订：价格+涨幅合并为 `price_pct` 列型单列展示，不再「价格列 + 相邻 pct 列」两列拆分）
+- BlockKv：kv_payload 键（accuracy/success_cnt/failed_cnt/avg_ret_5d/10/15d；2026-10-15 修订：pending_cnt 删除，两策略 kv 块不展示数据不足数）由定义 kv items 声明，值由 detail API 聚合
 - mock 同步：strategy.ts mock 数据补绩效字段样例（含 success/failed/pending 三态）
 - 阈值口径在 UI 常量注释里说明（D13 加权求和规则），不做设置项
 - **「成功判定」列头提示图标（D13）**：BlockSignals 的 outcome 列头加 QuestionFilled 悬浮 tooltip，内容为加权求和规则文案（与 spec 场景一致）；复用 TaskDialog 参数说明图标的既有交互模式
@@ -89,12 +89,12 @@ DDL 走 update.sql 幂等块（numeric NULL + varchar NULL，无约束）。
 
 ### D10. A/B 点过程字段（payload，不做列）
 
-任务详情信号列表要展示 **A 日时间/收盘价/涨幅、B 点时间/收盘价/当日涨跌幅、7/14/30 日收盘价与涨跌幅**。这些是**策略私有过程字段，走 payload**（引擎已有 first_board_date 等先例），不进独立列：
+任务详情信号列表要展示 **A 日时间/收盘价/涨幅、B 点时间/收盘价/当日涨跌幅、5/10/15 日收盘价与涨跌幅**。这些是**策略私有过程字段，走 payload**（引擎已有 first_board_date 等先例），不进独立列：
 
 - 独立列留给「跨策略通用语义」（绩效四字段 + 将来的排序/筛选诉求）；A/B 点命名是量价策略私有词汇
 - 展示层零成本：BlockSignals 的 columns 声明 `{key: 'a_close', type: 'price_pct'}` 直接从 row.payload 取值渲染（现有私有列机制本就走 payload）
-- vol_breakout payload 增补：a_date（=signal_date，冗余免取）、a_close、a_pct（A 日涨幅）、**b_open/b_close（B 日开盘/收盘价，B 日当日涨跌幅 = b_close/b_open - 1 的数据源）**、b_date（窗口结束日）、close_7d/close_14d/close_30d（入场日后 7/14/30 日收盘价，越界为 null）
-- vp_entry payload 增补：a_close、a_pct、**b_open/b_close**（分钟版 B 日/日线版 B+1，分钟版取日线对齐日 OHLC）、b_date（分钟版 B 日/日线版 B+1）、close_7d/14d/30d（B 点已有 b_bar_time/a_ret 等部分字段，按缺补齐）
+- vol_breakout payload 增补：a_date（=signal_date，冗余免取）、a_close、a_pct（A 日涨幅）、**b_open/b_close（B 日开盘/收盘价，B 日当日涨跌幅 = b_close/b_open - 1 的数据源）**、b_date（窗口结束日）、close_5d/close_10d/close_15d（入场日后 5/10/15 日收盘价，越界为 null）
+- vp_entry payload 增补：a_close、a_pct、**b_open/b_close**（分钟版 B 日/日线版 B+1，分钟版取日线对齐日 OHLC）、b_date（分钟版 B 日/日线版 B+1）、close_5d/10d/15d（B 点已有 b_bar_time/a_ret 等部分字段，按缺补齐）
 - **b_date 是绩效回算的副产物**（compute_outcome 需要入场日索引），零额外计算
 - 展示层消费（D12）：列声明以合并列（price_pct）直接消费 payload 的价格/涨幅两个字段（见 D12）
 
@@ -125,7 +125,7 @@ DDL 走 update.sql 幂等块（numeric NULL + varchar NULL，无约束）。
 任务详情信号列表列过多难读，列布局收紧为「合并单元格」模式：
 
 - **columns 声明新增类型 `price_pct`**：单列渲染「价格 | 涨跌幅」双值（如 `9.81 | +6.2%`）。价格分量取列 key 的 `*_close`/`*_price` 类字段，涨幅分量取配套 `a_pct/ret_*/` 涨幅字段——列声明为 `{key: 'a_price', label: 'A日股价', type: 'price_pct', priceKey: 'a_close', pctKey: 'a_pct'}`（双 key 显式声明，渲染层零猜测）
-- 合并后的四列（替代原 8 列）：**A日股价**（a_close | a_pct）、**B日股价**（b_close | B 日当日涨跌幅）、**7/14/30日股价**（close_* | ret_*，涨幅相对入场参考价）
+- 合并后的四列（替代原 8 列）：**A日股价**（a_close | a_pct）、**B日股价**（b_close | B 日当日涨跌幅）、**5/10/15日股价**（close_* | ret_*，涨幅相对入场参考价）
 - **B 日股价的涨幅分量 = B 日当日涨跌（收盘/开盘 - 1）**，非相对入场参考价——用户选定口径；引擎 payload 补 b_open/b_close（D10），渲染层算 `b_close/b_open - 1`（或引擎直出 b_day_pct，见 tasks 返工任务）
 - 涨幅分量沿用 pct 渲染规则：正涨红、负跌绿、数据不足 '--'
 - **删列**：first_board_date（与 a_date 重复）；方向、入场参考价两通用列按 D7 的 BlockSignals 模板黑名单裁剪
@@ -140,7 +140,7 @@ DDL 走 update.sql 幂等块（numeric NULL + varchar NULL，无约束）。
 
 原「两时段 >8%」口径废弃，改**加权求和**：
 
-- **总收益 = ret_7d × 0.5 + ret_14d × 0.3 + ret_30d × 0.2；总收益 > 0.05 → success，否则 failed**
+- **总收益 = ret_5d × 0.3 + ret_10d × 0.5 + ret_15d × 0.2；总收益 > 0.05 → success，否则 failed**
 - 「为正收益」条件被 >5% 阈值包含（>5% 必为正），不再单列
 - **三时段齐全才判**（用户选定）：任一时段越界未来 → pending，不入准确率分母——不做权重归一化（隐式假设）、不按 0 计入（悲观假设），口径无隐式语义
 - 落点：compute_outcome 判定分支重写（OUTCOME_THRESHOLD 语义改为总收益阈值 0.05；新增 OUTCOME_WEIGHTS = (0.5, 0.3, 0.2) 常量）+ BlockKv SUCCESS_CRITERION 常量 + BlockSignals outcome 列头 tooltip 文案
@@ -152,8 +152,8 @@ DDL 走 update.sql 幂等块（numeric NULL + varchar NULL，无约束）。
 - [口径加权/5% 阈值是拍板值，用户可能想调] → spec 定死；调权重/阈值属于 strategy-optimization 的参数寻优范围，届时再开
 - [pending 信号的准确率分母排除可能让早期任务准确率样本很少] → kv 同时给 success/failed/pending 三个计数，用户可见样本量
 - [vol_breakout 语义变化导致存量任务信号集口径漂移] → 不做数据迁移，full 重扫即净；旧任务不动则旧行为保留
-- [7/14/30 日越界（近月信号）pending 占比高] → 详情 '--' + pending 计数透出，用户可区分「没数据」与「失败」
-- [加权口径下「三时段齐全才判」使 pending 期从 14 日延至 30 日] → 近月信号判定延后，但避免归一化/按 0 计的隐式偏移（用户选定）
+- [5/10/15 日越界（近月信号）pending 占比高] → 详情 '--' + pending 计数透出，用户可区分「没数据」与「失败」
+- [加权口径下「三时段齐全才判」使 pending 期从 10 日延至 15 日（2026-10-15 窗口修订后）] → 近月信号判定延后，但避免归一化/按 0 计的隐式偏移（用户选定）
 
 ## Migration Plan
 

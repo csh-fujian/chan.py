@@ -151,14 +151,25 @@ def _ensure_tables():
                     payload         JSONB NOT NULL DEFAULT '{}',
                     params_version  INT NOT NULL DEFAULT 1,
                     frozen          BOOLEAN NOT NULL DEFAULT FALSE,
-                    ret_7d          DOUBLE PRECISION,
-                    ret_14d         DOUBLE PRECISION,
-                    ret_30d         DOUBLE PRECISION,
+                    ret_5d          DOUBLE PRECISION,
+                    ret_10d         DOUBLE PRECISION,
+                    ret_15d         DOUBLE PRECISION,
                     outcome         VARCHAR,
                     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     UNIQUE (task_id, code, signal_date)
                 )
                 """
+            )
+            # 2026-10-15 绩效窗口修订（7/14/30 → 5/10/15）：新列幂等加列，
+            # 旧列 ret_7d/ret_14d/ret_30d 废弃不删（历史行不迁移，重扫自然覆盖）
+            cur.execute(
+                "ALTER TABLE strategy_signal ADD COLUMN IF NOT EXISTS ret_5d DOUBLE PRECISION"
+            )
+            cur.execute(
+                "ALTER TABLE strategy_signal ADD COLUMN IF NOT EXISTS ret_10d DOUBLE PRECISION"
+            )
+            cur.execute(
+                "ALTER TABLE strategy_signal ADD COLUMN IF NOT EXISTS ret_15d DOUBLE PRECISION"
             )
             cur.execute(
                 """
@@ -169,6 +180,39 @@ def _ensure_tables():
                     PRIMARY KEY (task_id, code)
                 )
                 """
+            )
+            # B 级事件表（strategy-volume-breakout-pullback D1）：一信号多事件 ×
+            # 独立绩效。信号行 payload 只存 earliest 摘要（earliest_b_level/
+            # b_count），弹窗数据按 signal_id 查本表；frozen 信号的 b_event
+            # 不被重扫覆盖（upsert 门与 strategy_signal 同语义）
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS strategy_signal_b_event (
+                    id         BIGSERIAL PRIMARY KEY,
+                    signal_id  INT NOT NULL REFERENCES strategy_signal(id) ON DELETE CASCADE,
+                    b_level    VARCHAR(8) NOT NULL,
+                    b_time     VARCHAR(19) NOT NULL,
+                    b_kl_type  VARCHAR(8) NOT NULL,
+                    price      DOUBLE PRECISION,
+                    day_pct    DOUBLE PRECISION,
+                    ret_5d     DOUBLE PRECISION,
+                    ret_10d    DOUBLE PRECISION,
+                    ret_15d    DOUBLE PRECISION,
+                    outcome    VARCHAR,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (signal_id, b_level, b_time)
+                )
+                """
+            )
+            # 2026-10-15 绩效窗口修订：b_event 新列幂等加列，旧列废弃不删
+            cur.execute(
+                "ALTER TABLE strategy_signal_b_event ADD COLUMN IF NOT EXISTS ret_5d DOUBLE PRECISION"
+            )
+            cur.execute(
+                "ALTER TABLE strategy_signal_b_event ADD COLUMN IF NOT EXISTS ret_10d DOUBLE PRECISION"
+            )
+            cur.execute(
+                "ALTER TABLE strategy_signal_b_event ADD COLUMN IF NOT EXISTS ret_15d DOUBLE PRECISION"
             )
             # 定义层从代码注册表同步落库（幂等 upsert，非用户 CRUD），
             # 在同一 cursor/事务内执行（strategy 行是任务 FK 的前提）
@@ -292,6 +336,27 @@ def resolve_scope_codes(
 # 任务 CRUD（strategy-task-redesign design D1/D2）
 # ----------------------------------------------------------------------
 
+def _strip_removed_params(params: Optional[dict]) -> Optional[dict]:
+    """静默剔除 params 中已被定义删除的残留键（旧任务兼容）。
+
+    strategy-volume-breakout-pullback D8：volume_shrink_max 从 vol_breakout
+    定义删除后，旧任务 params 残留该键会让 validate_params 报「未知参数」
+    → 编辑旧任务 422。此处按当前定义的 schema_keys 过滤后再校验：残留键
+    静默丢弃（不报错、不保留），后续保存即完成参数组清理。
+    """
+    if not params:
+        return params
+    try:
+        from .strategy_engines import DEFINITIONS
+
+        schema_keys: set[str] = set()
+        for d in DEFINITIONS.values():
+            schema_keys.update(p["key"] for p in d.params_schema)
+        return {k: v for k, v in params.items() if k in schema_keys}
+    except Exception:
+        return params
+
+
 def create_task(
     strategy_id: str,
     label: str,
@@ -332,7 +397,7 @@ def create_task(
     else:
         scope_codes_json = None
 
-    normalized, errors = validate_params(definition, params)
+    normalized, errors = validate_params(definition, _strip_removed_params(params))
     if errors:
         raise ValueError("；".join(errors))
 
@@ -469,7 +534,7 @@ def update_task(
         definition = get_definition(task["strategy_id"])
         if definition is None:
             raise ValueError(f"策略定义不存在: {task['strategy_id']}")
-        normalized, errors = validate_params(definition, params)
+        normalized, errors = validate_params(definition, _strip_removed_params(params))
         if errors:
             raise ValueError("；".join(errors))
         if normalized != task["params"]:
@@ -628,12 +693,13 @@ def promote_task(task_id: int) -> dict:
     return get_task(task_id)
 
 
-def copy_task(task_id: int, label: Optional[str] = None) -> dict:
+def copy_task(task_id: int, label: Optional[str] = None, created_by: Optional[str] = None) -> dict:
     """复制任务（spec「复制任务调参」：继承参数与范围作为初始值的新 test 任务）。
 
     - 新任务 status='pending'、params_version=1（新参数组的起点）
     - 复制产物恒为 test 形态（调参 → 测试 → 满意再转正的循环）
     - 信号/逐股结果/水位不复制（新任务从零扫描）
+    - created_by 取当前操作者（路由注入），未传时回退原任务创建人
 
     返回新任务 dict。
     """
@@ -649,7 +715,7 @@ def copy_task(task_id: int, label: Optional[str] = None) -> dict:
         scope_codes=task["scope_codes"],
         mode="test",
         user_group=task["user_group"],
-        created_by=task.get("created_by"),
+        created_by=created_by if created_by is not None else task.get("created_by"),
     )
 
 
@@ -933,8 +999,12 @@ def _signal_values(task_id: int, params_version: int, ev: dict) -> tuple:
     （triggered/running）计算绩效，watching/expired 态事件不带绩效键，
     落 NULL 不覆盖已有判定（expired 的重扫演进本身也重写 NULL 语义正确：
     expired 无绩效）。
+    payload.b_events 全集不进 JSONB（strategy-volume-breakout-pullback D1：
+    事件行落 strategy_signal_b_event 表，payload 只留 earliest 摘要），此处
+    剔除后序列化。
     """
-    payload = ev.get("payload") or {}
+    payload = dict(ev.get("payload") or {})
+    payload.pop("b_events", None)
     return (
         task_id,
         ev["code"],
@@ -945,23 +1015,29 @@ def _signal_values(task_id: int, params_version: int, ev: dict) -> tuple:
         ev.get("stop_ref_price"),
         json.dumps(payload, ensure_ascii=False),
         params_version,
-        ev.get("ret_7d"),
-        ev.get("ret_14d"),
-        ev.get("ret_30d"),
+        ev.get("ret_5d"),
+        ev.get("ret_10d"),
+        ev.get("ret_15d"),
         ev.get("outcome"),
     )
 
 
 def upsert_signals(task_id: int, events: list[dict], params_version: int = 1) -> None:
-    """批量 upsert 信号（executemany，frozen 冻结门保留）。
+    """批量 upsert 信号 + B 级事件行（executemany，frozen 冻结门保留）。
 
     ON CONFLICT (task_id, code, signal_date) DO UPDATE ...
     WHERE strategy_signal.frozen = FALSE —— 已冻结（加监控）的行不被引擎覆盖
     （strategy-signal-page design D8 状态冻结边界；frozen 行整体不覆盖，
     绩效四字段与 state 同生共死，D5）。
     行携带产生该信号的 params_version（spec「信号携带参数版本」）与绩效
-    四字段 ret_7d/ret_14d/ret_30d/outcome（strategy-signal-outcome spec
+    四字段 ret_5d/ret_10d/ret_15d/outcome（2026-10-15 窗口修订后；strategy-signal-outcome spec
     「信号绩效（outcome）口径」）。
+
+    B 级事件（strategy-volume-breakout-pullback D1/3.2）：事件 payload 的
+    b_events 列表逐行落 strategy_signal_b_event，UNIQUE(signal_id, b_level,
+    b_time) 冲突时更新绩效（幂等演进：重扫补数据不重复插行）。frozen 信号
+    的 b_event 不写入（信号行未更新时 signal_id 不变，ON CONFLICT 更新绩效
+    与 frozen 语义同生共死）。
     """
     if not events:
         return
@@ -975,7 +1051,7 @@ def upsert_signals(task_id: int, events: list[dict], params_version: int = 1) ->
                 """INSERT INTO strategy_signal
                      (task_id, code, signal_date, state, is_buy,
                       entry_ref_price, stop_ref_price, payload, params_version,
-                      ret_7d, ret_14d, ret_30d, outcome)
+                      ret_5d, ret_10d, ret_15d, outcome)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s)
                    ON CONFLICT (task_id, code, signal_date) DO UPDATE SET
                      state           = EXCLUDED.state,
@@ -984,17 +1060,74 @@ def upsert_signals(task_id: int, events: list[dict], params_version: int = 1) ->
                      stop_ref_price  = EXCLUDED.stop_ref_price,
                      payload         = EXCLUDED.payload,
                      params_version  = EXCLUDED.params_version,
-                     ret_7d          = EXCLUDED.ret_7d,
-                     ret_14d         = EXCLUDED.ret_14d,
-                     ret_30d         = EXCLUDED.ret_30d,
+                     ret_5d          = EXCLUDED.ret_5d,
+                     ret_10d         = EXCLUDED.ret_10d,
+                     ret_15d         = EXCLUDED.ret_15d,
                      outcome         = EXCLUDED.outcome,
                      updated_at      = NOW()
                    WHERE strategy_signal.frozen = FALSE""",
                 [_signal_values(task_id, params_version, ev) for ev in events],
             )
+            # B 级事件行（信号行 upsert 后回查 id；frozen 未更新的行自然跳过——
+            # signal_id 对应行 state 未变，b_event 幂等更新绩效无破坏性）
+            _upsert_b_events(cur, task_id, events)
         conn.commit()
     finally:
         conn.close()
+
+
+def _upsert_b_events(cur, task_id: int, events: list[dict]) -> None:
+    """B 级事件落表：signal_id 按 (task_id, code, signal_date) 回查。
+
+    payload.b_events 的行结构（引擎 _mk_event/_mk_bsp_event 产物）：
+    b_level/b_time/b_kl_type/price/day_pct/ret_5d/ret_10d/ret_15d/outcome。
+    frozen 信号跳过（spec「frozen 信号的 B 事件与绩效 SHALL 不受重扫覆盖」：
+    signal 行未更新即连带不写 b_event）。
+    """
+    # 先取本批信号行的 (frozen, id) 快照——upsert 后 SELECT 即当前值
+    rows = []
+    for ev in events:
+        b_events = (ev.get("payload") or {}).get("b_events") or []
+        if not b_events:
+            continue
+        cur.execute(
+            """SELECT id, frozen FROM strategy_signal
+               WHERE task_id = %s AND code = %s AND signal_date = %s""",
+            (task_id, ev["code"], ev["signal_date"]),
+        )
+        r = cur.fetchone()
+        if r is None or r[1]:  # frozen 信号：B 事件不覆盖
+            continue
+        signal_id = r[0]
+        for be in b_events:
+            rows.append((
+                signal_id,
+                be.get("b_level"),
+                be.get("b_time"),
+                be.get("b_kl_type"),
+                be.get("price"),
+                be.get("day_pct"),
+                be.get("ret_5d"),
+                be.get("ret_10d"),
+                be.get("ret_15d"),
+                be.get("outcome"),
+            ))
+    if not rows:
+        return
+    cur.executemany(
+        """INSERT INTO strategy_signal_b_event
+             (signal_id, b_level, b_time, b_kl_type, price, day_pct,
+              ret_5d, ret_10d, ret_15d, outcome)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+           ON CONFLICT (signal_id, b_level, b_time) DO UPDATE SET
+             price    = EXCLUDED.price,
+             day_pct  = EXCLUDED.day_pct,
+             ret_5d   = EXCLUDED.ret_5d,
+             ret_10d  = EXCLUDED.ret_10d,
+             ret_15d  = EXCLUDED.ret_15d,
+             outcome  = EXCLUDED.outcome""",
+        rows,
+    )
 
 
 def freeze_signal_in_conn(cur, task_id: int, code: str, signal_date: str) -> None:
@@ -1050,7 +1183,7 @@ def query_signals(
       与 state 参数互斥由调用方保证（detail 路由只传 matched_only）
     - items 行含股票名称（LEFT JOIN stock）与 payload 解包 dict、params_version
       （信号行展示参数版本标识，spec「信号版本归因」）与绩效四字段
-      ret_7d/ret_14d/ret_30d/outcome（行透传，NULL 表示无绩效/数据不足）；
+      ret_5d/ret_10d/ret_15d/outcome（行透传，NULL 表示无绩效/数据不足）；
       行业由 router 层按页批量取
     """
     _ensure_tables()
@@ -1100,7 +1233,7 @@ def query_signals(
                 SELECT g.id, g.code, g.signal_date, g.state, g.is_buy,
                        g.entry_ref_price, g.stop_ref_price, g.payload, g.frozen,
                        g.params_version,
-                       g.ret_7d, g.ret_14d, g.ret_30d, g.outcome,
+                       g.ret_5d, g.ret_10d, g.ret_15d, g.outcome,
                        COALESCE(s.name, g.code) AS stock_name
                 FROM strategy_signal g
                 LEFT JOIN stock s ON g.code = s.code
@@ -1131,9 +1264,9 @@ def query_signals(
             "payload": payload or {},
             "frozen": bool(row[8]),
             "params_version": row[9],
-            "ret_7d": float(row[10]) if row[10] is not None else None,
-            "ret_14d": float(row[11]) if row[11] not in (None, "") else None,
-            "ret_30d": float(row[12]) if row[12] not in (None, "") else None,
+            "ret_5d": float(row[10]) if row[10] is not None else None,
+            "ret_10d": float(row[11]) if row[11] not in (None, "") else None,
+            "ret_15d": float(row[12]) if row[12] not in (None, "") else None,
             "outcome": row[13],
         })
 
@@ -1155,6 +1288,38 @@ def get_task_signal_counts() -> dict[int, int]:
     finally:
         conn.close()
     return {int(r[0]): int(r[1]) for r in rows}
+
+
+def get_task_accuracies() -> dict[int, Optional[float]]:
+    """批量任务准确率 {task_id: accuracy}（strategy-task-list-redesign design D1：
+    任务列表节点拼 accuracy，一条 GROUP BY SQL 全量聚合）。
+
+    口径对齐 compute_outcome_kv_stats：仅匹配态行（state IN ('triggered','running')），
+    accuracy = success / (success + failed)，分母 0 → None（pending 数据不足
+    信号不入分母）。无信号任务不出现在返回映射中（调用方兜底 None）。
+    """
+    _ensure_tables()
+    conn = _get_pg_conn()
+    if conn is None:
+        return {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT task_id,
+                          COUNT(*) FILTER (WHERE outcome = 'success'),
+                          COUNT(*) FILTER (WHERE outcome = 'failed')
+                   FROM strategy_signal
+                   WHERE state IN ('triggered', 'running')
+                   GROUP BY task_id"""
+            )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+    result: dict[int, Optional[float]] = {}
+    for task_id, success_cnt, failed_cnt in rows:
+        denom = int(success_cnt) + int(failed_cnt)
+        result[int(task_id)] = round(int(success_cnt) / denom, 4) if denom else None
+    return result
 
 
 def get_signal_for_monitor(
@@ -1290,11 +1455,13 @@ def compute_outcome_kv_stats(task_id: int) -> dict:
     """通用绩效聚合（strategy-signal-outcome design D6：两策略 kv 块共用）。
 
     SQL COUNT(*) FILTER + AVG 一条查询（独立列的收益，D1）：
-    - success_cnt / failed_cnt / pending_cnt：outcome 三态计数
-      （只统计匹配态行——非匹配态行的 outcome 恒为 NULL，FILTER 天然排除）
+    - success_cnt / failed_cnt：outcome 计数（只统计匹配态行——非匹配态行
+      的 outcome 恒为 NULL，FILTER 天然排除）；pending_cnt 保留在内部
+      聚合但 2026-10-15 修订后 kv 块不再声明/展示（数据不足数删除）
     - accuracy = success / (success + failed)，分母 0 时 None（pending
       数据不足信号不入分母，spec「任务详情准确率」）
-    - avg_ret_7d/14d/30d：非 NULL 收益率均值（无样本时 None）
+    - avg_ret_5d/10d/15d：非 NULL 收益率均值（无样本时 None；2026-10-15
+      绩效窗口修订 7/14/30 → 5/10/15）
 
     kv 块声明（detail_schema items[].key）与返回键一一对应；无信号时
     计数全零、accuracy 与均值为 None。
@@ -1310,9 +1477,9 @@ def compute_outcome_kv_stats(task_id: int) -> dict:
                        COUNT(*) FILTER (WHERE outcome = 'success'),
                        COUNT(*) FILTER (WHERE outcome = 'failed'),
                        COUNT(*) FILTER (WHERE outcome = 'pending'),
-                       AVG(ret_7d)  FILTER (WHERE ret_7d IS NOT NULL),
-                       AVG(ret_14d) FILTER (WHERE ret_14d IS NOT NULL),
-                       AVG(ret_30d) FILTER (WHERE ret_30d IS NOT NULL)
+                       AVG(ret_5d)  FILTER (WHERE ret_5d IS NOT NULL),
+                       AVG(ret_10d) FILTER (WHERE ret_10d IS NOT NULL),
+                       AVG(ret_15d) FILTER (WHERE ret_15d IS NOT NULL)
                    FROM strategy_signal
                    WHERE task_id = %s AND state IN ('triggered', 'running')""",
                 (task_id,),
@@ -1328,9 +1495,9 @@ def compute_outcome_kv_stats(task_id: int) -> dict:
         "failed_cnt": failed_cnt,
         "pending_cnt": pending_cnt,
         "accuracy": round(success_cnt / denom, 4) if denom else None,
-        "avg_ret_7d": round(float(row[3]), 6) if row[3] is not None else None,
-        "avg_ret_14d": round(float(row[4]), 6) if row[4] is not None else None,
-        "avg_ret_30d": round(float(row[5]), 6) if row[5] is not None else None,
+        "avg_ret_5d": round(float(row[3]), 6) if row[3] is not None else None,
+        "avg_ret_10d": round(float(row[4]), 6) if row[4] is not None else None,
+        "avg_ret_15d": round(float(row[5]), 6) if row[5] is not None else None,
     }
 
 
@@ -1338,17 +1505,22 @@ def get_definitions_with_tasks() -> list[dict]:
     """代码注册表 + PG 任务树合并（GET /api/strategy/definitions 数据源）。
 
     返回 [{id,name,group_name,sort,params_schema,states,columns,detail_schema,
-    tasks:[{...任务字段..., signal_count}]}]，按 (sort, id) 排序；
-    signal_count 来自 get_task_signal_counts（按任务统计）。
+    tasks:[{...任务字段..., signal_count, accuracy}]}]，按 (sort, id) 排序；
+    signal_count 来自 get_task_signal_counts（按任务统计）、accuracy 来自
+    get_task_accuracies（批量聚合，无样本任务为 None）。
     """
     from .strategy_engines import DEFINITIONS
 
     counts = get_task_signal_counts()
+    accuracies = get_task_accuracies()
     tasks = list_tasks()
     by_strategy: dict[str, list[dict]] = {}
     for t in tasks:
         node = dict(t)
         node["signal_count"] = counts.get(t["id"], 0)
+        # 任务节点附带准确率（strategy-task-list-redesign design D1：
+        # 批量聚合拼装，空映射兜底 None）
+        node["accuracy"] = accuracies.get(t["id"])
         by_strategy.setdefault(t["strategy_id"], []).append(node)
 
     result = []
@@ -1405,6 +1577,69 @@ def set_scan_cursor(task_id: int, code: str, watermark: str) -> None:
                 (task_id, code, watermark),
             )
         conn.commit()
+    finally:
+        conn.close()
+
+
+# ----------------------------------------------------------------------
+# B 级事件查询（strategy-volume-breakout-pullback 3.3：弹窗数据源）
+# ----------------------------------------------------------------------
+
+def get_b_events_for_signals(signal_ids: list[int]) -> dict[int, list[dict]]:
+    """批量取信号的 B 级事件全集（B 列弹窗数据源）。
+
+    返回 {signal_id: [b_event 行]}（按 b_time 升序）；signal_ids 为空或
+    无事件的信号不在返回 dict 中（调用方按缺省空列表处理）。
+    """
+    if not signal_ids:
+        return {}
+    _ensure_tables()
+    conn = _get_pg_conn()
+    if conn is None:
+        return {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT signal_id, b_level, b_time, b_kl_type, price, day_pct,
+                          ret_5d, ret_10d, ret_15d, outcome
+                   FROM strategy_signal_b_event
+                   WHERE signal_id = ANY(%s)
+                   ORDER BY signal_id, b_time""",
+                (list(signal_ids),),
+            )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+    result: dict[int, list[dict]] = {}
+    for r in rows:
+        result.setdefault(r[0], []).append({
+            "b_level": r[1],
+            "b_time": r[2],
+            "b_kl_type": r[3],
+            "price": r[4],
+            "day_pct": r[5],
+            "ret_5d": r[6],
+            "ret_10d": r[7],
+            "ret_15d": r[8],
+            "outcome": r[9],
+        })
+    return result
+
+
+def get_signal_task_id(signal_id: int) -> Optional[int]:
+    """取信号行所属任务 id；信号不存在返回 None（路由存在性校验用）。"""
+    _ensure_tables()
+    conn = _get_pg_conn()
+    if conn is None:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT task_id FROM strategy_signal WHERE id = %s",
+                (signal_id,),
+            )
+            r = cur.fetchone()
+            return r[0] if r else None
     finally:
         conn.close()
 

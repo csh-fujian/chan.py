@@ -217,9 +217,10 @@ function fmtDateTime(ts: number): string {
   gap: var(--sp-sm);
 }
 .meta-row label {
-  width: 76px;
+  width: 110px;
   flex-shrink: 0;
   color: var(--text-secondary);
+  white-space: nowrap;
 }
 .meta-value {
   color: var(--text-primary);

@@ -17,12 +17,12 @@ tasks 2.1/2.2，design D2/D3）。
   wick_box/box_days/box_r/a_ret/b_bar_time/b_high（b_high 供 D3 状态重放与
   kv 统计）；
 - 绩效四字段（strategy-signal-outcome D9）：匹配态（triggered/running）事件
-  带 ret_7d/ret_14d/ret_30d/outcome——入场日 = 分钟版 B 日 / 日线版 B+1 日
+  带 ret_5d/ret_10d/ret_15d/outcome（2026-10-15 窗口修订）——入场日 = 分钟版 B 日 / 日线版 B+1 日
   （买价口径：分钟版 = 触发分钟收盘、日线版 = B+1 开盘），复用通用
   compute_outcome；payload 按缺补齐 A/B 点过程字段 a_close/a_pct/b_date/
   b_open/b_close/b_day_pct（6.2：B 日日线 OHLC，分钟版 = B 日、日线版 =
-  B+1 日，b_day_pct = b_close/b_open - 1 引擎直出）/close_7d/close_14d/
-  close_30d（D10）；
+  B+1 日，b_day_pct = b_close/b_open - 1 引擎直出）/close_5d/close_10d/
+  close_15d（D10）；
 - B 日后状态追踪（D3，纯函数式重放）：triggered（B 日触发）→ close > b_high
   → running / close < stop_loss_low → expired；同日双满足按 expired 优先
   （保守口径）；未演进保持 triggered。
@@ -200,7 +200,7 @@ class VpEntryEngine:
             # 同一段循环复用 compute_outcome。绩效四键只对匹配态
             # （triggered/running）计算（spec「匹配信号」口径）；expired/
             # watching 态同样带 payload 过程字段（b_date/close_*），绩效为 None
-            ev["ret_7d"] = ev["ret_14d"] = ev["ret_30d"] = ev["outcome"] = None
+            ev["ret_5d"] = ev["ret_10d"] = ev["ret_15d"] = ev["outcome"] = None
             if sig.b_date in dates:
                 b_idx = dates.index(sig.b_date)
                 # 日线版买价在 B+1 开盘回填：入场日 = B+1（成交日在 B+1）
@@ -208,13 +208,14 @@ class VpEntryEngine:
                 entry_price = ev["entry_ref_price"]
                 is_matched = state in ("triggered", "running")
                 if entry_price is not None and entry_idx < len(kl):
-                    ret_7d, ret_14d, ret_30d, outcome, c7, c14, c30 = compute_outcome(
+                    # 2026-10-15 修订：绩效窗口 7/14/30 → 5/10/15（全局口径）
+                    ret_5d, ret_10d, ret_15d, outcome, c5, c10, c15 = compute_outcome(
                         entry_idx, entry_price, kl
                     )
                     if is_matched:
-                        ev["ret_7d"] = ret_7d
-                        ev["ret_14d"] = ret_14d
-                        ev["ret_30d"] = ret_30d
+                        ev["ret_5d"] = ret_5d
+                        ev["ret_10d"] = ret_10d
+                        ev["ret_15d"] = ret_15d
                         ev["outcome"] = outcome
                     # B 日 OHLC（D10/6.2：分钟版 = B 日、日线版 = B+1 日，
                     # 与入场日同索引；b_day_pct = 收盘/开盘 - 1 引擎直出）
@@ -231,18 +232,18 @@ class VpEntryEngine:
                         round(b_close / b_open - 1.0, 6)
                         if (b_open and b_open > 0 and b_close is not None) else None
                     )
-                    ev["payload"]["close_7d"] = round(c7, 4) if c7 is not None else None
-                    ev["payload"]["close_14d"] = round(c14, 4) if c14 is not None else None
-                    ev["payload"]["close_30d"] = round(c30, 4) if c30 is not None else None
+                    ev["payload"]["close_5d"] = round(c5, 4) if c5 is not None else None
+                    ev["payload"]["close_10d"] = round(c10, 4) if c10 is not None else None
+                    ev["payload"]["close_15d"] = round(c15, 4) if c15 is not None else None
                 else:
                     # 买价缺失/入场日越界（防御性，理论上不出现）
                     ev["payload"]["b_date"] = kl[entry_idx][0][:10] if entry_idx < len(kl) else None
                     ev["payload"].setdefault("b_open", None)
                     ev["payload"].setdefault("b_close", None)
                     ev["payload"].setdefault("b_day_pct", None)
-                    ev["payload"].setdefault("close_7d", None)
-                    ev["payload"].setdefault("close_14d", None)
-                    ev["payload"].setdefault("close_30d", None)
+                    ev["payload"].setdefault("close_5d", None)
+                    ev["payload"].setdefault("close_10d", None)
+                    ev["payload"].setdefault("close_15d", None)
             # A 日过程字段按缺补齐（a_date 已有；a_close 从 A 日 bar 收盘取，
             # a_pct 直接复用 SignalEvent.a_ret——A 日涨幅判定口径）
             if sig.a_date in bars_by_date:

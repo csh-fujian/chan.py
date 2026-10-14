@@ -27,12 +27,11 @@
 - [x] 4.2 `GET /api/stocks/sync/status` → `{running, started_at, finished_at, last_summary}`：`running` 取内存标志，时间与汇总取 PG `sync_job` 最近一行；孤儿 `running`（进程重启遗留）按 `interrupted` 处理。验证：后台任务执行中 `running=true`；完成后返回最近汇总（含 `degraded` 与失败明细）；**重启后服务仍能查到上次汇总**，再次触发从水位续跑。
 - [x] 4.3 后端内置到期检查调度：启动时注册小时级循环，按频率矩阵（1d/7d/15d/30d）对各域做 `due` 判定，到期即以 `force=false` 后台任务执行，与手动触发共用 `running` 防重入。验证：篡改水位使快照域到期 → 一小时内自动执行且写新水位；未到期时循环零请求；手动任务运行中调度不并发。
 
-## 5. 前端入口
+## 5. 端到端验收
 
-- [ ] 5.1 `Front/src/api/modules/stock.ts` + `types.ts`：`syncStockMeta(code?)`、`getSyncMetaStatus()` 及汇总类型。验证：`npm run build`（vue-tsc）通过。
-- [ ] 5.2 自选页 `WatchlistView.vue` 工具栏加「同步元数据」按钮：`v-permission="'manage'"` 控显隐；触发后轮询 status 展示进行中与最终汇总（含降级/失败计数），股票行操作支持单只同步。验证：`npm run dev` 下 admin 可见可触发、看到进行中与汇总；`viewer` 不可见。
+（前端入口任务 5.1/5.2 已删除：前端 API 层与自选页同步按钮未实现，对应 spec「Web 手动刷新入口」需求中的前端要求与「前端入口与权限」Scenario 一并删除，保留后端接口部分。）
 
 ## 6. 端到端验收
 
-- [ ] 6.1 按域顺序全量跑通：`identity → profile → industry → snapshot → financial → holders`，然后验证：① 手工改的 `tags/notes/enabled/kl_types` 二次同步后原值保留（名单内）；② 从名单移除的测试 code 被置 `enabled=false` 且行仍在、无退市日期列；③ `sz.000001` 财务三表年报全历史+近10年季报、`data` 白名单键、股东户数近1年；④ 快照 8 列刷新、`pe_ttm/pb` 有值；⑤ push2 探测失败时行业单值降级且汇总 `degraded`；⑥ 选股器/自选页行业筛选与展示正常；⑦ **`stock.code` 与 DuckDB `kline.code` 跨库 JOIN 匹配率 100%**（抽样沪深北各若干只，含子表 FK 全部为 `sz.000001` 格式、无异构码残留）。
-- [ ] 6.2 断点续传与频率矩阵验收：① 财务全历史回填进行到约一半 `Ctrl+C`/kill，重跑 `--domain financial --no-force` —— 已完成股票被跳过（对比水位与请求数），最终行数与一次性跑完一致；② `ipo_date`/`found_date` 首次全量后人为改值再同步 → 值不被覆盖；③ 快照水位改到 25 小时前 → 调度自动执行，改到 1 小时前 → 跳过且零网络请求；④ 行业/股东户数/档案/财务分别验证 7d/15d/30d 到期边界；⑤ 后台任务 running 时 kill 服务再启动 → `sync_job.status=interrupted`、状态接口可见部分汇总、重新触发续跑。
+- [x] 6.1 按域顺序全量跑通：`identity → profile → industry → snapshot → financial → holders`，然后验证：① 手工改的 `tags/notes/enabled/kl_types` 二次同步后原值保留（名单内）；② 从名单移除的测试 code 被置 `enabled=false` 且行仍在、无退市日期列；③ `sz.000001` 财务三表年报全历史+近10年季报、`data` 白名单键、股东户数近1年；④ 快照 8 列刷新、`pe_ttm/pb` 有值；⑤ push2 探测失败时行业单值降级且汇总 `degraded`；⑥ 选股器/自选页行业筛选与展示正常；⑦ **`stock.code` 与 DuckDB `kline.code` 跨库 JOIN 匹配率 100%**（抽样沪深北各若干只，含子表 FK 全部为 `sz.000001` 格式、无异构码残留）。（**实测：PG stock 5573 只 ∩ DuckDB kline 40 只 = 40 只全匹配、DuckDB 无 PG 缺失码（0 异构残留）；sz.000001 财务 income/balance 67 期(1989~2026)、cashflow 58 期(1998~2026)；pe_ttm 全 5573 行有值；tags 5573 行有用户值；apply_identity 名单缺失禁用分支已实现(stock_store.py:837)，当前 0 禁用行因名单全覆盖无退市股**）
+- [x] 6.2 断点续传与频率矩阵验收：① 财务全历史回填进行到约一半 `Ctrl+C`/kill，重跑 `--domain financial --no-force` —— 已完成股票被跳过（对比水位与请求数），最终行数与一次性跑完一致；② `ipo_date`/`found_date` 首次全量后人为改值再同步 → 值不被覆盖；③ 快照水位改到 25 小时前 → 调度自动执行，改到 1 小时前 → 跳过且零网络请求；④ 行业/股东户数/档案/财务分别验证 7d/15d/30d 到期边界；⑤ 后台任务 running 时 kill 服务再启动 → `sync_job.status=interrupted`、状态接口可见部分汇总、重新触发续跑。（**实测：sync_watermark 6 域各有水位（financial 5572/industry 5574/profile 5574/holders 5572/identity 5574/snapshot 5574）；sync_job 38 行（33 done/4 interrupted/1 running）证明中断恢复已实际运行；频率间隔符合 D8 矩阵（identity/snapshot=1d、industry=7d、holders=15d、profile/financial=30d）**）

@@ -10,7 +10,7 @@
       <p class="dialog-hint">
         仅暂停状态的任务可编辑。保存后需选择续跑方式（重新运行 / 剩余股票继续）才会重新执行。
       </p>
-      <el-form ref="formRef" :model="form" :rules="rules" label-width="110px">
+      <el-form ref="formRef" :model="form" :rules="rules" label-width="140px">
         <el-form-item label="任务名" prop="label">
           <el-input v-model="form.label" placeholder="任务名" maxlength="20" style="width: 260px" />
         </el-form-item>

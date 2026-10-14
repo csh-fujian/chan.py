@@ -11,11 +11,8 @@
           </div>
         </template>
       </el-table-column>
-      <el-table-column label="信号日期" width="100" align="center">
-        <template #default="{ row }">
-          <span class="num">{{ row.signal_date }}</span>
-        </template>
-      </el-table-column>
+      <!-- 信号日期列删除（strategy-volume-breakout-pullback D7：与 A 日列
+           冲突——A 日即信号日期，三值合并列 a_col 已含日期分量） -->
       <el-table-column label="状态" width="86" align="center">
         <template #default="{ row }">
           <span class="badge" :class="badgeClass(row.state)">{{ stateLabel(row.state) }}</span>
@@ -61,7 +58,7 @@
           <span v-else-if="col.type === 'pct'" class="num" :class="pctClass(cellValue(row, col.key))">
             {{ fmtPct(cellValue(row, col.key)) }}
           </span>
-          <!-- price_pct：合并单元格「价格 | 涨跌幅」（D12）：
+          <!-- price_pct：合并单元格「价格 | 涨幅」（D12）：
                价格分量普通 float 文本，涨幅分量复用 pct 渲染规则
                （正涨红 / 负跌绿 / 0 灰、NULL '--'），两值 ' | ' 分隔 -->
           <template v-else-if="col.type === 'price_pct'">
@@ -71,10 +68,92 @@
               {{ fmtPct(cellValue(row, col.pctKey || '')) }}
             </span>
           </template>
+          <!-- date_price_pct：三值合并单元格「日期 | 价格 | 涨幅」
+               （strategy-volume-breakout-pullback D7，A/B 日列整合）；
+               b_col 带 popup 标记时可点击弹出多 B 级事件详情表 -->
+          <template v-else-if="col.type === 'date_price_pct'">
+            <span
+              class="num dpc"
+              :class="{ 'dpc--popup': col.popup === 'b_events' && bEventsOf(row).length }"
+              @click.stop="col.popup === 'b_events' && openBDialog(row, col.label)"
+            >
+              {{ fmtDay(cellValue(row, col.dateKey || '')) }}
+              <span class="pp-sep">|</span>
+              {{ fmtPrice(cellValue(row, col.priceKey || '')) }}
+              <span class="pp-sep">|</span>
+              <span :class="pctClass(cellValue(row, col.pctKey || ''))">
+                {{ fmtPct(cellValue(row, col.pctKey || '')) }}
+              </span>
+            </span>
+          </template>
           <span v-else class="num">{{ fmtPayload(cellValue(row, col.key), col.type) }}</span>
         </template>
       </el-table-column>
     </el-table>
+    <!-- B 级事件详情弹窗（strategy-volume-breakout-pullback D7/4.2）：B 列点击
+         展开——等级/时间（30m 带时刻）/价格/涨幅/独立绩效；30m 事件时间展示
+         日期+时间、日线只展示日期；旧口径信号（无 b_events）提示旧口径 -->
+    <el-dialog
+      v-model="bDialogVisible"
+      :title="bDialogTitle"
+      width="720px"
+      append-to-body
+      class="b-events-dialog"
+    >
+      <el-table v-if="bDialogEvents.length" :data="bDialogEvents" size="small">
+        <el-table-column label="等级" width="70" align="center">
+          <template #default="{ row }">
+            <!-- Bx 等级悬浮提示（2026-10-15 修订）：白话说明五级触发逻辑 -->
+            <el-tooltip :content="B_LEVEL_RULE[row.b_level] || ''" placement="top" :show-after="200">
+              <span class="badge badge--accent b-level-badge">{{ row.b_level }}</span>
+            </el-tooltip>
+          </template>
+        </el-table-column>
+        <el-table-column label="时间" width="150" align="center">
+          <template #default="{ row }">
+            <span class="num">{{ fmtBTime(row.b_time) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="周期" width="64" align="center">
+          <template #default="{ row }">
+            <span class="num">{{ row.b_kl_type }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="价格" width="90" align="right">
+          <template #default="{ row }">
+            <span class="num">{{ fmtPrice(row.price) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="当日涨幅" width="90" align="right">
+          <template #default="{ row }">
+            <span class="num" :class="pctClass(row.day_pct)">{{ fmtPct(row.day_pct) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="5日收益" width="90" align="right">
+          <template #default="{ row }">
+            <span class="num" :class="pctClass(row.ret_5d)">{{ fmtPct(row.ret_5d) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="10日收益" width="90" align="right">
+          <template #default="{ row }">
+            <span class="num" :class="pctClass(row.ret_10d)">{{ fmtPct(row.ret_10d) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="15日收益" width="90" align="right">
+          <template #default="{ row }">
+            <span class="num" :class="pctClass(row.ret_15d)">{{ fmtPct(row.ret_15d) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="判定" width="70" align="center">
+          <template #default="{ row }">
+            <span class="badge" :class="outcomeBadgeClass(row.outcome)">{{ outcomeLabel(row.outcome) }}</span>
+          </template>
+        </el-table-column>
+      </el-table>
+      <div v-else class="b-events-empty">
+        旧口径信号：无 B 级事件明细（该信号产生于 B 点分级判定上线前，可重新运行任务按新口径产出）
+      </div>
+    </el-dialog>
     <!-- 首页之外的完整信号列表入口（父级跳转信号列表 Tab） -->
     <div class="signals-foot" v-if="total > rows.length">
       <button class="btn btn--ghost btn--sm" @click="$emit('goto-all')">查看全部 {{ total }} 条信号</button>
@@ -83,15 +162,25 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { QuestionFilled } from '@element-plus/icons-vue'
-import type { StrategySignalRow, StrategyStateDecl, StrategyColumnDecl } from '@/api/types'
+import type { StrategySignalRow, StrategyStateDecl, StrategyColumnDecl, BEventRow } from '@/api/types'
 
-/** 成功判定加权求和规则文案（D13，spec「成功判定规则悬浮提示」场景）：
- *  总收益 = 7日涨幅×50% + 14日涨幅×30% + 30日涨幅×20%；
- *  总收益 > 5% 判成功，否则失败；数据不足（未到 30 日）不计入统计 */
+/** 成功判定加权求和规则文案（2026-10-15 修订，spec「成功判定规则悬浮提示」场景）：
+ *  总收益 = 5日涨幅×30% + 10日涨幅×50% + 15日涨幅×20%；
+ *  总收益 > 5% 判成功，否则失败；数据不足（三时段未齐）不计入统计 */
 const OUTCOME_RULE =
-  '成功判定规则：总收益 = 7日涨幅×50% + 14日涨幅×30% + 30日涨幅×20%；总收益 > 5% 判成功，否则失败；数据不足（三时段未齐）不计入准确率统计'
+  '成功判定规则：总收益 = 5日涨幅×30% + 10日涨幅×50% + 15日涨幅×20%；总收益 > 5% 判成功，否则失败；数据不足（三时段未齐）不计入准确率统计'
+
+/** B 点五级触发逻辑白话（2026-10-15 修订，spec「B 等级悬浮提示触发逻辑」场景）：
+ *  悬浮弹窗「等级」列的 Bx 标记展示对应判定规则 */
+const B_LEVEL_RULE: Record<string, string> = {
+  B1: 'B1 初步确认：日线 MACD 柱由绿转红（金叉），或绿柱绝对值连续 3 根缩短（下跌动能衰竭）',
+  B2: 'B2 中部肯定：30 分钟周期 MACD 柱面积底背离——价格创新低而绿柱面积不创新低',
+  B3: 'B3 买点确认：30 分钟周期出现缠论任意等级买点',
+  B4: 'B4 买点确认：日线周期出现缠论任意等级买点',
+  B: 'B 最终确认：放量突破回调期高点（收盘创窗口新高且量能充足），确认级别最高',
+}
 
 /** signals 块：该任务信号表格（detail API signals_page 首页数据 + 列声明） */
 const props = defineProps<{
@@ -126,19 +215,21 @@ function badgeClass(v: string) {
   return COLOR_CLASS[decl?.color || 'info'] || 'badge--info'
 }
 /** 列取值（strategy-signal-outcome 5.1）：先 payload[key]（策略私有过程字段，
- *  D10），无该键时回退行级字段（ret_7d/ret_14d/ret_30d/outcome 绩效列、
+ *  D10），无该键时回退行级字段（ret_5d/ret_10d/ret_15d/outcome 绩效列、
  *  entry_ref_price B 点价格列——行级列不在 payload） */
 function cellValue(row: StrategySignalRow, key: string): number | string | undefined {
   const pv = row.payload?.[key]
-  if (pv !== undefined) return pv ?? undefined
+  if (pv !== undefined) return Array.isArray(pv) ? undefined : (pv ?? undefined)
   return row[key as keyof StrategySignalRow] as number | string | undefined
 }
 function colWidth(type: StrategyColumnDecl['type']): number {
   if (type === 'date') return 100
   if (type === 'str') return 96
   if (type === 'pct') return 88
-  // price_pct 合并列（价格 | 涨跌幅双值）比单值列更宽
+  // price_pct 合并列（价格 | 涨幅双值）比单值列更宽
   if (type === 'price_pct') return 140
+  // date_price_pct 三值合并列（日期 | 价格 | 涨幅，D7 A/B 日整合）
+  if (type === 'date_price_pct') return 230
   if (type === 'outcome') return 80
   return 84
 }
@@ -189,6 +280,40 @@ function fmtPrice(v: number | string | null | undefined): string {
   if (!Number.isFinite(n)) return '--'
   return n.toFixed(2)
 }
+/** date_price_pct 日期分量格式化（D7）：'YYYY-MM-DD HH:MM:SS' 截 10 位日期；
+ *  b_date（30m 事件时间）在列单元格只展示日期分量，时刻在弹窗展示 */
+function fmtDay(v: number | string | null | undefined): string {
+  if (v == null || v === '') return '--'
+  return String(v).slice(0, 10)
+}
+
+// ----------------------------------------------------------------------
+// B 级事件弹窗（strategy-volume-breakout-pullback D7/4.2）
+// ----------------------------------------------------------------------
+
+const bDialogVisible = ref(false)
+const bDialogTitle = ref('')
+const bDialogEvents = ref<BEventRow[]>([])
+
+/** 行的 B 级事件集合（detail API 任务详情行 payload.b_events 已嵌入） */
+function bEventsOf(row: StrategySignalRow): BEventRow[] {
+  const v = row.payload?.b_events
+  return Array.isArray(v) ? (v as BEventRow[]) : []
+}
+
+function openBDialog(row: StrategySignalRow, colLabel: string): void {
+  bDialogEvents.value = bEventsOf(row)
+  bDialogTitle.value = `${row.name}（${row.code}）· ${colLabel}级买点详情`
+  bDialogVisible.value = true
+}
+
+/** B 事件时间展示（D4）：30m 判定（b_time 含非零时刻）展示 'MM-DD HH:MM'；
+ *  日线判定（00:00:00）只展示日期 'YYYY-MM-DD' */
+function fmtBTime(t: string): string {
+  if (!t) return '--'
+  if (t.length >= 19 && !t.endsWith('00:00:00')) return t.slice(5, 16)
+  return t.slice(0, 10)
+}
 </script>
 
 <style scoped>
@@ -209,6 +334,25 @@ function fmtPrice(v: number | string | null | undefined): string {
 .pp-sep {
   color: var(--text-disabled);
   margin: 0 2px;
+}
+/* date_price_pct 三值合并单元格（D7）：B 列带事件时可点击弹窗（下划线提示） */
+.dpc--popup {
+  cursor: pointer;
+  border-bottom: 1px dashed var(--text-disabled);
+}
+.dpc--popup:hover {
+  border-bottom-color: var(--text-primary);
+}
+/* B 级事件弹窗旧口径提示文案 */
+.b-events-empty {
+  color: var(--text-disabled);
+  font-size: 12px;
+  padding: 12px 0;
+  text-align: center;
+}
+/* Bx 等级标记（2026-10-15）：悬浮提示触发逻辑，图标交互提示 */
+.b-level-badge {
+  cursor: help;
 }
 /* outcome 列头（D13）：label + 规则提示图标 */
 .col-head-outcome {

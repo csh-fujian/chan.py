@@ -272,23 +272,32 @@ export interface StrategyStateDecl {
 }
 
 /** 策略私有列声明（columns 项）：信号列表的动态列（取值先 payload[key]、
- *  无该键时回退行级字段——ret_7d/ret_14d/ret_30d/outcome 为行级绩效列、
+ *  无该键时回退行级字段——ret_5d/ret_10d/ret_15d/outcome 为行级绩效列、
  *  entry_ref_price 为行级 B 点价格列，均不在 payload）
  *  date/int/float → 数值与日期格式化；str → 原样字符串（如触发方式/Spring 标记）；
  *  pct → 涨跌百分比（小数 0.173 → +17.3%，正涨红 var(--rise)/负跌绿 var(--fall)、
  *  空值 '--'，strategy-signal-outcome D7）；
- *  price_pct → 合并单元格「价格 | 涨跌幅」（D12，如 `9.81 | +6.2%`）：
+ *  price_pct → 合并单元格「价格 | 涨幅」（D12，如 `9.81 | +6.2%`）：
  *  价格分量取 priceKey、涨幅分量取 pctKey（均为 payload 先、行级回退的双路径），
  *  涨幅渲染规则同 pct；outcome → 成功判定 badge
- *  （success 成功绿 / failed 失败红 / pending 待定灰 / null '--'） */
+ *  （success 成功绿 / failed 失败红 / pending 待定灰 / null '--'）；
+ *  date_price_pct → 三值合并单元格「日期 | 价格 | 涨幅」
+ *  （strategy-volume-breakout-pullback D7，如 `2025-12-09 | 45.99 | +6.9%`）：
+ *  日期分量取 dateKey、价格分量取 priceKey、涨幅分量取 pctKey，
+ *  涨幅渲染规则同 pct——A 日列（a_col）与 B 日列（b_col）共用该列型 */
 export interface StrategyColumnDecl {
   key: string
   label: string
-  type: 'date' | 'int' | 'float' | 'str' | 'pct' | 'price_pct' | 'outcome'
-  /** price_pct 列价格分量取值 key（如 'a_close'；type='price_pct' 时必填） */
+  type: 'date' | 'int' | 'float' | 'str' | 'pct' | 'price_pct' | 'date_price_pct' | 'outcome'
+  /** price_pct / date_price_pct 列价格分量取值 key（如 'a_close'） */
   priceKey?: string
-  /** price_pct 列涨幅分量取值 key（如 'a_pct'；type='price_pct' 时必填） */
+  /** price_pct / date_price_pct 列涨幅分量取值 key（如 'a_pct'） */
   pctKey?: string
+  /** date_price_pct 列日期分量取值 key（如 'a_date'） */
+  dateKey?: string
+  /** 弹窗标记（strategy-volume-breakout-pullback D7）：'b_events' = 点击弹出
+   *  多 B 级事件详情表（数据取 row.payload.b_events，任务详情行已嵌入） */
+  popup?: 'b_events'
 }
 
 /** 任务股票范围来源（design D3）：'all' = 全量 A 股（默认排 ST/*ST），scope_codes 为 null */
@@ -323,6 +332,9 @@ export interface StrategyTask {
   progress_total: number
   /** 信号计数（列表/树节点 badge 用，后端联查返回） */
   signal_count: number
+  /** 准确率（strategy-task-list-redesign：列表节点批量聚合拼装；
+   *  success/(success+failed) 小数，无样本（分母 0）为 null → '--'） */
+  accuracy: number | null
   created_by: string
   created_at: number
   updated_at: number
@@ -404,6 +416,8 @@ export interface StrategyDefinition {
 
 /** 策略信号行（GET /api/strategy/signals 分页项；挂 task_id 维度） */
 export interface StrategySignalRow {
+  /** 信号行 id（PG strategy_signal.id；B 级事件弹窗接口按此查） */
+  id?: number
   code: string
   name: string
   industries: string[]
@@ -415,19 +429,43 @@ export interface StrategySignalRow {
   entry_ref_price: number
   stop_ref_price: number
   /** 策略私有字段（按 columns 声明的 key 取值渲染；A/B 点过程字段
-   *  a_date/a_close/a_pct/b_date/close_7d/14d/30d 亦在此，D10；
-   *  过程字段缺键或越界（数据不足）时值为 null） */
-  payload: Record<string, number | string | null>
+   *  a_date/a_close/a_pct/b_date/close_5d/10d/15d 亦在此，D10；
+   *  过程字段缺键或越界（数据不足）时值为 null）；
+   *  b_events（strategy-volume-breakout-pullback D1）为 B 级事件数组
+   *  （任务详情 detail API 行嵌入，策略信号页列表行不带） */
+  payload: Record<string, number | string | null | BEventRow[]>
   /** 产生该信号的参数版本（strategy-task-redesign：混合参数任务按版本归因） */
   params_version: number
   /** 信号绩效四字段（strategy-signal-outcome D1 行级独立列，非 payload）：
-   *  入场日后 +7/+14/+30 日收益率（小数 0.173 = +17.3%，NULL = 数据不足/无绩效）
+   *  入场日后 +5/+10/+15 日收益率（小数 0.173 = +17.3%，NULL = 数据不足/无绩效；
+   *  2026-10-15 修订：7/14/30 → 5/10/15）
    *  与成功判定（success/failed/pending；NULL = 旧信号无绩效）。
-   *  行级字段按 columns 声明的 ret_7d/ret_14d/ret_30d/outcome key 渲染。 */
-  ret_7d?: number | null
-  ret_14d?: number | null
-  ret_30d?: number | null
+   *  行级字段按 columns 声明的 ret_5d/ret_10d/ret_15d/outcome key 渲染。 */
+  ret_5d?: number | null
+  ret_10d?: number | null
+  ret_15d?: number | null
   outcome?: 'success' | 'failed' | 'pending' | null
+}
+
+/** B 级事件行（strategy_signal_b_event 表行，strategy-volume-breakout-pullback D1）：
+ *  一信号多事件 × 独立绩效（detail API 任务详情行嵌入 payload.b_events，
+ *  单信号接口 /api/strategy/signals/{id}/b-events 返回全集） */
+export interface BEventRow {
+  /** 事件等级：B1 日线 MACD 多头 / B2 30m MACD 底背离 / B3 30m 缠论买点 /
+   *  B4 日线缠论买点 / B 放量突破回调期高点 */
+  b_level: 'B1' | 'B2' | 'B3' | 'B4' | 'B'
+  /** 事件时间：30m 判定带时刻 'YYYY-MM-DD HH:MM:SS'，日线判定 'YYYY-MM-DD 00:00:00' */
+  b_time: string
+  /** 事件所属周期：'D' 日线 / '30m' 30 分钟 */
+  b_kl_type: 'D' | '30m'
+  price: number | null
+  /** 事件日涨幅（日线收盘/开盘-1；30m 为 bar 涨幅；缠论买点事件无则 null） */
+  day_pct: number | null
+  /** 该事件独立绩效（基准 = 事件价格；口径同信号级 5/10/15 加权，2026-10-15） */
+  ret_5d: number | null
+  ret_10d: number | null
+  ret_15d: number | null
+  outcome: 'success' | 'failed' | 'pending' | null
 }
 
 /** 逐股结果行（strategy_task_stock_result，detail API per_stock 块数据；显式范围任务才有） */

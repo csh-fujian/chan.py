@@ -6,6 +6,7 @@ import type {
   StrategySignalRow,
   StrategyTaskScopeType,
   PageRes,
+  BEventRow,
 } from '@/api/types'
 
 /**
@@ -144,4 +145,12 @@ export interface StrategySignalQuery {
 /** 信号列表（服务端分页 + 全筛选；行携带 params_version 版本标识） */
 export function getStrategySignals(query: StrategySignalQuery) {
   return client.get<unknown, PageRes<StrategySignalRow>>('/strategy/signals', { params: query })
+}
+
+/** 单信号 B 级事件全集（strategy-volume-breakout-pullback D7：B 列弹窗数据源；
+ *  旧口径信号返回空列表） */
+export function getSignalBEvents(signalId: number) {
+  return client.get<unknown, { signal_id: number; b_events: BEventRow[] }>(
+    `/strategy/signals/${signalId}/b-events`,
+  )
 }

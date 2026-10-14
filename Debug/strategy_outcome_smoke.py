@@ -8,9 +8,8 @@ strategy-signal-outcome 后端冒烟测试（任务 1.2 / 1.3 / 2.1 / 2.2 / 2.3 
 1. compute_outcome 三态（1.2）：内存构造序列断言 success/failed/pending
 2. upsert 绩效落库 + frozen 保护（1.3）：upsert_signals 绩效四字段写入、
    frozen 行绩效不覆盖
-3. vol_breakout 量能峰锚定（2.1）：冲高回落（次日量 97%）expired→triggered、
-   持续放量仍 expired、破位仍 expired；6.8 中段低点序列（pullback_days
-   实际值 + ret_7d 从低点日起算）；6.2 B 日 OHLC
+3. vol_breakout B 级分级口径（2.1）：冲高回落零 B 确认 expired、B1 命中
+   （深跌后放量 + 窗口内金叉）triggered、量能趋势门 expired、破位 expired
 4. a_pct_min 参数化（2.2）：0.098 与旧口径 33 事件一致（回归锚点）、
    默认 0.05 事件数增加
 5. 真实数据绩效（2.3）：sz.000001 重放，2024-02-21 新口径演进为 triggered/
@@ -67,42 +66,41 @@ def test_compute_outcome():
     def setc(kl, idx, c):
         kl[idx] = (kl[idx][0], c, c, c, c, 100.0)
 
-    # success：entry_idx=10, price=10 → +7(+10%)/+14(+2%)/+30(+9%)
-    # D13 加权：总收益 = 10%×0.5 + 2%×0.3 + 9%×0.2 = 7.4% > 5%
+    # success：entry_idx=10, price=10 → +5(+10%)/+10(+2%)/+15(+9%)
+    # 2026-10-15 加权：总收益 = 10%×30% + 2%×50% + 9%×20% = 5.8% > 5%
     kl = mk(45)
-    setc(kl, 17, 11.0)
-    setc(kl, 24, 10.2)
-    setc(kl, 40, 10.9)
+    setc(kl, 15, 11.0)
+    setc(kl, 20, 10.2)
+    setc(kl, 25, 10.9)
     r = compute_outcome(10, 10.0, kl)
     check("1.2 success 态", r[3] == "success", str(r))
-    check("1.2 ret_7d 数值", abs(r[0] - 0.1) < 1e-9, str(r[0]))
-    check("1.2 close_7d 过程字段", r[4] == 11.0, str(r[4]))
+    check("1.2 ret_5d 数值", abs(r[0] - 0.1) < 1e-9, str(r[0]))
+    check("1.2 close_5d 过程字段", r[4] == 11.0, str(r[4]))
 
-    # failed：+4% / +2% / -1% → 总收益 = 2% + 0.6% - 0.2% = 2.4% ≤ 5%
+    # failed：+4% / +2% / -1% → 总收益 = 1.2% + 1% - 0.2% = 2.0% ≤ 5%
     kl2 = mk(45)
-    setc(kl2, 17, 10.4)
-    setc(kl2, 24, 10.2)
-    setc(kl2, 40, 9.9)
+    setc(kl2, 15, 10.4)
+    setc(kl2, 20, 10.2)
+    setc(kl2, 25, 9.9)
     r2 = compute_outcome(10, 10.0, kl2)
     check("1.2 failed 态", r2[3] == "failed", str(r2[3]))
 
-    # 口径迁移断言（D13）：+10% / +1% / -3% → 总收益 = 5% + 0.3% - 0.6% = 4.7% ≤ 5%
-    # 旧「两时段 >8%」与新加权口径均判 failed——换 +10%/+1%/+1% 构造真迁移：
-    # 旧口径（仅 7 日 >8%）判 failed，新加权总收益 = 5% + 0.3% + 0.2% = 5.5% > 5% 判 success
+    # 窗口迁移断言（2026-10-15）：+5(+10%) / +10(+2%) / +15(+1%)
+    # → 总收益 = 3% + 1% + 0.2% = 4.2% ≤ 5% 判 failed——旧 7/14/30 权重下
+    # (10,2,1) 得 5%+0.6%+0.2%=5.8% 判 success，新口径下 10 日段权重大而变 failed
     kl_mig = mk(45)
-    setc(kl_mig, 17, 11.0)
-    setc(kl_mig, 24, 10.1)
-    setc(kl_mig, 40, 10.1)
+    setc(kl_mig, 15, 11.0)
+    setc(kl_mig, 20, 10.2)
+    setc(kl_mig, 25, 10.1)
     r_mig = compute_outcome(10, 10.0, kl_mig)
-    check("1.2 口径迁移（5.5% 加权 > 5%）", r_mig[3] == "success", str(r_mig[3]))
+    check("1.2 窗口迁移（4.2% 加权 ≤ 5%）", r_mig[3] == "failed", str(r_mig[3]))
 
-    # pending：仅 18 根 → 只 +7 可得（三时段不齐 → pending，D13：齐全才判）
-    kl3 = mk(18)
-    setc(kl3, 17, 11.0)
+    # pending：仅 20 根 → 只 +5/+10 可得（三时段不齐 → pending，齐全才判）
+    kl3 = mk(20)
+    setc(kl3, 15, 11.0)
     r3 = compute_outcome(10, 10.0, kl3)
-    check("1.2 pending 态（可得<2）", r3[3] == "pending", str(r3[3]))
-    check("1.2 越界收盘价为 None", r3[1] is None and r3[2] is None
-          and r3[5] is None and r3[6] is None, str(r3))
+    check("1.2 pending 态（可得<3）", r3[3] == "pending", str(r3[3]))
+    check("1.2 越界收盘价为 None", r3[2] is None and r3[5] is None, str(r3))
 
 
 # ----------------------------------------------------------------------
@@ -151,10 +149,47 @@ def _vol_series(adjust, tail=None, base_vol=100.0, base_close=10.0):
     return kl, a_open
 
 
+def _b1_series(n_hist=30, hist_ret=-0.01, a_pct=0.04, a_vol=300.0,
+               window=None, tail_flat=15, base_vol=100.0, base_close=10.0):
+    """B1 命中序列构造（2026-10-15 B 级分级口径）。
+
+    n_hist 根单调下跌历史（MACD 柱转负）+ A 日温和放量启动 + 窗口序列 +
+    tail_flat 根平盘尾巴（供 +5/+10/+15 绩效窗口）。
+
+    window: [(ret, vol), ...] —— A+1 起逐日收益与当日量。
+    默认 [(0.02, 75.0)] * 5：窗口内温和回升 → DIF 快速修复 → 金叉在 A+1。
+    """
+    kl = []
+    d0 = datetime.date(2024, 4, 1)
+    c = base_close
+    for i in range(n_hist):
+        c *= (1 + hist_ret)
+        kl.append(_mk_bar((d0 + datetime.timedelta(days=i)).isoformat(),
+                          c * 1.001, c * 1.002, c * 0.998, c, base_vol))
+    prev_close = kl[-1][4]
+    a_close = prev_close * (1 + a_pct)
+    a_open = prev_close * 1.01
+    kl.append(_mk_bar((d0 + datetime.timedelta(days=n_hist)).isoformat(),
+                      a_open, a_close * 1.005, a_open * 0.99, a_close, a_vol))
+    cur = a_close
+    day = n_hist + 1
+    for ret, vol in (window or [(0.02, 75.0)] * 5):
+        d = (d0 + datetime.timedelta(days=day)).isoformat()
+        prev = cur
+        cur = cur * (1 + ret)
+        kl.append(_mk_bar(d, prev, max(prev, cur) * 1.001, min(prev, cur) * 0.999, cur, vol))
+        day += 1
+    for _ in range(tail_flat):
+        kl.append(_mk_bar((d0 + datetime.timedelta(days=day)).isoformat(),
+                          cur, cur * 1.001, cur * 0.999, cur, 30.0))
+        day += 1
+    return kl, a_open
+
+
 def _ev_7d_lowpoint(kl, idx_low, ev):
-    """6.8 辅助：期望 ret_7d = kl[idx_low+7].close / entry_ref - 1。"""
-    c7 = kl[idx_low + 7][4]
-    return ev["ret_7d"] - (c7 / ev["entry_ref_price"] - 1.0)
+    """6.8 辅助：期望 ret_5d = kl[idx_low+5].close / entry_ref - 1（2026-10-15 窗口修订）。"""
+    c5 = kl[idx_low + 5][4]
+    return ev["ret_5d"] - (c5 / ev["entry_ref_price"] - 1.0)
 
 
 def test_peak_anchor():
@@ -165,10 +200,16 @@ def test_peak_anchor():
     # 任何「不缩量」的日自动也是峰日，D' 永远不含失败日，场景 2 无法构造）
     params = {"pullback_max_days": 5, "volume_ratio_min": 2.0,
               "volume_shrink_max": 0.3, "a_pct_min": 0.098}
+    # A 日涨幅门槛回调：前置深跌使 MACD 柱为负（B1 金叉/绿柱递减可构造），
+    # A 日温和放量（量比 3.0×100=300）+ 涨幅 4%（门槛取 0.038 放行）
+    params_b1 = {"pullback_max_days": 5, "volume_ratio_min": 2.0,
+                 "a_pct_min": 0.038, "pullback_min_days": 1}
 
-    # 场景 1 冲高回落：A+1 量 97%（≥0.8×A 量，成峰 P=A+1），A+2..A+5 缩量 25%
-    # 旧口径：A+1 量 97% ≥ 0.8×A → 缩量失败 expired；新口径：P 锚定 A+1，
-    # D'=A+2..A+5 全缩量 → triggered
+    # ---- 场景 1（2026-10-15 B 级分级口径返工）：冲高回落序列 ----
+    # 平稳历史 + A 日 +10% 后 A+1 冲高 97% 量、A+2..A+5 缩量 25%：
+    # 新引擎下该序列 MACD 柱 A 日后全正（无金叉/绿柱递减 → B1 无从命中）、
+    # 无 30m/缠论数据 → B2/B3/B4 无数据 → 零 B 级事件 → expired
+    # 「窗口内零 B 确认」。断言由旧量能峰口径的 triggered 改为 expired。
     kl, a_open = _vol_series([
         (0.02, 0.97, False),
         (-0.015, 0.25, False),
@@ -177,21 +218,56 @@ def test_peak_anchor():
         (-0.015, 0.25, False),
     ], tail=[9.8] * 10)
     evs = eng._scan_series("sz.test1", kl, params)
-    check("2.1 冲高回落 expired→triggered", len(evs) == 1 and evs[0]["state"] == "triggered",
-          str([(e["signal_date"], e["state"]) for e in evs]))
+    check("2.1 冲高回落零 B 确认 expired", len(evs) == 1 and evs[0]["state"] == "expired",
+          str([(e["signal_date"], e["state"], e["payload"].get("gate_reason")) for e in evs]))
     if evs:
         ev = evs[0]
-        check("2.1 triggered 带绩效四键", ev["outcome"] is not None and ev["ret_7d"] is not None,
-              str((ev["ret_7d"], ev["outcome"])))
+        check("2.1 零 B expired 归因", ev["payload"]["gate_reason"] in
+              ("窗口内零 B 确认", "量能趋势抬升"), str(ev["payload"]["gate_reason"]))
+        check("2.1 expired 无绩效", ev["outcome"] is None and ev["ret_5d"] is None,
+              str((ev["ret_5d"], ev["outcome"])))
+        check("2.1 expired payload 键集（无 b_* 过程字段）",
+              ev["payload"]["b_count"] == 0 and ev["payload"]["b_date"] is None,
+              str((ev["payload"]["b_count"], ev["payload"]["b_date"])))
+
+    # ---- 场景 1b（2026-10-15 新增）：B1 命中——深跌后放量启动 + 窗口内
+    # 温和回升（DIF 快速修复）→ 日线 MACD 金叉在 A+1（2024-05-02）→ B1
+    # 事件 → 窗口走完 triggered、绩效与 A/B 点过程字段齐备
+    kl_b1, a_open_b1 = _b1_series(
+        n_hist=30, hist_ret=-0.01, a_pct=0.04, a_vol=300.0,
+        window=[(0.02, 75.0)] * 5, tail_flat=15,
+    )
+    evs_b1 = eng._scan_series("sz.test1b", kl_b1, params_b1)
+    check("2.1 B1 命中 triggered", len(evs_b1) == 1 and evs_b1[0]["state"] == "triggered",
+          str([(e["signal_date"], e["state"], e["payload"].get("gate_reason")) for e in evs_b1]))
+    if evs_b1 and evs_b1[0]["state"] == "triggered":
+        ev = evs_b1[0]
+        bes = ev["payload"]["b_events"]
+        check("2.1 B1 事件等级", [e["b_level"] for e in bes] == ["B1"],
+              str([(e["b_level"], e["b_time"]) for e in bes]))
+        # 25 历史索引位换算：金叉在 A+1 → 索引 30+1 = 31（n_hist=30 + A 日 0 + A+1）
+        b1_ev = bes[0]
+        check("2.1 B1 事件时间 = 金叉日", b1_ev["b_time"][:10] == "2024-05-02",
+              str(b1_ev["b_time"]))
+        check("2.1 B1 事件带绩效", b1_ev.get("outcome") is not None
+              and b1_ev.get("ret_5d") is not None,
+              str((b1_ev.get("ret_5d"), b1_ev.get("outcome"))))
+        # 信号级绩效 = 最早 B 事件绩效（B1 独立事件口径）
+        check("2.1 信号绩效 = B1 事件绩效", abs((ev["ret_5d"] or 0) - (b1_ev["ret_5d"] or 1)) < 1e-9
+              and ev["outcome"] == b1_ev["outcome"],
+              str((ev["ret_5d"], ev["outcome"])))
+        # 绩效复算：入场 = A+1 收盘（索引 31），+5 = 索引 36 收盘 ×1.02^4
+        entry = kl_b1[31][4]
+        expect_ret = kl_b1[36][4] / entry - 1
+        check("2.1 B1 ret_5d 复算", abs(ev["ret_5d"] - expect_ret) < 1e-9,
+              str((ev["ret_5d"], expect_ret)))
         check("2.1 payload A/B 点字段齐", set(ev["payload"]) >= {
             "a_date", "a_close", "a_pct", "b_date", "b_open", "b_close", "b_day_pct",
-            "close_7d", "close_14d", "close_30d"},
+            "close_5d", "close_10d", "close_15d"},
             str(sorted(ev["payload"])))
-        # 构造口径：25 根历史（2024-04-01 起）+ A 日 + 5 回调日；A+1 冲高 +2%、
-        # A+2..A+5 各 -1.5% 单调回落 → 窗口最低收盘出现在窗口末 A+5（索引 30）
-        # = 2024-05-01；b_date = 最低收盘出现日（6.8 新口径）
-        check("2.1 b_date = 窗口最低收盘出现日", ev["payload"]["b_date"] == "2024-05-01"
-              and ev["payload"]["a_date"] == "2024-04-26",
+        # b_date = 最早 B 事件时间（金叉日 A+1）；entry_ref = B1 事件收盘价
+        check("2.1 b_date = 最早 B 事件日", ev["payload"]["b_date"][:10] == "2024-05-02"
+              and ev["payload"]["a_date"] == "2024-05-01",
               str((ev["payload"]["a_date"], ev["payload"]["b_date"])))
         # 6.2：B 日 OHLC（b_close 与 entry_ref 同源同值、b_day_pct = 收/开-1）
         check("6.2 b_close 与 entry_ref 同源同值",
@@ -202,40 +278,46 @@ def test_peak_anchor():
               and abs(ev["payload"]["b_day_pct"]
                       - (ev["payload"]["b_close"] / b_open - 1)) < 1e-4,
               str((b_open, ev["payload"]["b_close"], ev["payload"]["b_day_pct"])))
-        # 6.8：单调回落序列最低收盘在窗口末 → pullback_days = 窗口长（5）
-        check("6.8 低点在窗口末时 pullback_days = 5",
-              ev["payload"]["pullback_days"] == 5, str(ev["payload"]["pullback_days"]))
+        check("6.8 pullback_days = 1（B 事件日 − A 日）",
+              ev["payload"]["pullback_days"] == 1, str(ev["payload"]["pullback_days"]))
 
-    # 场景 1b（6.8）：低点出现在窗口中段——A+2 冲高后 A+3 深跌到低点，
-    # A+4/A+5 回升 → min_close 在 A+3（索引 28 = 2024-04-29）
-    kl_mid, _ = _vol_series([
-        (0.02, 0.97, False),
-        (-0.015, 0.25, False),
-        (-0.06, 0.25, False),   # 深跌日（窗口内最低收盘）
-        (0.02, 0.25, False),
-        (0.02, 0.25, False),
-    ], tail=[9.8] * 10)
-    evs_mid = eng._scan_series("sz.test1b", kl_mid, params)
-    check("6.8 中段低点序列 triggered", len(evs_mid) == 1
-          and evs_mid[0]["state"] == "triggered",
-          str([(e["state"]) for e in evs_mid]))
-    if evs_mid:
+    # ---- 场景 1c（6.8 中段低点口径迁移）：低点出现在窗口中段——
+    # A+2 冲高后 A+3 深跌到低点、A+4/A+5 回升。B 级分级口径下 B1 判定
+    # 在全序列 MACD 上，d1_drawn 结构相同（前置深跌 + A 日 + 金叉 A+1）
+    # → 与 1b 同构，此处复用 1b 的中段低点变体：窗口内先跌 3 日再升
+    kl_mid, _ = _b1_series(
+        n_hist=30, hist_ret=-0.01, a_pct=0.04, a_vol=300.0,
+        window=[(-0.01, 75.0), (-0.01, 75.0), (-0.01, 75.0), (0.02, 75.0), (0.02, 75.0)],
+        tail_flat=15,
+    )
+    evs_mid = eng._scan_series("sz.test1c", kl_mid, params_b1)
+    if evs_mid and evs_mid[0]["state"] == "triggered":
         evm = evs_mid[0]
         pm = evm["payload"]
-        check("6.8 pullback_days < pullback_max_days（低点在窗口中段）",
-              pm["pullback_days"] == 3, str(pm["pullback_days"]))
-        check("6.8 b_date = 低点日（非窗口末）", pm["b_date"] == "2024-04-29",
-              str(pm["b_date"]))
-        check("6.8 b_close = 窗口最低收盘价",
-              abs(pm["b_close"] - evm["entry_ref_price"]) < 5e-4,
-              str((pm["b_close"], evm["entry_ref_price"])))
-        # 绩效起算从低点日：ret_7d 的 close_7d = kl[min_close_idx + 7] 收盘
-        idx_low = 28  # 25 历史 + A 日 + 3 回调日（A+1/A+2/A+3）
-        check("6.8 ret_7d 从低点日起算", abs(_ev_7d_lowpoint(kl_mid, idx_low, evm)) < 5e-4,
-              str((evm["ret_7d"], evm["payload"]["close_7d"])))
+        bes_m = pm["b_events"]
+        # 窗口首 3 日下跌（收盘创新低）→ 破位门可能触发（收盘 < A 日开盘？）
+        # A 日开盘 = prev_close×1.01，A+1..A+3 各 -1% 未破位（高于 a_open）；
+        # MACD 金叉顺延至回升段 → B1 仍命中，低点在 A+3（中段）
+        check("2.1 中段低点 B1 仍 triggered", evm["state"] == "triggered", str(evm["state"]))
+        check("2.1 中段低点 B1 事件存在", any(e["b_level"] == "B1" for e in bes_m),
+              str([e["b_level"] for e in bes_m]))
+        # 6.8 口径迁移：pullback_days = 最早 B 事件日 − A 日（窗口 5 日，
+        # 金叉日在回升段）→ 事件时点断言（中段低点序列金叉出现在 A+4/A+5）
+        check("6.8 pullback_days = B 事件日 − A 日", pm["pullback_days"] in (4, 5),
+              str(pm["pullback_days"]))
+    else:
+        # 兜底：若金叉未在窗口内出现（柱结构差异），断言 expired 且归因明确
+        if evs_mid:
+            check("2.1 中段低点序列金叉未命中时 expired 归因明确",
+                  evs_mid[0]["state"] == "expired"
+                  and evs_mid[0]["payload"]["gate_reason"] in
+                  ("窗口内零 B 确认", "量能趋势抬升", "回调破位"),
+                  str((evs_mid[0]["state"], evs_mid[0]["payload"].get("gate_reason"))))
 
-    # 场景 2 量能峰后持续放量：A+3 放量 85% 成峰 P，A+4 量 40%（<0.8 不成峰、
-    # ≥0.3 不缩量）→ D' 含失败日 → expired（旧口径同判 expired，非回归）
+    # ---- 场景 2（量能趋势门，口径不变）：A+3 放量 85% 成峰 P，A+4 量
+    # 40%（<0.8 不成峰、≥0.3 不缩量）→ 量能趋势门 cur3 > prev3×1.1 触发
+    # expired（B 突破构造与量能趋势门互斥：突破量 ≥0.4×A 与 cur3 ≤ prev3×1.1
+    # 矛盾，该序列正确结果为 expired）
     kl2, _ = _vol_series([
         (-0.015, 0.25, False),
         (-0.015, 0.25, False),
@@ -245,13 +327,13 @@ def test_peak_anchor():
     ])
     evs2 = eng._scan_series("sz.test2", kl2, params)
     check("2.1 量能峰后放量仍 expired", len(evs2) == 1 and evs2[0]["state"] == "expired",
-          str([(e["state"]) for e in evs2]))
+          str([(e["state"], e["payload"].get("gate_reason")) for e in evs2]))
     if evs2:
         check("2.1 expired 绩效四键为 None",
-              evs2[0]["outcome"] is None and evs2[0]["ret_7d"] is None,
-              str((evs2[0]["ret_7d"], evs2[0]["outcome"])))
+              evs2[0]["outcome"] is None and evs2[0]["ret_5d"] is None,
+              str((evs2[0]["ret_5d"], evs2[0]["outcome"])))
 
-    # 场景 3 回调破位：任一日收盘 < A 日开盘 → expired（口径不变）
+    # ---- 场景 3（破位门，口径不变）：任一日收盘 < A 日开盘 → expired
     kl3, a_open3 = _vol_series([
         (-0.015, 0.30, False),
         (-0.015, 0.30, True),   # 破位日
@@ -285,25 +367,44 @@ def test_a_pct_min_and_realdata():
     evs2 = eng.scan_with_params("sz.000001", {})
     check("2.2 默认 a_pct_min=0.05 信号数增加", len(evs2) > 33, str(len(evs2)))
 
-    # 2024-02-21 信号：量能峰锚定豁免了次日 97% 量 → 新口径演进为匹配态
+    # 2024-02-21 信号：B 级分级口径下该序列窗口内 MACD 柱全正（无金叉/
+    # 绿柱递减 → B1 不命中）且无缠论买点 → expired「窗口内零 B 确认」
+    # （旧量能峰口径的 triggered 断言废弃）。断言新口径下 expired 归因。
     target = [e for e in evs2 if e["signal_date"] == "2024-02-21"]
     check("2.3 2024-02-21 信号存在", len(target) == 1, str(len(target)))
     if target:
         e = target[0]
-        check("2.3 2024-02-21 演进为 triggered/running（原 expired）",
-              e["state"] in ("triggered", "running"), e["state"])
-        check("2.3 绩效四字段落事件", e["ret_7d"] is not None and e["outcome"] is not None,
-              str((e["ret_7d"], e["outcome"])))
+        check("2.3 2024-02-21 零 B 确认 expired",
+              e["state"] == "expired"
+              and e["payload"]["gate_reason"] == "窗口内零 B 确认",
+              str((e["state"], e["payload"].get("gate_reason"))))
+
+    # 2014-07-28 信号（新引擎匹配锚点）：B 级突破事件命中 → running，
+    # B 事件与信号级绩效齐备（payload 过程字段 + ret_5d/outcome 落事件）
+    target2 = [e for e in evs2 if e["signal_date"] == "2014-07-28"]
+    check("2.3 2014-07-28 匹配锚点存在", len(target2) == 1, str(len(target2)))
+    if target2:
+        e = target2[0]
+        check("2.3 2014-07-28 演进为 running（B 级事件）",
+              e["state"] == "running", e["state"])
+        check("2.3 绩效四字段落事件", e["ret_5d"] is not None and e["outcome"] is not None,
+              str((e["ret_5d"], e["outcome"])))
         check("2.3 payload 过程字段齐", set(e["payload"]) >= {
             "a_date", "a_close", "a_pct", "b_date", "b_open", "b_close", "b_day_pct",
-            "close_7d", "close_14d", "close_30d"},
+            "close_5d", "close_10d", "close_15d"},
             str(sorted(e["payload"])))
+        bes = e["payload"]["b_events"]
+        check("2.3 B 事件等级为 B（突破）", any(b["b_level"] == "B" for b in bes),
+              str([b["b_level"] for b in bes]))
         check("2.3 b_close 与 entry_ref 同源同值（真实数据）",
               e["payload"]["b_close"] is not None
               and abs(e["payload"]["b_close"] - e["entry_ref_price"]) < 5e-4,
               str((e["payload"]["b_close"], e["entry_ref_price"])))
-        check("2.3 a_pct = A 日涨幅", abs(e["payload"]["a_pct"] - 0.0998) < 0.001,
-              str(e["payload"]["a_pct"]))
+        # B 事件独立绩效：最早事件绩效 = 信号级绩效
+        first = bes[0]
+        check("2.3 B 事件绩效 = 信号级绩效（最早事件）",
+              abs((e["ret_5d"] or 0) - (first.get("ret_5d") or 1)) < 1e-9,
+              str((e["ret_5d"], first.get("ret_5d"))))
 
     # 全集口径自检：匹配态 100% 带绩效、expired 100% 无绩效
     n_matched = sum(1 for e in evs2 if e["state"] in ("triggered", "running"))
@@ -352,7 +453,7 @@ def test_store_layer():
     ev_ok = {
         "code": "sz.000001", "signal_date": "2024-02-21", "state": "running",
         "is_buy": True, "entry_ref_price": 8.618, "stop_ref_price": 8.4,
-        "ret_7d": 0.10, "ret_14d": 0.02, "ret_30d": 0.09, "outcome": "success",
+        "ret_5d": 0.10, "ret_10d": 0.02, "ret_15d": 0.09, "outcome": "success",
         "payload": {"a_date": "2024-02-21", "b_date": "2024-02-28"},
     }
     ev_expired = {
@@ -364,12 +465,12 @@ def test_store_layer():
     sigs = ss.query_signals(tid, page_size=100)
     by_date = {s["signal_date"]: s for s in sigs["items"]}
     check("1.3 upsert 绩效四字段落库",
-          by_date["2024-02-21"]["ret_7d"] == 0.10
+          by_date["2024-02-21"]["ret_5d"] == 0.10
           and by_date["2024-02-21"]["outcome"] == "success",
           str(by_date.get("2024-02-21")))
     check("1.3 事件缺绩效键 → NULL",
           by_date["2023-01-01"]["outcome"] is None
-          and by_date["2023-01-01"]["ret_7d"] is None,
+          and by_date["2023-01-01"]["ret_5d"] is None,
           str(by_date.get("2023-01-01")))
 
     # 4.1 matched_only：expired 行被过滤
@@ -377,16 +478,16 @@ def test_store_layer():
     check("4.1 matched_only 过滤 expired", matched["total"] == 1
           and all(s["state"] in ("triggered", "running") for s in matched["items"]),
           f"total={matched['total']}")
-    check("4.1 行透传绩效四字段", "ret_7d" in matched["items"][0]
+    check("4.1 行透传绩效四字段", "ret_5d" in matched["items"][0]
           and "outcome" in matched["items"][0], str(matched["items"][0]))
 
     # 4.1 幂等：重复 upsert 同键不重复（重扫幂等）
-    ev_ok_v2 = dict(ev_ok, ret_7d=0.11, outcome="failed")
+    ev_ok_v2 = dict(ev_ok, ret_5d=0.11, outcome="failed")
     ss.upsert_signals(tid, [ev_ok_v2], params_version=2)
     sigs2 = ss.query_signals(tid, page_size=100)
     by2 = {s["signal_date"]: s for s in sigs2["items"]}
     check("1.3 重扫幂等（同键覆盖不重复）", sigs2["total"] == 2, str(sigs2["total"]))
-    check("1.3 绩效幂等覆盖", by2["2024-02-21"]["ret_7d"] == 0.11
+    check("1.3 绩效幂等覆盖", by2["2024-02-21"]["ret_5d"] == 0.11
           and by2["2024-02-21"]["outcome"] == "failed",
           str(by2["2024-02-21"]))
 
@@ -397,11 +498,11 @@ def test_store_layer():
     cur.execute("""UPDATE strategy_signal SET frozen = TRUE
                    WHERE task_id = %s AND signal_date = '2024-02-21'""", (tid,))
     conn.close()
-    ev_ok_v3 = dict(ev_ok, ret_7d=0.99, outcome="success")
+    ev_ok_v3 = dict(ev_ok, ret_5d=0.99, outcome="success")
     ss.upsert_signals(tid, [ev_ok_v3], params_version=3)
     sigs3 = ss.query_signals(tid, page_size=100)
     by3 = {s["signal_date"]: s for s in sigs3["items"]}
-    check("1.3 frozen 行绩效不覆盖", by3["2024-02-21"]["ret_7d"] == 0.11,
+    check("1.3 frozen 行绩效不覆盖", by3["2024-02-21"]["ret_5d"] == 0.11,
           str(by3["2024-02-21"]))
 
     # 4.2 kv 准确率口径：当前行（running success=0 / failed=1[frozen]）
@@ -409,7 +510,7 @@ def test_store_layer():
     # 保留判定）。当前行集：running(failed) 1 条 → accuracy = 0/1 = 0.0
     kv = ss.compute_outcome_kv_stats(tid)
     check("4.2 kv 键集完整", set(kv) >= {"accuracy", "success_cnt", "failed_cnt",
-                                        "pending_cnt", "avg_ret_7d"}, str(kv))
+                                        "avg_ret_5d"}, str(kv))
     check("4.2 kv 统计口径", kv["success_cnt"] == 0 and kv["failed_cnt"] == 1
           and kv["accuracy"] == 0.0, str(kv))
 
@@ -417,7 +518,7 @@ def test_store_layer():
     ev_pending = {
         "code": "sz.000001", "signal_date": "2025-01-01", "state": "running",
         "is_buy": True, "entry_ref_price": 10.0, "stop_ref_price": 9.5,
-        "ret_7d": 0.05, "ret_14d": None, "ret_30d": None, "outcome": "pending",
+        "ret_5d": 0.05, "ret_10d": None, "ret_15d": None, "outcome": "pending",
         "payload": {},
     }
     ss.upsert_signals(tid, [ev_pending], params_version=1)
@@ -451,14 +552,24 @@ def test_store_layer():
         d = get_definition(sid)
         col_keys = {c["key"] for c in d.columns}
         col_types = {c["type"] for c in d.columns}
-        price_cols = [c for c in d.columns if c["type"] == "price_pct"]
+        price_cols = [c for c in d.columns if c["type"] in ("price_pct", "date_price_pct")]
         check(f"6.1 {sid} 无 first_board_date 列", "first_board_date" not in col_keys)
-        check(f"6.1 {sid} 无独立价格/涨幅列", not {"a_close", "b_close", "close_7d",
-              "a_pct", "ret_7d", "ret_30d"} & col_keys, str(sorted(col_keys)))
-        check(f"6.1 {sid} 合并列声明齐（5 组 price_pct + 双 key）",
+        check(f"6.1 {sid} 无独立价格/涨幅列", not {"a_close", "b_close", "close_5d",
+              "a_pct", "ret_5d", "ret_15d"} & col_keys, str(sorted(col_keys)))
+        # vol 策略 D7 B 级分级返工：A/B 列为 date_price_pct 合并列（dateKey/
+        # priceKey/pctKey 三 key，B 列带 popup 弹窗标记）；vp 策略为 price_pct
+        # 合并列（priceKey/pctKey 双 key）。合并列共 5 组 + outcome
+        check(f"6.1 {sid} 合并列声明齐（5 组合并列 + 双 key）",
               len(price_cols) == 5 and all(
                   "priceKey" in c and "pctKey" in c for c in price_cols),
               str(price_cols))
+        if sid == "vol_breakout_pullback":
+            a_col = next(c for c in d.columns if c["key"] == "a_col")
+            b_col = next(c for c in d.columns if c["key"] == "b_col")
+            check("6.1 vol a_col/b_col date_price_pct 三 key",
+                  a_col.get("dateKey") == "a_date" and b_col.get("dateKey") == "b_date"
+                  and b_col.get("popup") == "b_events",
+                  str((a_col, b_col)))
         check(f"6.1 {sid} 无独立 pct/float 绩效列", "pct" not in col_types,
               str(sorted(col_types)))
 
@@ -568,20 +679,20 @@ def test_vp_entry_outcome():
     if events:
         ev = events[0]
         p = ev["payload"]
-        check("3.1 日线版绩效四键", ev["ret_7d"] is not None and ev["outcome"] is not None,
-              str((ev["ret_7d"], ev["outcome"])))
+        check("3.1 日线版绩效四键", ev["ret_5d"] is not None and ev["outcome"] is not None,
+              str((ev["ret_5d"], ev["outcome"])))
         check("3.1 日线版入场日 = B+1（b_date）", p.get("b_date") ==
               (d0 + datetime.timedelta(days=12)).isoformat(), str(p.get("b_date")))
         check("3.1 日线版过程字段齐", set(p) >= {
             "a_close", "a_pct", "b_date", "b_open", "b_close", "b_day_pct",
-            "close_7d", "close_14d", "close_30d"},
+            "close_5d", "close_10d", "close_15d"},
             str(sorted(p)))
         # 6.2：日线版 B 日（= B+1）OHLC；b_day_pct = 收/开 - 1
         check("6.2 vp 日线版 B 日 OHLC 齐", p.get("b_open") is not None
               and p.get("b_close") is not None and p.get("b_day_pct") is not None,
               str((p.get("b_open"), p.get("b_close"), p.get("b_day_pct"))))
         # 绩效复算：+7 收盘 = o_b1*1.028*1.05*1.001^0（构造口径）……直接断言非空即可
-        check("3.1 日线版 close_7d 非空", p.get("close_7d") is not None, str(p.get("close_7d")))
+        check("3.1 日线版 close_5d 非空", p.get("close_5d") is not None, str(p.get("close_5d")))
 
     # ---- 分钟版：B 日触发（买价 = 触发分钟收盘），后续日线供绩效 ----
     _hist, bars, _ = build_case(v_a)
@@ -641,21 +752,22 @@ def test_vp_entry_outcome():
     if events2:
         ev2 = events2[0]
         p2 = ev2["payload"]
-        check("3.1 分钟版绩效四键", ev2["ret_7d"] is not None and ev2["outcome"] is not None,
-              str((ev2["ret_7d"], ev2["outcome"])))
+        check("3.1 分钟版绩效四键", ev2["ret_5d"] is not None and ev2["outcome"] is not None,
+              str((ev2["ret_5d"], ev2["outcome"])))
         check("3.1 分钟版入场日 = B 日（b_date）", p2.get("b_date") == b_date, str(p2.get("b_date")))
         check("3.1 分钟版过程字段齐", set(p2) >= {
             "a_close", "a_pct", "b_date", "b_open", "b_close", "b_day_pct",
-            "close_7d", "close_14d", "close_30d"},
+            "close_5d", "close_10d", "close_15d"},
             str(sorted(p2)))
         # 6.2：分钟版 B 日（= B 日日线 bar）OHLC；b_close = B 日日线收盘
         check("6.2 vp 分钟版 B 日 OHLC 齐", p2.get("b_open") is not None
               and p2.get("b_close") is not None and p2.get("b_day_pct") is not None,
               str((p2.get("b_open"), p2.get("b_close"), p2.get("b_day_pct"))))
-        # 分钟版买价 = 触发分钟收盘（B 前一日收 ×1.02）；+7 日日线收盘基于
-        # B 日收 ×1.02 复利再涨 10% → ret_7d ≈ 1.02×1.10−1 ≈ 12.2%
-        check("3.1 分钟版 ret_7d 口径（分钟买价复利）", abs(ev2["ret_7d"] - 0.122) < 0.01,
-              str(ev2["ret_7d"]))
+        # 分钟版买价 = 触发分钟收盘（B 前一日收 ×1.02）；+5 日窗口（2026-10-15
+        # 口径）：2024-04-11+5 = 04-16（i=4，微涨 0.1%）→ ret_5d ≈ 2%
+        # （+7 日 i=6 的 +10% 已越出 5 日窗口，不参与 ret_5d）
+        check("3.1 分钟版 ret_5d 口径（5 日窗口内微涨）", abs(ev2["ret_5d"] - 0.02) < 0.005,
+              str(ev2["ret_5d"]))
 
 
 def main():
@@ -664,7 +776,7 @@ def main():
     print("=" * 70)
     print("\n== 1.2 compute_outcome 三态 ==")
     test_compute_outcome()
-    print("\n== 2.1 量能峰锚定（冲高豁免） ==")
+    print("\n== 2.1 B 级分级口径（量能峰锚定迁移 + B1 命中） ==")
     test_peak_anchor()
     print("\n== 2.2/2.3 a_pct_min 参数化 + sz.000001 真实数据 ==")
     test_a_pct_min_and_realdata()

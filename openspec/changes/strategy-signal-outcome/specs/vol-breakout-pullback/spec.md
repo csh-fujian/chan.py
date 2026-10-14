@@ -1,6 +1,6 @@
 ## Purpose
 
-定义放量启动回调（vol_breakout_pullback）策略引擎的信号判定行为：A 日（放量启动）识别、回调窗口的量能与破位判定（含冲高豁免）、状态演进与绩效追踪（A/B 点字段与 7/14/30 日绩效展示）。首个引擎级成文能力（此前该策略仅在 strategy-signal 引擎协议下以近似实现存在，判定规则未 spec 级成文）。
+定义放量启动回调（vol_breakout_pullback）策略引擎的信号判定行为：A 日（放量启动）识别、回调窗口的量能与破位判定（含冲高豁免）、状态演进与绩效追踪（A/B 点字段与 5/10/15 日绩效展示）。首个引擎级成文能力（此前该策略仅在 strategy-signal 引擎协议下以近似实现存在，判定规则未 spec 级成文）。
 
 ## ADDED Requirements
 
@@ -24,6 +24,8 @@ A 日后 SHALL 观察回调窗口（pullback_max_days 个交易日，默认 7）
 
 窗口走完且未破位、且 D' 全程缩量 → triggered；D' 缩量不满足 → expired。triggered 后任一日收盘 > 窗口内最高收盘价 → running。
 
+**回调天数下限过滤（pullback_min_days，默认 4）**：回调天数 = 窗口内最低收盘价出现日（B 日）− A 日的交易日数。当回调天数 < pullback_min_days 时，即使缩量与破位判定通过，信号 SHALL 降级为 expired（回调不充分）。pullback_min_days = 0 时 SHALL NOT 过滤（A 日收盘即窗口最低也保留）。该参数 SHALL 在任务创建表单可编辑（与 pullback_max_days 对称）。
+
 #### Scenario: 冲高回落不被误杀
 - **WHEN** A 日次日量 4.92 亿（量比 A 日 97%），之后连续 6 日缩量至 A 日量 30% 且收盘未破 A 日开盘
 - **THEN** 量能峰 P 锚定于次日（冲高日），缩量判定从 P+1 日起算并满足 → 信号 triggered
@@ -40,10 +42,22 @@ A 日后 SHALL 观察回调窗口（pullback_max_days 个交易日，默认 7）
 - **WHEN** 一条 triggered 信号后续某日收盘 > 回调窗口内最高收盘价
 - **THEN** 信号演进为 running
 
+#### Scenario: 回调天数不足下限淘汰
+- **WHEN** 窗口内最低收盘价出现在 A 日次日（回调天数 = 1），且 pullback_min_days 配置为 4
+- **THEN** 即使缩量与破位判定通过，信号降级为 expired（回调不充分）
+
+#### Scenario: 回调天数下限为零不过滤
+- **WHEN** pullback_min_days 配置为 0，且窗口内最低收盘价出现在 A 日当日（回调天数 = 0）
+- **THEN** 缩量与破位判定通过即 triggered，不因回调天数过滤
+
+#### Scenario: 回调天数下限可配
+- **WHEN** 用户创建任务时将 pullback_min_days 配置为 2
+- **THEN** 回调天数 < 2 的信号降级为 expired；任务详情参数区展示 pullback_min_days=2
+
 ### Requirement: vol_breakout 信号字段口径
 入场参考价 SHALL 为回调窗口（A 日后 pullback_max_days 个交易日内）的最低收盘价（triggered/running 态），止损参考价 SHALL 为 A 日最低价。watching 态（窗口未走完、数据边界）SHALL NOT 给出入场价/止损价。**入场日（B 日 + 绩效起算日）SHALL 为窗口内最低收盘价出现的交易日（实际回踩低点日，回调天数 = B 日 − A 日的交易日数）**。绩效字段（三时段收益率 + 成功判定）按 strategy-signal 能力的统一口径计算。
 
-**任务详情的信号列表 SHALL 展示以下合并列（price_pct 列型）**：A日（时间）+ A日股价（A 日收盘价 | A 日涨幅）；B日（时间）+ B日股价（B 日收盘价 | B 日当日涨跌幅 = B 日收盘/开盘 - 1）；7/14/30日股价（该日收盘价 | 相对入场参考价涨跌幅）。**SHALL NOT 展示**：首板日列（与 A 日列重复）、方向列、入场参考价列（与 B 日股价的价格分量重复）。数据不足的合并单元格涨幅部分显示为空。**回调天数 SHALL 为实际值（B 日 − A 日），SHALL NOT 恒等于回调窗口参数值。**策略摘要（kv 块）SHALL NOT 展示首板日分布、平均放量倍数、平均回调天数（形态统计项删除，仅保留绩效准确率统计）。
+**任务详情的信号列表 SHALL 展示以下合并列（price_pct 列型）**：A日（时间）+ A日股价（A 日收盘价 | A 日涨幅）；B日（时间）+ B日股价（B 日收盘价 | B 日当日涨跌幅 = B 日收盘/开盘 - 1）；5/10/15日股价（该日收盘价 | 相对入场参考价涨跌幅）。**SHALL NOT 展示**：首板日列（与 A 日列重复）、方向列、入场参考价列（与 B 日股价的价格分量重复）。数据不足的合并单元格涨幅部分显示为空。**回调天数 SHALL 为实际值（B 日 − A 日），SHALL NOT 恒等于回调窗口参数值。**策略摘要（kv 块）SHALL NOT 展示首板日分布、平均放量倍数、平均回调天数、数据不足数（形态统计项与数据不足计数删除，仅保留绩效准确率统计）。
 
 #### Scenario: 信号字段取值
 - **WHEN** 一条 triggered 信号落库
@@ -51,11 +65,11 @@ A 日后 SHALL 观察回调窗口（pullback_max_days 个交易日，默认 7）
 
 #### Scenario: 绩效起算
 - **WHEN** 一条 triggered 信号的窗口最低收盘价出现日（B 日）为 T
-- **THEN** +7/+14/+30 日收益率按 T+7/T+14/T+30 日收盘价 / entry_ref_price - 1 计算
+- **THEN** +5/+10/+15 日收益率按 T+5/T+10/T+15 日收盘价 / entry_ref_price - 1 计算
 
 #### Scenario: 详情信号列表字段展示
 - **WHEN** 任务详情的信号列表渲染一条匹配信号
-- **THEN** 该行以合并单元格展示 A日股价、B日股价（当日涨跌）、7/14/30日股价与成功判定；不含首板日、方向、入场参考列
+- **THEN** 该行以合并单元格展示 A日股价、B日股价（当日涨跌）、5/10/15日股价与成功判定；不含首板日、方向、入场参考列
 
 #### Scenario: B 点口径
 - **WHEN** 一条 triggered 信号展示 B 日股价列

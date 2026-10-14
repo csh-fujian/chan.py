@@ -17,18 +17,19 @@ import type { DetailBlockKvItem } from '@/api/types'
 
 /**
  * 成功判定口径（strategy-signal-outcome spec「信号存储与状态机」，
- * design D13 加权求和修订：口径在 UI 常量注释说明，不做设置项）：
+ * design D13 加权求和修订（2026-10-15 窗口调整）：口径在 UI 常量注释说明，不做设置项）：
  *
- *   总收益 = +7 日收益率×50% + +14 日收益率×30% + +30 日收益率×20%，
+ *   总收益 = +5 日收益率×30% + +10 日收益率×50% + +15 日收益率×20%，
  *   总收益 > 5% 判成功，否则判失败；三时段任一越界未来（数据不足）
  *   → 待定（pending），不计入准确率分母。
  *
- * 绩效统计键（kv_payload，D6 通用聚合注入）：
+ * 绩效统计键（kv_payload，D6 通用聚合注入；2026-10-15 修订：删 pending_cnt
+ * 数据不足数——kv 块不再展示该统计项）：
  *   accuracy = success / (success + failed)（小数或 null，分母 0 → null）
- *   success_cnt / failed_cnt / pending_cnt：三态计数（整数）
- *   avg_ret_7d / avg_ret_14d / avg_ret_30d：非 NULL 收益率均值（小数或 null）
+ *   success_cnt / failed_cnt：两态计数（整数）
+ *   avg_ret_5d / avg_ret_10d / avg_ret_15d：非 NULL 收益率均值（小数或 null）
  */
-const SUCCESS_CRITERION = '总收益 = 7日涨幅×50% + 14日涨幅×30% + 30日涨幅×20%，> 5% 判成功；待定 = 数据不足不入准确率分母'
+const SUCCESS_CRITERION = '总收益 = 5日涨幅×30% + 10日涨幅×50% + 15日涨幅×20%，> 5% 判成功；待定 = 数据不足不入准确率分母'
 
 /** kv 块：键值摘要（items 声明 → kv_payload 取值，fmt 按类型格式化；
  *  pct = 小数转百分比（绩效统计 accuracy/avg_ret_* 用，null → '--'）） */
