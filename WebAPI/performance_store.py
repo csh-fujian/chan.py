@@ -7,6 +7,42 @@ bsp_type / bsp_date / strategy_label 等上下文并完成字段映射）；聚�
 (bsp_type, kl_type) 分组，输出样本数/胜率/平均盈亏/盈亏比/期望值。
 
 - bsp_type 原样聚合分组（原始枚举如 '2s'/'2'，前端负责映射文案，后端不改写）
+
+**分母变化提醒（chan-standard-bsp）**：改造后各类买卖点数量级显著变化——
+一买在 41 只日线上从 258 降到 14 左右、类二从 157 降到约 90、三买B 从 33 变成约 146。
+绩效统计的分母随之变化，**改造前后同一 `bsp_type` 的胜率不可直接横向对比**，
+应按档位（`bsp_preset`）分别建基线。另一个直接后果：`incremental_engine`
+改为按笔去重写入索引后，同一笔不再产生多行，样本数会小于改造前（多类型叠加的点）。
+
+**`1p` 分母的两类来源（chan-standard-bsp1-change）**：`bsp_type='1p'` 的行现在含两种点——
+① `treat_pz_bsp1` 产出的「无结构中枢的笔背驰」；② `treat_bsp1` 的**降级点**
+（趋势前提不达标但背驰实证成立，41 只日线贡献 52 个）。二者业务含义不同：降级点是
+「接近标准一买但趋势结构不足」，笔背驰是「完全没有中枢」。
+
+**注意：`bsp_index` 不落 feature 字段**（`_extract_bsp_rows` 只写 bsp_date / bsp_type /
+is_buy / price / time_key / is_sure / ladder），因此**无法按 `bsp1_downgrade_reason`
+在库内拆分**这两类——降级点的成因只存在于内核的 `CBS_Point.features` 里。若业务确实需要
+分开统计，要先给 `bsp_index` 加列（属另案，需同步 `_ensure_tables()` 与 `update-*.sql`）。
+当前口径是两类合并计入 `1p`，这是显式取舍而非缺陷。**本模块的查询逻辑无需改动。**
+
+下游「按 `bsp_type` 计数/求均值」的读取点清单（tasks 6.2 排查结果）：
+
+| # | 位置 | 口径 | 分母变化后的合理性 |
+|---|---|---|---|
+| 1 | `performance_store.get_performance_stats` | `GROUP BY (bsp_type, kl_type)` 计数 | 分母变化即业务语义；胜率/盈亏比/期望值按分组独立计算，不受其它组影响。改造前后不可横向对比，需按档位重建基线 |
+| 2 | `performance_store.get_performance_samples` | 单类型样本明细 | 只受「按笔去重」影响（多类型叠加点不再重复计入），是去重的预期收益 |
+| 3 | `bsp_store.query_bsp` / `query_bsp_aggregate` | `COUNT(*)` 分页总数 + `GROUP BY si.industry_name` | 纯展示计数，随索引行数变化；行业聚合结构不变，绝对值变化即可反映真实信号密度 |
+| 4 | `bsp_store.get_bsp_by_code` | 区间套行集合（无聚合） | 无分母，只影响抽屉行数 |
+| 5 | `monitor_store._fill_bsp_context` | 每行回查最近一条 `bsp_index` | 无分母；但「最近一条」的口径受信号密度影响——T1 变稀疏后，chan 来源监控行的 `bsp_type` 更可能是二买/三买而非一买。属预期行为，前端不做文案承诺 |
+| 6 | `strategy_store` 的 `bsp_query` 范围固化 | `query_bsp` 翻页取 code 去重 | 分母变化直接改变固化的股票池——同一份查询条件在改造前后会固化成不同股票集 |
+| 7 | `strategy_engines/bsp_reader.get_bsp_buy_points` | 全量买点行（无阈值） | B3/B4 事件按「窗口内是否存在买点行」判定，行数变化改变 B 级触发频率；信号密度下降 → B3/B4 命中率下降，是口径收紧的直接后果，非缺陷 |
+| 8 | `bsp_ladder.cal_ladder` | 逐点三轴阶梯判定（进度/佐证/分型） | 不随数量缩放（逐点判定，非比值）；旧 L3/L1 标签已由 `chan-bsp-ladder-change` 重构 |
+
+**需要人为注意的第 6 点**：`bsp_query` 范围固化是按查询条件实时查库取 code，
+改造后同一条 `bsp_types=['1B']` 条件命中的股票会大幅减少。已有任务的
+`scope_codes` 是创建时固化的快照，不受影响；新建任务才会体现新口径。
+若业务方期望「一买覆盖度」与改造前一致，应在改造后重新评估这类任务的信号量，
+而不是把 `bsp_types` 放宽成多类型来掩盖差异。
 - source 过滤：'chan'/'strategy'/'watchlist' 精确匹配 source_type；
   task_id > 0 时与 source='strategy' 联合精确匹配（strategy-task-redesign D6）
 - 归因摘要：list_attributions_map 一次拉全表，按 monitor_id 拼接（任务 3.3）

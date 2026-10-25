@@ -44,11 +44,11 @@ if __name__ == "__main__":
         "bi_strict": True,              # 笔严格模式（严格按缠论定义）
         "trigger_step": False,          # 是否步进模式（False=一次性加载）
         "skip_step": 0,                 # 跳过前N步
-        "divergence_rate": float("inf"),  # 背驰率（inf=不限制）
-        "bsp2_follow_1": False,         # 二类买卖点不跟随一类
-        "bsp3_follow_1": False,         # 三类买卖点不跟随一类
-        "min_zs_cnt": 0,                # 最小中枢数量
-        "bs1_peak": False,             # 一买是否取峰值
+        # 买卖点判定走内核默认档位（标准缠论口径），不在此处覆盖
+        # divergence_rate / min_zs_cnt / bs1_peak。
+        # 如需复现改造前的旧口径，改用 "bsp_preset": "legacy"。
+        "bsp2_follow_1": False,         # 二类买卖点不跟随一类（小转大场景）
+        "bsp3_follow_1": False,         # 三类买卖点不跟随一类（小转大场景）
         "macd_algo": "peak",           # MACD 算法（peak=峰值法）
         "bs_type": '1,2,3a,1p,2s,3b',  # 启用的买卖点类型
         "print_warning": True,          # 是否打印警告

@@ -42,11 +42,12 @@ from ChanAnalyse.DataAPI.DuckDBAPI import CDuckDB
 from ChanAnalyse.DataAPI.KLineStore import KLineStore, ctime_to_str
 from ChanAnalyse.DataAPI.RecomputeCursor import RecomputeCursor
 
-from .bsp_store import get_snapshot, persist_full_set
+from .bsp_store import get_snapshot, get_snapshot_fingerprint, persist_full_set
 from .bsp_ladder import cal_ladder
 from .bsp_sure import bsp_is_sure
 from .chan_service import period_of_db_name, resolve_period, resolve_sub_level
 from .config import DUCKDB_PATH, PG_DSN
+from .config_fingerprint import config_fingerprint
 from .serializer import _serialize_bi, _serialize_seg, _serialize_zs
 
 log = logging.getLogger("incremental_engine")
@@ -123,14 +124,27 @@ def _load_pickle_chan(data: bytes) -> CChan:
 # 计算（D3：trigger_step=True，全量与续算同一机制）
 # ----------------------------------------------------------------------
 
+def _make_chan_config() -> CChanConfig:
+    """构造落库链路使用的 CChanConfig。
+
+    单独抽出以便上层计算买卖点配置指纹——指纹必须来自**同一个**配置对象，
+    否则指纹校验与实际计算可能用到不同口径。
+
+    此处不得显式覆盖任何 bsp 参数（divergence_rate / min_zs_cnt /
+    bsp1_* / bsp2s_* / bsp3* 等）。一旦覆盖，就会静默压过内核的
+    `bsp_preset` 档位，使本入口的输出与标准口径脱节。
+    需要切换口径时，只改 `bsp_preset`。
+    """
+    return CChanConfig({"trigger_step": True, "kl_data_check": False})
+
+
 def _make_chan(code: str, kl_type, autype: str) -> CChan:
     """trigger_step=True 的空 CChan（外部推送模式；构造时不做全量 load）。"""
-    config = CChanConfig({"trigger_step": True, "kl_data_check": False})
     return CChan(
         code=code,
         data_src="custom:DuckDBAPI.CDuckDB",
         lv_list=[kl_type],
-        config=config,
+        config=_make_chan_config(),
         autype=AUTYPE[autype],
     )
 
@@ -166,18 +180,24 @@ def _compute_incremental(
 def _extract_bsp_rows(chan: CChan, kl_type, sub_result=None) -> list[tuple]:
     """bs_point_lst 当前全集 → bsp_index 行 (bsp_date, bsp_type, is_buy, price, time_key, is_sure, ladder)。
 
-    一个点多类型（如 T1+T1P）按类型展开多行（唯一键含 bsp_type，过滤才可精确命中）。
+    **按笔去重**（chan-standard-bsp D22）：一个位置可以同时属于多个类型
+    （如二买与三买B 落在同一笔），历史实现按类型展开成多行，导致绩效统计的
+    分母被放大。现在每笔只写一行，`bsp_type` 取 `bsp.primary_type`——
+    一个按「信号强度」固定的确定性选择。`bsp.type` 列表本身不变，仍可读全部类型。
+
+    代价：按次要类型过滤（如按 `3b` 查一个主类型为 `2` 的点）不再命中。
+    这是口径的显式取舍，已记入 bsp-index 规范的「同笔多类型按笔去重」Scenario。
+
     price：买点取 klu.low、卖点取 klu.high（chan-stock-manage D4 语义）。
     is_sure：确认状态推导（bsp-sure-annotation D1，水位线口径，bsp_sure.bsp_is_sure）。
-    ladder：确认阶梯（bsp-ladder-change D1/D3 修订）——sub_result 为
-    (sub_bsps, sub_bs_point_lst) 时计算 L1 共振（与 /api/klines 序列化链路
-    同口径）；None = 子级别不可用（无子级周期 / 数据缺失 / 计算失败 /
-    BSP_L1_PERSIST=0），未确认行落 L2。
+    ladder：三轴阶梯（chan-bsp-ladder-change D1/D3）——sub_result 为
+    (sub_bsps, sub_bs_point_lst, sub_kl) 时计算佐证轴；None = 子级别不可用
+    （无子级周期 / 数据缺失 / 计算失败 / BSP_L1_PERSIST=0），佐证轴缺席。
     """
     kl = chan[kl_type]
     bi_list = kl.bi_list
-    sub_bsps, sub_bs_point_lst = sub_result if sub_result else (None, None)
-    sub_kl_type = resolve_sub_level(kl_type)  # L1 窗口差异化键（D3 修订二）
+    sub_bsps, sub_bs_point_lst, sub_kl = sub_result if sub_result else (None, None, None)
+    sub_kl_type = resolve_sub_level(kl_type)  # 保留：佐证轴窗口映射的级别对照
     rows: list[tuple] = []
     for bsp in kl.bs_point_lst.getSortedBspList():
         klu = bsp.klu
@@ -190,9 +210,14 @@ def _extract_bsp_rows(chan: CChan, kl_type, sub_result=None) -> list[tuple]:
             bi_list=bi_list, sub_bsps=sub_bsps,
             kl_type=kl_type, sub_kl_type=sub_kl_type,
             sub_bs_point_lst=sub_bs_point_lst,
+            sub_kl=sub_kl,
+            # T2 五轴（chan-standard-bsp2-change D1/D3）：确认轴/时间轴需要
+            # 本级别笔列表，窗口与阈值配置取买/卖侧（与判据同侧规则一致）
+            bi_list_ref=bi_list,
+            cfg=kl.bs_point_lst.config.GetBSConfig(bool(bsp.is_buy)),
         )
-        for t in bsp.type:
-            rows.append((bsp_date, t.value, bool(bsp.is_buy), price, time_key, is_sure, ladder))
+        rows.append((bsp_date, bsp.primary_type.value, bool(bsp.is_buy),
+                     price, time_key, is_sure, ladder))
     return rows
 
 
@@ -208,20 +233,19 @@ def _extract_structure(chan: CChan, kl_type) -> dict:
 
 
 def _compute_sub_for_l1(code: str, kl_type, autype: str, canonical: str):
-    """L1 区间套子级别计算（bsp-ladder-change design D3 修订）。
+    """阶梯佐证轴的子级别计算（chan-bsp-ladder-change D3）。
 
     对有子级别的周期（30m/60m→5m、D→30m / W→D / M→W）额外计算子级别买卖点，
-    供 _extract_bsp_rows 的 L1 共振判定。失败（无子级 / DuckDB 无数据 /
-    计算异常 / BSP_L1_PERSIST=0）返回 None → 调用方降级不计算 L1（落 L2），
-    不阻断主级别落库。
+    供 `_extract_bsp_rows` 的佐证轴判定（L2-3 / L2-2 / L2-1）。失败（无子级 /
+    DuckDB 无数据 / 计算异常 / BSP_L1_PERSIST=0）返回 None → 调用方降级不做
+    佐证轴，不阻断主级别落库。
 
-    返回 (sub_bsps, sub_bs_point_lst)：买卖点列表 + 子级别 CBSPointList
-    （D3 修订三：L1 佐证要求子级点自身 is_sure=true，即子级 L4，
-    过滤需要子级别水位线）。
+    返回 (sub_bsps, sub_bs_point_lst, sub_kl)：买卖点列表 + 子级别 CBSPointList
+    + 子级别 CKLine_List（L2-1 分型档的数据源）。
 
     计算复用主级别的快照续算机制：优先从 chan_snapshot 恢复（快照在 PG，
     子级别该股票若有独立快照则续算，否则全量）；**只读不落库、不推游标**——
-    子级别快照/游标归其自身的 recompute 周期管，L1 判定只借结果。
+    子级别快照/游标归其自身的 recompute 周期管，佐证判定只借结果。
     """
     if not BSP_L1_PERSIST:
         return None
@@ -232,7 +256,7 @@ def _compute_sub_for_l1(code: str, kl_type, autype: str, canonical: str):
         sub_canonical = period_of_db_name(sub_kl_type.name)
         src = source_watermark(code, sub_kl_type.name, autype)
         if src is None:
-            return None  # DuckDB 无子级别 K 线 → 不计算 L1
+            return None  # DuckDB 无子级别 K 线 → 不计算佐证轴
         sub_cursor = _get_cursor(code, sub_kl_type.name, AUTYPE[autype].name)
         snapshot = None
         if sub_cursor is not None:
@@ -242,16 +266,17 @@ def _compute_sub_for_l1(code: str, kl_type, autype: str, canonical: str):
             try:
                 chan = _compute_incremental(code, sub_kl_type, autype, sub_cursor, snapshot)
             except Exception:
-                log.debug("L1 子级别续算失败回退全量: %s %s", code, sub_canonical)
+                log.debug("子级别续算失败回退全量: %s %s", code, sub_canonical)
                 chan = None
         if chan is None:
             chan = _compute_full(code, sub_kl_type, autype)
         if chan is None:
             return None
-        sub_bs_point_lst = chan[sub_kl_type].bs_point_lst
-        return list(sub_bs_point_lst.getSortedBspList()), sub_bs_point_lst
+        sub_kl = chan[sub_kl_type]
+        sub_bs_point_lst = sub_kl.bs_point_lst
+        return list(sub_bs_point_lst.getSortedBspList()), sub_bs_point_lst, sub_kl
     except Exception:
-        log.exception("L1 子级别计算失败: %s %s -> %s", code, canonical, sub_kl_type)
+        log.exception("子级别计算失败: %s %s -> %s", code, canonical, sub_kl_type)
         return None
 
 
@@ -300,6 +325,14 @@ def recompute_stock(
         return None
 
     cursor = _get_cursor(code, kl_type_db, autype_db)
+    # 配置指纹校验（chan-standard-bsp D11/D12）：快照只重算未确认尾部，
+    # 已确认前缀里的旧口径买卖点会原样保留。切档位后必须强制全量重算，
+    # 否则新旧口径会混在同一份 bsp_index 里——这是最难排查的故障形态。
+    # 存量行没有指纹（None）同样视为不匹配：其口径未知，不能假定属于当前档位。
+    fp = config_fingerprint(_make_chan_config())
+    if not force_full and cursor is not None and get_snapshot_fingerprint(code, canonical, autype) != fp:
+        log.info("配置指纹不匹配，强制全量重算: %s %s", code, canonical)
+        force_full = True
     snapshot = None
     if not force_full and cursor is not None:
         snapshot = get_snapshot(code, canonical, autype)
@@ -321,7 +354,7 @@ def recompute_stock(
         log.info("skip %s %s: 计算无数据", code, canonical)
         return None
 
-    # L1 区间套（bsp-ladder-change D3 修订）：主级别计算完成后，额外计算子级别
+    # 阶梯佐证轴（chan-bsp-ladder-change D3）：主级别计算完成后，额外计算子级别
     # 买卖点全集（只读，不落库不推游标），供 ladder 落库判定共振。
     sub_result = _compute_sub_for_l1(code, kl_type, autype, canonical)
 
@@ -340,6 +373,7 @@ def recompute_stock(
             bsp_rows=bsp_rows,
             structure=structure,
             pickle_bytes=pickle_bytes,
+            config_fingerprint=fp,
             last_processed_time=src,
             kl_type_db=kl_type_db,
             autype_db=autype_db,

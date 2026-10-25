@@ -494,7 +494,23 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
+/**
+ * 策略任务页（strategy-task-redesign 4.2 / strategy-task-list-redesign 单列化）：
+ * - 单列布局：视图 Tab（任务列表/信号列表）；原左侧策略任务树已删除——
+ *   类型过滤迁移到任务列表查询条件级联，新建入口迁移到列表上方按钮
+ * - 任务列表：查询条件（策略类型级联/任务名/分组/形态/创建时间/准确率分档）
+ *   前端内存过滤 + 准确率/策略任务类型列 + 启停/续跑/编辑/转正/复制/删除/详情
+ * - 信号列表：按 task_id 服务端分页，沿用原筛选骨架
+ * - 私有列 / 状态着色 / 任务表单全部由定义声明驱动渲染（新策略接入零前端改动）
+ * - running 任务进度轮询 3s（design D4）
+ *
+ * 页面缓存（design.md D10，2026-10-20 修订）：纳入 AppShell KeepAlive 白名单——切走再切回
+ * 保留查询条件、分页、当前视图 Tab 与已渲染内容，不重挂载。缓存期间停轮询（隐藏页不空转），
+ * 切回时静默刷新一次并恢复轮询。
+ */
+defineOptions({ name: 'StrategySignalView' })
+
+import { ref, reactive, computed, watch, onMounted, onActivated, onDeactivated, onUnmounted } from 'vue'
 import type { AutocompleteInstance } from 'element-plus'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Plus } from '@element-plus/icons-vue'
@@ -523,17 +539,6 @@ import type {
   StrategyColumnDecl,
   BEventRow,
 } from '@/api/types'
-
-/**
- * 策略任务页（strategy-task-redesign 4.2 / strategy-task-list-redesign 单列化）：
- * - 单列布局：视图 Tab（任务列表/信号列表）；原左侧策略任务树已删除——
- *   类型过滤迁移到任务列表查询条件级联，新建入口迁移到列表上方按钮
- * - 任务列表：查询条件（策略类型级联/任务名/分组/形态/创建时间/准确率分档）
- *   前端内存过滤 + 准确率/策略任务类型列 + 启停/续跑/编辑/转正/复制/删除/详情
- * - 信号列表：按 task_id 服务端分页，沿用原筛选骨架
- * - 私有列 / 状态着色 / 任务表单全部由定义声明驱动渲染（新策略接入零前端改动）
- * - running 任务进度轮询 3s（design D4）
- */
 
 // ---- 定义与任务树 ----
 const definitions = ref<StrategyDefinition[]>([])
@@ -697,6 +702,27 @@ async function loadDefinitions() {
 async function reloadDefinitions() {
   await loadDefinitions()
   if (activeView.value === 'signals') await loadList()
+}
+
+/**
+ * 静默刷新策略定义（页面缓存切回时用）：不置 tasksLoading、失败保留现有内容。
+ * 缓存页会保留 currentTaskId，若该任务已被删除（本页或其他页删的），信号列表将永久拉空；
+ * 故刷新后校验选中任务仍存在，失效则回退到第一个任务（无任务则清空）。
+ * @returns 选中任务是否发生变更
+ */
+async function refreshDefinitionsSilently(): Promise<boolean> {
+  let next: StrategyDefinition[]
+  try {
+    next = await getStrategyDefinitions()
+  } catch {
+    return false // 静默失败：保留缓存内容
+  }
+  definitions.value = next
+  const ids = new Set(next.flatMap((d) => d.tasks).map((t) => t.id))
+  if (currentTaskId.value != null && ids.has(currentTaskId.value)) return false
+  const prev = currentTaskId.value
+  currentTaskId.value = next.flatMap((d) => d.tasks)[0]?.id ?? null
+  return currentTaskId.value !== prev
 }
 
 // ---- 进度轮询（design D4：running 任务 3s 间隔轮询任务列表） ----
@@ -870,13 +896,17 @@ const loading = ref(false)
 const records = ref<StrategySignalRow[]>([])
 const total = ref(0)
 
-async function loadList() {
+/**
+ * 信号列表查询。
+ * @param silent 静默刷新（页面缓存切回时用）：不置 loading、失败保留现有内容。
+ */
+async function loadList(silent = false) {
   if (currentTaskId.value == null) {
     records.value = []
     total.value = 0
     return
   }
-  loading.value = true
+  if (!silent) loading.value = true
   syncDateRangeToQuery()
   try {
     const res = await getStrategySignals({
@@ -896,10 +926,12 @@ async function loadList() {
       taskId: currentTaskId.value,
       error: e,
     })
+    // 静默刷新失败：保留缓存内容
+    if (silent) return
     records.value = []
     total.value = 0
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
 }
 
@@ -1152,6 +1184,23 @@ onMounted(async () => {
   ensurePolling()
 })
 
+// 页面缓存（design.md D10，2026-10-20 修订）：切走后组件不卸载，仅失活。首次挂载后紧跟的
+// activated 与 onMounted 重复，跳过；之后每次激活静默刷新任务定义与当前视图列表并恢复轮询。
+let activatedOnce = false
+onActivated(async () => {
+  if (!activatedOnce) {
+    activatedOnce = true
+    return
+  }
+  // 静默刷新任务定义（不置 tasksLoading、失败保留缓存内容）；选中任务若已被删除，
+  // refreshDefinitionsSilently 会回退，随后按缓存中的查询条件重拉信号列表
+  await refreshDefinitionsSilently()
+  if (activeView.value === 'signals') await loadList(true)
+  ensurePolling()
+})
+
+// 缓存失活：停轮询，隐藏页不发请求（切回由 onActivated 恢复）
+onDeactivated(stopPolling)
 onUnmounted(stopPolling)
 </script>
 

@@ -25,6 +25,7 @@ from .app import app
 from .auth import _authenticate, _make_token, get_current_user
 from .cache import get_chan_cache
 from .chan_service import (
+    _make_chan_config,
     _compute_chan,
     _resolve_data_src,
     _resolve_kl_type,
@@ -138,9 +139,13 @@ async def get_klines(
         if is_st_name(name):
             raise HTTPException(status_code=404, detail="已排除：ST 股票")
 
-    # 尝试缓存命中
+    # 尝试缓存命中（带买卖点配置指纹：切档位后旧口径的缓存必须视为未命中）
     cache = get_chan_cache()
-    cached_hit, cached_data = cache.get(symbol, kl_type)
+    try:
+        fingerprint = config_fingerprint(_make_chan_config())
+    except Exception:
+        fingerprint = None
+    cached_hit, cached_data = cache.get(symbol, kl_type, fingerprint=fingerprint)
 
     try:
         chan = _compute_chan(symbol, kl_type, data_src)
@@ -153,7 +158,7 @@ async def get_klines(
             ),
         )
 
-    # L1 区间套子级别计算（bsp-ladder-change D3）：D→30m/W→D/M→W；失败降级 None
+    # 阶梯佐证轴子级别计算（chan-bsp-ladder-change D3）：D→30m/W→D/M→W；失败降级 None
     # （未确认行不标 L1），不阻断主级别响应。分钟级周期无子级（None）零开销。
     sub_chan = compute_sub_chan(symbol, kl_type)
     sub_kl_type = resolve_sub_level(kl_type) if sub_chan is not None else None
@@ -165,7 +170,7 @@ async def get_klines(
         result["klines"] = [k for k in result["klines"] if k["timestamp"] <= end]
     # 缠论 overlay 始终全量返回 -- 按时间戳锚定，与 K 线加载范围解耦
 
-    # 写入缓存（异步容错：失败不影响响应）
-    cache.set(symbol, kl_type, result)
+    # 写入缓存（异步容错：失败不影响响应）。指纹与读取时同源
+    cache.set(symbol, kl_type, result, fingerprint=fingerprint)
 
     return result

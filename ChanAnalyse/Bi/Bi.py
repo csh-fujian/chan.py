@@ -16,6 +16,17 @@ from ChanAnalyse.Common.CEnum import BI_DIR, BI_TYPE, DATA_FIELD, FX_TYPE, MACD_
 from ChanAnalyse.Common.ChanException import CChanException, ErrCode
 from ChanAnalyse.KLine.KLine import CKLine
 from ChanAnalyse.KLine.KLine_Unit import CKLine_Unit
+from ChanAnalyse.Math.Metric import (
+    cal_macd_amp,
+    cal_macd_area,
+    cal_macd_diff,
+    cal_macd_diff_peak,
+    cal_macd_half_obverse,
+    cal_macd_half_reverse,
+    cal_macd_peak,
+    cal_macd_slope,
+    cal_rsi,
+)
 
 
 class CBi:
@@ -345,6 +356,8 @@ class CBi:
             return self.Cal_MACD_area()
         elif macd_algo == MACD_ALGO.DIFF:
             return self.Cal_MACD_diff()
+        elif macd_algo == MACD_ALGO.DIFF_PEAK:
+            return self.Cal_MACD_diff_peak()
         elif macd_algo == MACD_ALGO.SLOPE:
             return self.Cal_MACD_slope()
         elif macd_algo == MACD_ALGO.AMP:
@@ -362,7 +375,7 @@ class CBi:
         elif macd_algo == MACD_ALGO.RSI:
             return self.Cal_Rsi()
         else:
-            raise CChanException(f"unsupport macd_algo={macd_algo}, should be one of area/full_area/peak/diff/slope/amp", ErrCode.PARA_ERROR)
+            raise CChanException(f"unsupport macd_algo={macd_algo}, should be one of area/full_area/peak/diff/diff_peak/slope/amp", ErrCode.PARA_ERROR)
 
     @make_cache
     def Cal_Rsi(self):
@@ -373,10 +386,7 @@ class CBi:
 
         缠论知识：RSI 背驰 — 价格创新高/低但 RSI 没有同步创新高/低
         """
-        rsi_lst: List[float] = []
-        for klc in self.klc_lst:
-            rsi_lst.extend(klu.rsi for klu in klc.lst)
-        return 10000.0/(min(rsi_lst)+1e-7) if self.is_down() else max(rsi_lst)
+        return cal_rsi(self.klc_lst, self.is_down())
 
     @make_cache
     def Cal_MACD_area(self):
@@ -389,16 +399,9 @@ class CBi:
 
         缠论知识：MACD 面积背驰 — 价格创新高但 MACD 红柱面积减小
         """
-        _s = 1e-7
-        begin_klu = self.get_begin_klu()
-        end_klu = self.get_end_klu()
-        for klc in self.klc_lst:
-            for klu in klc.lst:
-                if klu.idx < begin_klu.idx or klu.idx > end_klu.idx:
-                    continue
-                if (self.is_down() and klu.macd.macd < 0) or (self.is_up() and klu.macd.macd > 0):
-                    _s += abs(klu.macd.macd)
-        return _s
+        return cal_macd_area(
+            self.klc_lst, self.is_down(),
+            begin_idx=self.get_begin_klu().idx, end_idx=self.get_end_klu().idx)
 
     @make_cache
     def Cal_MACD_peak(self):
@@ -411,15 +414,21 @@ class CBi:
 
         缠论知识：MACD 峰值背驰 — 价格创新高但 MACD 红柱峰值降低
         """
-        peak = 1e-7
-        for klc in self.klc_lst:
-            for klu in klc.lst:
-                if abs(klu.macd.macd) > peak:
-                    if self.is_down() and klu.macd.macd < 0:
-                        peak = abs(klu.macd.macd)
-                    elif self.is_up() and klu.macd.macd > 0:
-                        peak = abs(klu.macd.macd)
-        return peak
+        return cal_macd_peak(self.klc_lst, self.is_down())
+
+    @make_cache
+    def Cal_MACD_diff_peak(self):
+        """
+        计算笔区间内 DIF（黄白线）的极值
+
+        - 下降笔（买点方向）：取 `min(DIF)`
+        - 上升笔（卖点方向）：取 `max(DIF)`
+
+        与 `Cal_MACD_diff` 的区别：`Cal_MACD_diff` 算的是柱体 `max - min`，
+        `Cal_MACD_diff_peak` 算的是 DIF 线本身的极值。
+        缠论原文的「黄白线背驰」判据需要后者。
+        """
+        return cal_macd_diff_peak(self.klc_lst, self.is_down())
 
     def Cal_MACD_half(self, is_reverse):
         """
@@ -450,21 +459,8 @@ class CBi:
         else 块在 for 循环正常结束（没有被 break）时执行
         Java 对比：需要用一个 boolean 标志变量来模拟
         """
-        _s = 1e-7
-        begin_klu = self.get_begin_klu()
-        peak_macd = begin_klu.macd.macd  # 参考方向：起始K线的MACD值
-        for klc in self.klc_lst:
-            for klu in klc.lst:
-                if klu.idx < begin_klu.idx:
-                    continue
-                if klu.macd.macd*peak_macd > 0:  # 同向（乘积>0表示同号）
-                    _s += abs(klu.macd.macd)
-                else:
-                    break  # MACD方向改变，停止累加
-            else:  # for...else：内层循环正常结束（没有被break），继续外层循环
-                continue
-            break  # 内层循环被break了，外层也停止
-        return _s
+        return cal_macd_half_obverse(self.klc_lst, self.get_begin_klu().macd.macd,
+                                     begin_idx=self.get_begin_klu().idx)
 
     @make_cache
     def Cal_MACD_half_reverse(self):
@@ -473,22 +469,13 @@ class CBi:
 
         从结束K线开始，向起始方向累加同向MACD柱的绝对值，
         当遇到反向MACD柱时停止累加。
+
+        注意必须传 `end_idx`：末笔的 `end_klc` 是「合并 K 线」，其中可能包含
+        结束 K 线之后的原始 K 线（合并 K 线的 idx 区间跨越了笔的结束点），
+        不过滤会把笔范围之外的柱子算进来。
         """
-        _s = 1e-7
-        begin_klu = self.get_end_klu()
-        peak_macd = begin_klu.macd.macd
-        for klc in self.klc_lst_re:
-            for klu in klc[::-1]:  # Python 语法：[::-1] 是列表反转切片
-                if klu.idx > begin_klu.idx:
-                    continue
-                if klu.macd.macd*peak_macd > 0:
-                    _s += abs(klu.macd.macd)
-                else:
-                    break
-            else:
-                continue
-            break
-        return _s
+        return cal_macd_half_reverse(self.klc_lst_re, self.get_end_klu().macd.macd,
+                                     end_idx=self.get_end_klu().idx)
 
     @make_cache
     def Cal_MACD_diff(self):
@@ -497,16 +484,11 @@ class CBi:
 
         缠论知识：MACD 差值法 — 比较笔区间内 MACD 柱的波动幅度
         差值越大说明 MACD 指标波动越剧烈
+
+        注意：名称虽为 diff，实际语义是柱体的 max - min。
+        真正的黄白线极值见 `Cal_MACD_diff_peak`（`diff_peak` 算法）。
         """
-        _max, _min = float("-inf"), float("inf")
-        for klc in self.klc_lst:
-            for klu in klc.lst:
-                macd = klu.macd.macd
-                if macd > _max:
-                    _max = macd
-                if macd < _min:
-                    _min = macd
-        return _max-_min
+        return cal_macd_diff(self.klc_lst)
 
     @make_cache
     def Cal_MACD_slope(self):
@@ -518,12 +500,7 @@ class CBi:
 
         缠论知识：斜率法 — 价格变化率，斜率越大笔的力度越强
         """
-        begin_klu = self.get_begin_klu()
-        end_klu = self.get_end_klu()
-        if self.is_up():
-            return (end_klu.high - begin_klu.low)/end_klu.high/(end_klu.idx - begin_klu.idx + 1)
-        else:
-            return (begin_klu.high - end_klu.low)/begin_klu.high/(end_klu.idx - begin_klu.idx + 1)
+        return cal_macd_slope(self.get_begin_klu(), self.get_end_klu(), self.is_up())
 
     @make_cache
     def Cal_MACD_amp(self):
@@ -535,12 +512,7 @@ class CBi:
 
         缠论知识：振幅法 — 笔的价格变化幅度，振幅越大笔的力度越强
         """
-        begin_klu = self.get_begin_klu()
-        end_klu = self.get_end_klu()
-        if self.is_down():
-            return (begin_klu.high-end_klu.low)/begin_klu.high
-        else:
-            return (end_klu.high-begin_klu.low)/begin_klu.low
+        return cal_macd_amp(self.get_begin_klu(), self.get_end_klu(), self.is_up())
 
     def Cal_MACD_trade_metric(self, metric: str, cal_avg=False) -> float:
         """

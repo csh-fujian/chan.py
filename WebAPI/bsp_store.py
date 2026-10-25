@@ -12,11 +12,49 @@ from typing import Any, Optional
 
 import psycopg2
 
-from .bsp_ladder import ladder_of_legacy
 from .chan_service import PERIOD_MAP
 from .config import PG_DSN
+from .stock_store import ST_EXCLUDE_SQL
 
 log = logging.getLogger("bsp_store")
+
+# ---- 方向化标签 → (原始枚举集合, is_buy) ----
+# 与前端 utils/bsp.ts 的 TYPE_MAP 同构。原始枚举: '1','2','2s','3a','3b','1p'
+#
+# 放在 store 层而非 router：方向化标签有两个消费方——`/api/bsp` 的查询参数，
+# 以及 `scope_type='bsp_query'` 的任务范围固化（`strategy_store`）。若只在
+# router 解析，任务固化会拿标签去匹配原始枚举列，类型筛选被静默忽略。
+DIRECTIONAL_LABELS: dict[str, tuple[list[str], bool]] = {
+    "1B": (["1"], True),
+    "1S": (["1"], False),
+    "2B": (["2"], True),
+    "2S": (["2"], False),
+    "L2B": (["2s"], True),
+    "L2S": (["2s"], False),
+    # 三买/三卖自 chan-standard-bsp 起语义分叉，标签必须可区分：
+    # 3a = 中枢在「下一条线段」内，3b = 中枢在「当前线段」内。
+    # 保留合并标签 3B/3S 作为「两类都要」的快捷筛选，避免老书签/老任务失效。
+    "3B": (["3a", "3b"], True),
+    "3S": (["3a", "3b"], False),
+    "3B(后)": (["3a"], True),
+    "3B(内)": (["3b"], True),
+    "3S(后)": (["3a"], False),
+    "3S(内)": (["3b"], False),
+    "PZ-B": (["1p"], True),
+    "PZ-S": (["1p"], False),
+}
+
+
+def resolve_bsp_type(bsp_type: str) -> tuple[list[str], Optional[bool]]:
+    """bsp_type 查询参数 → (原始枚举集合, is_buy 约束)。
+
+    方向化标签（2B/3S/3B(后)...）→ 枚举集合 + 方向约束（design D11，修复选标签
+    查不到记录的既有 bug）；原始枚举直传（如 '2'）→ 仅类型匹配、无方向约束。
+    """
+    if bsp_type in DIRECTIONAL_LABELS:
+        types, is_buy = DIRECTIONAL_LABELS[bsp_type]
+        return list(types), is_buy
+    return [bsp_type], None
 
 
 def _get_pg_conn():
@@ -73,9 +111,42 @@ def _ensure_tables():
                     price      DOUBLE PRECISION NOT NULL,
                     time_key   VARCHAR NOT NULL,
                     is_sure    BOOLEAN NOT NULL DEFAULT TRUE,
-                    ladder     VARCHAR(2),
+                    ladder     VARCHAR(32),
                     UNIQUE (code, kl_type, autype, bsp_date, bsp_type, is_buy, time_key)
                 )
+                """
+            )
+            # 阶梯列宽扩容（chan-bsp-ladder-change D5）：三轴组合值如
+            # `L2|L2-3|L3-3`（13 字符）超出旧 VARCHAR(2)。幂等：仅当当前宽度
+            # 不足时 ALTER，重复执行不报错（information_schema 查当前定义）。
+            cur.execute(
+                """
+                DO $$
+                DECLARE cur_len INT;
+                BEGIN
+                    SELECT character_maximum_length INTO cur_len
+                    FROM information_schema.columns
+                    WHERE table_name = 'bsp_index' AND column_name = 'ladder';
+                    IF cur_len IS NOT NULL AND cur_len < 16 THEN
+                        ALTER TABLE bsp_index ALTER COLUMN ladder TYPE VARCHAR(16);
+                    END IF;
+                END $$;
+                """
+            )
+            # 五轴组合扩容（chan-standard-bsp2-change D6）：T2 五轴组合如
+            # `P1|S3|C2|K3|T1`（14 字符），取 32 留余量。幂等同上。
+            cur.execute(
+                """
+                DO $$
+                DECLARE cur_len INT;
+                BEGIN
+                    SELECT character_maximum_length INTO cur_len
+                    FROM information_schema.columns
+                    WHERE table_name = 'bsp_index' AND column_name = 'ladder';
+                    IF cur_len IS NOT NULL AND cur_len < 32 THEN
+                        ALTER TABLE bsp_index ALTER COLUMN ladder TYPE VARCHAR(32);
+                    END IF;
+                END $$;
                 """
             )
             cur.execute(
@@ -89,6 +160,12 @@ def _ensure_tables():
                     PRIMARY KEY (code, kl_type, autype)
                 )
                 """
+            )
+            # 配置指纹（chan-standard-bsp D11）：快照续算只重算未确认尾部，
+            # 已确认前缀里的旧口径买卖点会原样保留。切档位后必须靠指纹识别
+            # 并强制全量重算，否则新旧口径会混在同一份 bsp_index 里。
+            cur.execute(
+                "ALTER TABLE chan_snapshot ADD COLUMN IF NOT EXISTS config_fingerprint VARCHAR"
             )
         conn.commit()
     finally:
@@ -211,13 +288,19 @@ def query_bsp(
     is_sure（bsp-sure-annotation D3）：确认状态三态过滤——True 只回已确认行、
     False 只回未确认行、None 不过滤；与 keyword 等条件下推同一 WHERE，
     COUNT 与分页共用。响应每行携带 is_sure。
+
+    **ST 过滤（exclude-st-stocks D6 读侧补齐）**：ST 排除只作用于写入侧（重算
+    入口 return None），存量 ST 行仍在 bsp_index 里。读侧必须同样过滤，否则
+    买卖点页、区间套与行业聚合仍会展示已停止分析的 ST 标的。谓词复用
+    `stock_store.ST_EXCLUDE_SQL`（单一判定来源），因此 FROM 必须 LEFT JOIN
+    stock——本函数原已有该 join，仅补谓词。
     """
     _ensure_tables()
     conn = _get_pg_conn()
     if conn is None:
         return {"items": [], "total": 0, "page": page, "page_size": page_size}
 
-    conditions = []
+    conditions = [ST_EXCLUDE_SQL]
     params: list[Any] = []
 
     if kl_type:
@@ -290,8 +373,11 @@ def query_bsp(
             "price": price,
             "time_key": tk,
             "is_sure": sure,
-            # 存量行 ladder 为 NULL（D4 不回填）→ 按 is_sure 映射兜底（L4/L2）
-            "ladder": ladder_raw if ladder_raw else ladder_of_legacy(sure),
+            # ladder 原样返回（chan-bsp-ladder-change D3）：NULL 是合法值
+            # （非一买类型 / 不可评估），前端显示「未定级」。
+            # 旧 `ladder_of_legacy` 兜底已退役——旧 L1/L2/L3 语义反转，
+            # 用 is_sure 猜一个值会把「未定级」误报成「虚笔候选」。
+            "ladder": ladder_raw,
         })
 
     return {"items": items, "total": total, "page": page, "page_size": page_size}
@@ -308,13 +394,16 @@ def query_bsp_aggregate(
 
     bsp-page-change 2.6：date 参数连带升级为 date_from/date_to（半开区间
     `[date_from, date_to + 1)`），与主查询 query_bsp 语义保持一致，避免契约漂移。
+
+    **ST 过滤**：与 query_bsp 同口径（`ST_EXCLUDE_SQL`），故补 LEFT JOIN stock。
+    缺失该过滤会让行业聚合把已排除分析的 ST 标的计入行业信号密度。
     """
     _ensure_tables()
     conn = _get_pg_conn()
     if conn is None:
         return []
 
-    conditions = ["si.rank = 0"]  # 仅取主行业
+    conditions = ["si.rank = 0", ST_EXCLUDE_SQL]  # 仅取主行业
     params: list[Any] = []
 
     if kl_type:
@@ -337,6 +426,7 @@ def query_bsp_aggregate(
                 SELECT si.industry_name, COUNT(*) AS cnt
                 FROM bsp_index b
                 JOIN stock_industry si ON b.code = si.code
+                LEFT JOIN stock s ON b.code = s.code
                 {where_clause}
                 GROUP BY si.industry_name
                 ORDER BY cnt DESC
@@ -354,6 +444,9 @@ def get_bsp_by_code(code: str, kl_types: Optional[list[str]] = None) -> list[dic
     """获取指定股票的多级别买卖点（区间套）。
 
     bsp-page-change 2.5：kl_types IN 改为参数化占位符，消除字符串拼接注入面。
+
+    **ST 过滤**：与 query_bsp 同口径（`ST_EXCLUDE_SQL`）。ST 标的返回空列表
+    ——其买卖点已不再维护，返回存量行会让区间套展示过期结论。
     """
     _ensure_tables()
     conn = _get_pg_conn()
@@ -363,18 +456,23 @@ def get_bsp_by_code(code: str, kl_types: Optional[list[str]] = None) -> list[dic
     if kl_types:
         placeholders = ", ".join(["%s"] * len(kl_types))
         sql = f"""
-            SELECT code, kl_type, autype, bsp_date, bsp_type, is_buy, price, time_key, is_sure, ladder
-            FROM bsp_index
-            WHERE code = %s AND kl_type IN ({placeholders})
-            ORDER BY bsp_date DESC, kl_type
+            SELECT b.code, b.kl_type, b.autype, b.bsp_date, b.bsp_type,
+                   b.is_buy, b.price, b.time_key, b.is_sure, b.ladder
+            FROM bsp_index b
+            LEFT JOIN stock s ON b.code = s.code
+            WHERE b.code = %s AND b.kl_type IN ({placeholders})
+              AND {ST_EXCLUDE_SQL}
+            ORDER BY b.bsp_date DESC, b.kl_type
         """
         params: tuple = (code, *kl_types)
     else:
-        sql = """
-            SELECT code, kl_type, autype, bsp_date, bsp_type, is_buy, price, time_key, is_sure, ladder
-            FROM bsp_index
-            WHERE code = %s
-            ORDER BY bsp_date DESC, kl_type
+        sql = f"""
+            SELECT b.code, b.kl_type, b.autype, b.bsp_date, b.bsp_type,
+                   b.is_buy, b.price, b.time_key, b.is_sure, b.ladder
+            FROM bsp_index b
+            LEFT JOIN stock s ON b.code = s.code
+            WHERE b.code = %s AND {ST_EXCLUDE_SQL}
+            ORDER BY b.bsp_date DESC, b.kl_type
         """
         params = (code,)
 
@@ -396,15 +494,16 @@ def get_bsp_by_code(code: str, kl_types: Optional[list[str]] = None) -> list[dic
             "price": r[6],
             "time_key": r[7],
             "is_sure": r[8],
-            # 存量 NULL 兜底（与 query_bsp 同口径）
-            "ladder": r[9] if r[9] else ladder_of_legacy(r[8]),
+            # ladder 原样返回（NULL = 未定级，见上方 query_bsp 的同口径说明）
+            "ladder": r[9],
         }
         for r in rows
     ]
 
 
-def save_snapshot(code: str, kl_type: str, autype: str, pickle_bytes: bytes) -> None:
-    """保存 CChan pickle 快照。"""
+def save_snapshot(code: str, kl_type: str, autype: str, pickle_bytes: bytes,
+                  fingerprint: Optional[str] = None) -> None:
+    """保存 CChan pickle 快照（连同买卖点配置指纹）。"""
     _ensure_tables()
     conn = _get_pg_conn()
     if conn is None:
@@ -412,12 +511,13 @@ def save_snapshot(code: str, kl_type: str, autype: str, pickle_bytes: bytes) -> 
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """INSERT INTO chan_snapshot (code, kl_type, autype, pickle)
-                   VALUES (%s, %s, %s, %s)
+                """INSERT INTO chan_snapshot (code, kl_type, autype, pickle, config_fingerprint)
+                   VALUES (%s, %s, %s, %s, %s)
                    ON CONFLICT (code, kl_type, autype) DO UPDATE SET
                      pickle     = EXCLUDED.pickle,
+                     config_fingerprint = EXCLUDED.config_fingerprint,
                      updated_at = NOW()""",
-                (code, kl_type, autype, psycopg2.Binary(pickle_bytes)),
+                (code, kl_type, autype, psycopg2.Binary(pickle_bytes), fingerprint),
             )
         conn.commit()
     finally:
@@ -442,6 +542,31 @@ def get_snapshot(code: str, kl_type: str, autype: str = "QFQ") -> Optional[bytes
     if row and row[0]:
         return bytes(row[0])
     return None
+
+
+def get_snapshot_fingerprint(code: str, kl_type: str, autype: str = "QFQ") -> Optional[str]:
+    """获取快照记录的买卖点配置指纹。
+
+    Returns:
+        指纹字符串；快照不存在或该行未记录指纹（改造前的存量行）时返回 None。
+        调用方应把 ``None`` 视为「不匹配」，即强制全量重算——
+        存量行的口径未知，不能假定它属于当前档位。
+    """
+    _ensure_tables()
+    conn = _get_pg_conn()
+    if conn is None:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT config_fingerprint FROM chan_snapshot "
+                "WHERE code=%s AND kl_type=%s AND autype=%s",
+                (code, kl_type, autype),
+            )
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    return row[0] if row else None
 
 
 def get_industries_for_codes(codes: list[str], limit: int = 3) -> dict[str, list[str]]:
@@ -615,14 +740,16 @@ def _upsert_structure(cur, code: str, kl_type: str, autype: str, structure: dict
     )
 
 
-def _upsert_snapshot(cur, code: str, kl_type: str, autype: str, pickle_bytes: bytes) -> None:
+def _upsert_snapshot(cur, code: str, kl_type: str, autype: str, pickle_bytes: bytes,
+                     fingerprint: Optional[str] = None) -> None:
     cur.execute(
-        """INSERT INTO chan_snapshot (code, kl_type, autype, pickle)
-           VALUES (%s, %s, %s, %s)
+        """INSERT INTO chan_snapshot (code, kl_type, autype, pickle, config_fingerprint)
+           VALUES (%s, %s, %s, %s, %s)
            ON CONFLICT (code, kl_type, autype) DO UPDATE SET
              pickle     = EXCLUDED.pickle,
+             config_fingerprint = EXCLUDED.config_fingerprint,
              updated_at = NOW()""",
-        (code, kl_type, autype, psycopg2.Binary(pickle_bytes)),
+        (code, kl_type, autype, psycopg2.Binary(pickle_bytes), fingerprint),
     )
 
 
@@ -653,6 +780,7 @@ def persist_full_set(
     last_processed_time: str,
     kl_type_db: str,
     autype_db: str,
+    config_fingerprint: Optional[str] = None,
 ) -> int:
     """整套替换写入（幂等层 2+3）——在调用方已开启的事务内执行，不 commit。
 
@@ -669,7 +797,7 @@ def persist_full_set(
         _delete_bsp_rows(cur, code, kl_type, autype)
         inserted = _insert_bsp_rows(cur, code, kl_type, autype, bsp_rows)
         _upsert_structure(cur, code, kl_type, autype, structure)
-        _upsert_snapshot(cur, code, kl_type, autype, pickle_bytes)
+        _upsert_snapshot(cur, code, kl_type, autype, pickle_bytes, config_fingerprint)
         _advance_cursor(cur, code, kl_type_db, autype_db, last_processed_time)
     return inserted
 

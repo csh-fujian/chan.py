@@ -35,6 +35,8 @@ if __name__ == "__main__":
 
     config = CChanConfig({
         "trigger_step": True,
+        # 历史回测样例：显式沿用改造前的旧口径（divergence_rate=0.8 / min_zs_cnt=1），
+        # 目的是保持样例输出不变，不代表标准档位的默认值。
         "divergence_rate": 0.8,
         "min_zs_cnt": 1,
     })

@@ -515,25 +515,34 @@ else:  # 绘制动画
     - od_max_zero_cnt：指标为 0 的K线最大值，超过回抛异常，默认为 None，表示不检测
     - od_skip_zero：自动跳过指标为 0 的指标，（即不把 0 当做指标），默认为 True
 - 买卖点相关：
-    - divergence_rate：1类买卖点背驰比例，即离开中枢的笔的 MACD 指标相对于进入中枢的笔，默认为 0.9
-    - min_zs_cnt：1类买卖点至少要经历几个中枢，默认为 1
+    - **bsp_preset：档位预设，`standard`（默认）| `legacy`**
+        - `standard`：按标准缠论口径判定六类买卖点（趋势前提、创趋势新低、DIF 背驰、零轴回抽、类二中枢前提、标准三买B 等全部生效）
+        - `legacy`：一键回退到改造前的行为，逐笔逐类型复现旧输出（便于对照与回滚）
+        - 预设只展开为「默认值」，用户显式传入的单项仍会覆盖它，例如
+          `{"bsp_preset": "legacy", "bsp1_zero_axis": True}` 只让零轴判据生效
+    - divergence_rate：1类买卖点背驰比例，即离开中枢的笔的 MACD 指标相对于进入中枢的笔，默认为 0.9（`legacy` 档为 `inf`，即不做背驰过滤）
+    - min_zs_cnt：1类买卖点至少要经历几个中枢，默认为 2（`legacy` 档为 1）
     - bsp1_only_multibi_zs: `min_zs_cnt` 计算的中枢至少 3 笔（少于 3 笔是因为开启了 `one_bi_zs` 参数），默认为 True；
     - max_bs2_rate：2类买卖点那一笔回撤最大比例，默认为 0.9999
         - 注：如果是 1.0，那么相当于允许回测到1类买卖点的位置
     - bs1_peak：1类买卖点位置是否必须是整个中枢最低点，默认为 True
     - macd_algo：MACD指标算法（可自定义）
-        - peak：红绿柱最高点（绝对值），默认【线段买卖点不支持】
-        - full_area：整根笔对应的MACD的面积【线段买卖点不支持】
-        - area：整根笔对应的MACD的面积（只考虑相应红绿柱）【线段买卖点不支持】
+        - peak：红绿柱最高点（绝对值），默认
+        - full_area：整根笔对应的MACD的面积
+        - area：整根笔对应的MACD的面积（只考虑相应红绿柱）
         - slope：笔斜率
         - amp：笔的涨跌幅
-        - diff：首尾K线对应的MACD柱子高度的差值的绝对值
+        - diff：笔区间内 MACD 柱的 `max - min`（注意：名为 diff，实为柱体波动幅度）
+        - diff_peak：笔区间内 **DIF（黄白线）极值**，买点取 `min(DIF)`、卖点取 `max(DIF)`。
+          这是缠论原文「黄白线背驰」判据所需的算法，与 `diff` 不同
         - amount：笔上所有K线成交额总和
         - volumn：笔上所有K线成交量总和
         - amount_avg：笔上K线平均成交额
         - volumn_avg：笔上K线平均成交量
         - turnrate_avg：笔上K线平均换手率
         - rsi: 笔上RSI值极值
+        - 注：改造后**线段买卖点支持除成交量类外的全部算法**（此前只支持 `slope` / `amp`），
+          这是「次级别走势类型」落在线段级别的前提
     - bs_type：关注的买卖点类型，逗号分隔，默认"1,1p,2,2s,3a,3b"
         - 1,2：分别表示1，2，3类买卖点
         - 2s：类二买卖点
@@ -541,12 +550,144 @@ else:  # 绘制动画
         - 3a：中枢出现在1类后面的3类买卖点（3-after）
         - 3b：中枢出现在1类前面的3类买卖点（3-before）
     - "bsp2_follow_1"：2类买卖点是否必须跟在1类买卖点后面（用于小转大时1类买卖点因为背驰度不足没生成），默认为 True
+        - 注：改造后校验与 `relate_bsp1` 取值都使用**已成立**的一买口径；
+          关闭该开关时二买数量会显著增加，但引用的关联一买仍只取成立集合
     - "bsp3_follow_1"：3类买卖点是否必须跟在1类买卖点后面（用于小转大时1类买卖点因为背驰度不足没生成），默认为 True
-    - "bsp3_peak"：3类买卖点突破笔是不是必须突破中枢里面最高/最低的，默认为 False
-    - "bsp3a_max_zs_cnt": 3类买卖点最多可以跨越多少个中枢，默认为1
+        - 注：改造后只查一买专用集合，不再用「任意类型已登记」的口径——
+          某笔只是二买不能充当一买锚点。`bsp3_follow_1_mode` 取
+          `sure`（默认，已成立一买）/ `candidate`（全部一买候选）
+    - "bsp3_peak"：3类买卖点**突破笔**是不是必须突破中枢里面最高/最低的，默认为 False
+        - 注：判据对象是**中枢的离开笔**，不是回抽笔；改造后 T3A 与 T3B 两条分支都生效
+        - `bsp3_peak_on_breakout`（默认 True）控制该语义；设为 False 恢复旧行为
+          （判回抽笔，且只在 T3A 生效）
+    - "bsp3a_max_zs_cnt": 在「下一条线段」内最多检查前 N 个多笔中枢，默认为1
+        - 注：实际语义是「最多检查前 N 个中枢」，与「跨越多少中枢」无关。
+          多数标的下一条线段只有 0~1 个中枢，该参数在常见数据上无区分度
     - "bsp2s_follow_2": 类2买卖点是否必须跟在2类买卖点后面（2类买卖点可能由于不满足 `max_bs2_rate` 最大回测比例条件没生成），默认为 False
+        - 注：改造后语义与上面这句描述一致（此前实现放在「二买未成立」分支里，语义相反）。
+          在默认 `max_bs2_rate=0.9999` 下二买几乎全部成立，该开关必然观察不到差异；
+          把阈值收紧到 0.8 左右才能看到效果（实测 41 只日线：0.8 时 7→5，0.618 时 5→5）
     - "max_bsp2s_lv": 类2买卖点最大层级（距离2类买卖点的笔的距离/2），默认为None，不做限制
+    - **T3 四轴阶梯参数**（`chan-standard-bsp3-change`）：`3a`/`3b` 候选点携带
+      四轴证据（佐证 S → 确认 C → 分型 K → 时间 T，**无进度轴**——三买判据链
+      瞬时成立，没有「推进到一半」的中间态）。四轴全部是**只读证据标注**，
+      不改变任何三买的成立性
+        - `bsp3_confirm_window`（默认 2）：确认轴的考察窗口笔数（1/2）。确认轴评估
+          缠论要素 E「回抽结束后趋势延续」——**事后确认层，不是成立判据**：三买
+          照常在回抽笔端点输出，窗口内分 C3 已确认 / C2 收复一半 / C1 证伪终态
+          （跌回锚定中枢）/ C0 窗口不足。做成成立判据会让信号后移、买在确认笔高位
+        - `bsp3_confirm_level`（默认 `strong`）：`strong` = 后续笔突破回抽笔端点；
+          `weak` = 收复回抽幅度一半即算确认
+        - `bsp3_time_axis_strong` / `bsp3_time_axis_weak`（默认 0.5 / 1.0）：
+          回抽速度比的三档阈值（参照笔为突破笔，与 T2 的 break_bi 不同）
+        - 注：`bsp3_confirm_*` / `bsp3_time_axis_*` 改动会触发配置指纹变化，
+          存量索引行随之全量重刷
     - "strict_bsp3":3类买卖点对应的中枢必须紧挨着1类买卖点，默认为 False
+        - 注：两条分支的「紧邻」定义不同，由各自中枢的位置结构性决定：
+          **三买A**（中枢在下一条线段内）要求中枢的**进入笔** == 一买笔 + 1，
+          即一买后立刻起中枢；**三买B**（中枢在本线段内）要求中枢的**离开笔**
+          == 一买笔。两分支条件不互换、不统一
+        - 默认 False，标准档输出与该开关取值无关
+    - **类二新增判据**：
+        - `bsp2s_require_zs`（默认 True）：类二必须落在某个多笔中枢的 `[low, high]` 区间内
+          （判据对象是回抽点的**末端价格**）。这是缠论「中枢内回抽」的定义性前提；
+          关闭后恢复「与中枢完全无关」的旧行为
+        - `bsp2s_rate_mode`（默认 `amp`）：回撤率量纲。`amp` 与二买同构
+          （`bsp2s_bi.amp() / break_bi.amp()`）；`disp` 为旧口径
+          （端点位移 / 参照笔振幅）。两者共用 `max_bs2_rate` 但量纲不同，不等价
+    - **二买新增判据**：
+        - `bsp2_retrace_zs`（默认 False）：开启后要求二买的回调笔与**回调笔所在
+          线段**（即 `bsp2_bi.parent_seg`，代码 `check_retrace_in_zs` 的实际口径；
+          锚点为线段末笔时与「一买所在线段」等价，回调笔跨线段边界时不等价）
+          的某个多笔中枢有区间交集，把「单笔回调」提升为「中枢区间内的次级别回抽」
+    - **一买新增判据（默认全开）**：
+        - `bsp1_trend`：趋势前提，要求两个中枢依次下移（买）/ 上移（卖）。
+          `bsp1_trend_mode` 取 `strict`（默认，两中枢完全不重叠）或 `overlap`（依次移动但允许重叠）
+        - `bsp1_new_extreme`：离开段须创趋势新低/新高。
+          `bsp1_new_extreme_mode` 取 `trend_start`（默认，从第一个趋势中枢的进入段起算）、
+          `prev_zs_in`（只与最后中枢的进入段比）、`all`（与全部历史同向要素比）
+        - `bsp1_dif_div`：离开段的 DIF（黄白线）极值相对进入段不创新低/新高
+        - `bsp1_zero_axis`：进入最后中枢的段与离开段之间，DIF 须回抽过零轴
+        - `bsp1_zs_extend_to_seg_end`（默认 False）：是否仍要求中枢延伸到线段末笔。
+          这是历史实现的自定义过滤（非理论要求），开启后会把大量合格候选挤进 T1P
+    - **一买降级路由与力度口径**：
+        - `bsp1_downgrade_to_pz`（默认 True）：趋势前提不达标但**背驰链路本身成立**时，
+          把该点以 **T1P** 类型登记，而不是静默丢弃。
+          触发需五个条件同时满足：① `reason == 'trend'`（仅趋势判据拦下）；
+          ② 面积背驰**实证**（`divergence_rate <= 100` 才算，`>100` 时 `is_divergence`
+          返回的 True 是空真，不作证据）；③ 极值判据通过；④ 以 `bsp1_trend=False`
+          + `bsp1_new_extreme_mode="all"` 重跑其余判据全过。
+          降级点携带特征 `bsp1_downgrade_reason`（`single_zs` = 多笔中枢不足 2；
+          `no_trend` = 有两中枢但未依次移动）。
+          **降级点不是成立一买**：它固定 `is_target_bsp=False`，不写入
+          `bsp1_sure_dict` / `bsp1_sure_list`，因此不会被二买/三买当作一买锚点。
+          两条不触发的情形：`bsp1_trend=False`（无趋势要求即无「趋势不达标」）、
+          `divergence_rate>100`（背驰判据被显式关闭，不产生「盘整背驰」标签）。
+        - `bsp1_force_scope`（默认 `"swing"`）：一买背驰的 b/c 力度取值窗口。
+          `"swing"` = 走势段——b 窗口为「上一中枢结束笔+1 ~ 中枢进入笔」（无上一中枢
+          则取线段首笔）、c 窗口为「离开笔 ~ 线段末笔」，整段聚合力度；
+          `"bi"` = 单笔（改造前口径，可单独回退）。
+          成交量/换手率类算法（`volumn` / `amount` / `volumn_avg` / `amount_avg` /
+          `turnrate_avg`）没有区间版本，自动退回单笔并标注
+          `bsp1_force_scope_effective="bi_fallback"`
+    - **一买区间套特征**：
+        - `bsp1_qjt`（默认 False）：为一买候选点计算「c 走势段内是否存在次级别
+          同向且**已确认**的一买」，结果写入特征的 `bsp1_qjt_hit`（bool）与
+          `bsp1_qjt_sub_idx`（命中点的次级别笔索引，仅命中时存在）。
+          窗口与 `bsp1_force_scope="swing"` 的 c 窗口同源
+          （`zs.end_bi.idx+1 ~ seg.end_bi.idx`），映射到次级别时间区间；
+          命中资格只用次级别 `bsp1_sure_list`（已确认），不用 `bsp1_list` 候选
+          （降级 T1P 同样无资格）。
+          **这是特征不是判据**：注入在 `cal()` 收尾、判定链路已结束，不改变任何
+          买卖点的成立性与输出数量。41 只日线开关前后六类数量逐类一致
+        - `bsp1_qjt_depth`（默认 1）：链式确认层数。1 = 只看直接次级；
+          >1 要求命中的子级点自身也能在它的 c 段内找到下一层同向已确认一买，
+          下层容器缺失时不惩罚。层数越多，步进快照间的特征翻转风险越大
+          （子级确认天然滞后于父级候选产生），故默认收敛一层
+- **确认阶梯（三轴）**（Web 端 `bsp_index.ladder` 列 / 买卖点页「级别」列 / K 线页
+  未确认买卖点悬浮说明）：
+
+  未确认的第一类买卖点家族（`1` / `1p`）候选点携带**三轴独立证据**，落库为竖线
+  分隔的单一字符串（轴顺序固定：进度 → 佐证 → 分型），如 `L2|L2-3|L3-2`。
+  `L4` = 已确认买卖点（单值，语义不变）；`NULL` = 未定级（非一买类型或不可评估）。
+
+  | 轴 | 取值 | 语义 |
+  |---|---|---|
+  | **进度轴** | `L1` / `L2` | 一买判据链 ①~⑦ 的短路位置：1~4 项 → `L1`（前半链），5~7 项 → `L2`（后半链；七项全过但线段未确认也落 `L2`） |
+  | **佐证轴** | `L2-3` / `L2-2` / `L2-1` | 次级别结构佐证（结构映射窗口内）：`L2-3` 子级已确认同向一买（与 `bsp1_qjt_hit` 同口径）/ `L2-2` 子级候选且判据链在前半链 / `L2-1` 子级末端同向分型 |
+  | **分型轴** | `L3-3` / `L3-2` / `L3-1` | 本级末端分型强弱（实体口径）：`L3-3` 第三根实体上沿收复前一根实体上沿 / `L3-2` 收复前一根实体一半以上（含相等边界）/ `L3-1` 未收复一半 |
+
+  三轴**独立**（非递进关系），组合串里缺少某轴表示该轴当前无证据。原 WebAPI L1
+  时间窗共振（`cal_l1_resonance`）已退役——佐证轴沿结构映射窗口，不做时间窗近似。
+  推导在 WebAPI 层完成（`WebAPI/bsp_ladder.py` / `bsp_progress.py` /
+  `fractal_strength.py`），**不改动 CChan 的计算逻辑**。
+- **确认阶梯（二买/类二五轴）**（chan-standard-bsp2-change；`bsp_index.ladder` 列，
+  列宽 `VARCHAR(32)`）：
+
+  未确认的第二类买卖点家族（`2` / `2s`）候选点携带**五轴独立证据**，落库为竖线
+  分隔的单一字符串（轴顺序固定：进度 → 佐证 → 确认 → 分型 → 时间），如
+  `P2|S3|C2|K3|T1`。`L4`（已确认）单值语义全类型不变；`NULL` = 未定级
+  （第三类家族过渡期，或不可评估）。语法独立于 T1 的 L 编号（靠 bsp_type 区分）。
+
+  | 轴 | 取值 | 语义 |
+  |---|---|---|
+  | **进度轴** | `P1` / `P2` | 二买判据链 ①~⑤ 的短路位置：已过 ≤3 项 → `P1`，>3 项或全过未确认 → `P2` |
+  | **佐证轴** | `S3` / `S2` / `S1` | 回调笔窗口映射的子级别结构佐证：`S3` 子级已确认同向点 / `S2` 子级候选 / `S1` 子级末端同向分型 |
+  | **确认轴** | `C3` / `C2` / `C1` / `C0` | 事后价格确认（窗口 = `bsp2_confirm_window` 笔）：`C3` 后续笔突破 `break_bi` 端点 / `C2` 收复振幅一半 / `C1` 窗口走完未动（**终态降级，不撤销行**）/ `C0` 窗口不足（进行中） |
+  | **分型轴** | `K3` / `K2` / `K1` | 回调笔末端分型强弱（实体口径，与 T1 分型轴同源分级） |
+  | **时间轴** | `T3` / `T2` / `T1` | 回调速度比 `v = (amp(bsp2_bi)/amp(break_bi)) / (klu_cnt(bsp2_bi)/klu_cnt(break_bi))` 三档：`v ≤ 0.5` 急涨缓跌（衰竭）→ `T3`；`0.5 < v ≤ 1.0` → `T2`；`v > 1.0` 缓涨急跌 → `T1` |
+
+  五轴**独立**且全部是证据标注（**不改变二买/类二的成立判据**）；组合串缺某轴
+  表示该轴无证据（如无子级数据时佐证轴缺席）。量能与 ML 打分显式排除在候选
+  判断之外。推导在 WebAPI 层（`WebAPI/bsp2_ladder.py` / `bsp2_confirm.py` /
+  `bsp2_time_axis.py` / `bsp2_progress.py`），配置组：
+
+    - `bsp2_confirm_window`（默认 `2`）：确认轴考察窗口笔数（1 或 2；实证定标
+      见《文档/二买确认轴实证报告.md》0.1）
+    - `bsp2_time_axis_strong` / `bsp2_time_axis_weak`（默认 `0.5` / `1.0`）：时间轴
+      速度比分档线（方向假设未获实证支持，阈值待更大样本复验）
+    - `bsp2_confirm_level`（默认 `strong`）：确认轴阈值口径。`strong` = 突破
+      `break_bi` 端点；`weak` = 收复一半即算确认
 - 自定义策略类相关（关于策略类详细介绍参见后文）：
     - cbsp_strategy：自定义策略类，默认为 None
         - 框架自带实现类别为 `CCustomStrategy`/`CSegBspStrategy`
@@ -568,12 +709,21 @@ else:  # 绘制动画
     - stock_distinct_price_thred: `stock_no_active_day` 根K线内股价多样性低于多少则定义为不活跃，默认为 25
 
 #### 精确设置配置
-`divergence_rate`,`min_zs_cnt`,`bsp1_only_multibi_zs`,`max_bs2_rate`,`macd_algo`,`bs1_peak`,`strategy_para`，`bs_type`，`bsp2_follow_1`，`bsp3_follow_1`，`bsp2s_follow_2`，`strict_bsp3`，`score_thred`，`bsp3_peak` 这几个指标可以分别对买卖点/线段买卖点各自设置：
+`divergence_rate`,`min_zs_cnt`,`bsp1_only_multibi_zs`,`max_bs2_rate`,`macd_algo`,`bs1_peak`,`strategy_para`，`bs_type`，`bsp2_follow_1`，`bsp3_follow_1`，`bsp2s_follow_2`，`strict_bsp3`，`score_thred`，`bsp3_peak`，以及改造新增的
+`bsp1_trend`、`bsp1_new_extreme`、`bsp1_dif_div`、`bsp1_zero_axis`、
+`bsp1_zs_extend_to_seg_end`、`bsp2_retrace_zs`、`bsp2s_require_zs`、
+`bsp3_peak_on_breakout`、`bsp1_downgrade_to_pz`、`bsp1_force_scope`、
+`bsp1_qjt`、`bsp1_qjt_depth` 这几个指标可以分别对买卖点/线段买卖点各自设置：
 
 - 后面加 `-buy` 或 `-sell`，比如 min_zs_cnt-buy=2，min_zs_cnt-sell=1：对『笔』的买点/卖点生效
 - 后面加 `-segbuy` 或 `-segsell`：对『线段』的买点/卖点生效
 - 后面加 `-seg`：对『线段』的买卖点同时生效
 - 后面啥也没加：对『笔』『线段』的买卖点同时生效
+
+> 档位类配置（`bsp_preset` / `bsp1_trend_mode` / `bsp1_new_extreme_mode` /
+> `bsp2s_rate_mode` / `bsp3b_mode` / `bsp3_follow_1_mode`）不接受后缀，
+> 它们由 `bsp_preset` 统一决定；需要在两个层级用不同档位时，显式分别设置
+> 对应的枚举开关，而不是指望预设自动分叉。
 
 #### CChanConfig 配置 Demo
 ```python
@@ -585,8 +735,10 @@ config = CChanConfig({
     "trigger_step": False,
     "skip_step": 0,
     "seg_algo": "chan",
+    # 买卖点档位：不写即为 standard（标准缠论口径）
+    # 需要复现改造前行为时用 "bsp_preset": "legacy"
     "divergence_rate": 0.9,
-    "min_zs_cnt": 1,
+    "min_zs_cnt": 2,
     "max_bs2_rate": 0.618,
     "bs1_peak": True,
     "macd_algo": "peak",

@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from .config import PG_DSN
+from .stock_store import ST_EXCLUDE_SQL
 
 log = logging.getLogger("monitor_store")
 
@@ -1020,12 +1021,14 @@ def _fill_bsp_context(items: list[dict]) -> None:
                     for it in chan_items:
                         cur.execute(
                             """
-                            SELECT bsp_type, is_buy, bsp_date
-                            FROM bsp_index
-                            WHERE code = %s AND kl_type = %s AND time_key <= %s
-                            ORDER BY time_key DESC
+                            SELECT b.bsp_type, b.is_buy, b.bsp_date
+                            FROM bsp_index b
+                            LEFT JOIN stock s ON b.code = s.code
+                            WHERE b.code = %s AND b.kl_type = %s AND b.time_key <= %s
+                              AND {st_exclude}
+                            ORDER BY b.time_key DESC
                             LIMIT 1
-                            """,
+                            """.format(st_exclude=ST_EXCLUDE_SQL),
                             (it["code"], it["kl_type"], it["monitor_start_time"]),
                         )
                         row = cur.fetchone()

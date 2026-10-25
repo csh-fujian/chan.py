@@ -610,6 +610,10 @@ input, select, button, textarea { font-family: inherit; font-size: inherit; colo
 .badge--info    { background: var(--accent-dim); color: var(--accent-hover); }
 .badge--disabled{ background: var(--bg-surface-hover); color: var(--text-disabled); }
 .badge--accent  { background: var(--accent-dim); color: var(--accent-hover); border: 1px solid var(--accent-border); }
+/* 三轴阶梯徽章（chan-bsp-ladder-change）：同一格内多个轴并列，间距收紧 */
+.badge--success { background: var(--fall-dim); color: var(--fall); }
+.ladder-badge { margin-right: 4px; }
+.ladder-badge:last-child { margin-right: 0; }
 
 .badge + .badge { margin-left: 4px; }
 

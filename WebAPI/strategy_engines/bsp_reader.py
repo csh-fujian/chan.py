@@ -149,6 +149,19 @@ def get_bsp_buy_points(
         log.warning("周期 %s 不在 B 点判定支持集（D/30m）", period)
         return None
 
+    # ST 排除（exclude-st-stocks D6）：本模块直达 bsp_index，不过 bsp_store 的
+    # 读侧过滤，必须在入口自行判定。ST 标的的存量行仍留在表中（停止分析前算的），
+    # 若直接返回会让 B3/B4 用过期结论判定信号。按 D5 语义返回 None（数据不可得），
+    # 调用方不判 B 级、不淘汰信号。名称来源不可用时放行——本模块的失败关闭语义
+    # 由上游 scheduler 的 exclude_st_codes 负责，此处不重复拦截。
+    try:
+        from .. import stock_store
+        if stock_store.is_st_name(stock_store.get_stock_name(code)):
+            log.info("[engine补算] %s %s 为 ST 股票，不参与缠论买点判定", code, period)
+            return None
+    except stock_store.StockNameSourceUnavailable:
+        log.warning("[engine补算] %s 股票名称来源不可用，跳过 ST 判定", code)
+
     try:
         rows = _query_bsp_buy_rows(code, period)
         if rows:

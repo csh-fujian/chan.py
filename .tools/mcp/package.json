@@ -1,0 +1,8 @@
+{
+  "name": "chan-py-mcp-tools",
+  "private": true,
+  "description": "Local MCP server installs for this repo. Run `npm install` here on each machine.",
+  "dependencies": {
+    "@sigma4life/postgres-mcp-server": "1.0.1"
+  }
+}

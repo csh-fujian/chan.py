@@ -2,15 +2,20 @@
  * 买卖点标签映射 — design.md D2
  * 前端做映射，不改后端枚举。
  * 原始枚举: '1','2','2s','3a','3b','1p'
- * 映射: 1B/1S, 2B/2S, L2B/L2S, 3B/3S, PZ-B/PZ-S
+ *
+ * 3a / 3b 自 chan-standard-bsp 起语义分叉，不能共用一个标签：
+ *   3a = 中枢在「下一条线段」内（离开后第一次回抽）
+ *   3b = 中枢在「当前线段」内（离开后第一次回抽）
+ * 两者都是标准三买，但形态位置不同，标签必须可区分，否则用户无法判断
+ * 该信号依托的是哪个中枢。
  */
 
 const TYPE_MAP: Record<string, { buy: string; sell: string }> = {
   '1': { buy: '1B', sell: '1S' },
   '2': { buy: '2B', sell: '2S' },
   '2s': { buy: 'L2B', sell: 'L2S' },
-  '3a': { buy: '3B', sell: '3S' },
-  '3b': { buy: '3B', sell: '3S' },
+  '3a': { buy: '3B(后)', sell: '3S(后)' },
+  '3b': { buy: '3B(内)', sell: '3S(内)' },
   '1p': { buy: 'PZ-B', sell: 'PZ-S' },
 }
 
@@ -31,4 +36,6 @@ export function bspLabel(type: string, isBuy: boolean): string {
 }
 
 /** 所有买卖点类型标签（用于筛选下拉/图表轴） */
-export const ALL_BSP_LABELS = ['1B', '2B', '3B', '1S', '2S', 'L2B', 'L2S', '3S', 'PZ-B', 'PZ-S']
+export const ALL_BSP_LABELS = [
+  '1B', '2B', '3B(后)', '3B(内)', '1S', '2S', 'L2B', 'L2S', '3S(后)', '3S(内)', 'PZ-B', 'PZ-S',
+]

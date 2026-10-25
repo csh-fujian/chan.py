@@ -16,6 +16,17 @@ from ChanAnalyse.Bi.Bi import CBi
 from ChanAnalyse.Common.CEnum import BI_DIR, MACD_ALGO, TREND_LINE_SIDE
 from ChanAnalyse.Common.ChanException import CChanException, ErrCode
 from ChanAnalyse.KLine.KLine_Unit import CKLine_Unit
+from ChanAnalyse.Math.Metric import (
+    cal_macd_amp,
+    cal_macd_area,
+    cal_macd_diff,
+    cal_macd_diff_peak,
+    cal_macd_half_obverse,
+    cal_macd_half_reverse,
+    cal_macd_peak,
+    cal_macd_slope,
+    cal_rsi,
+)
 from ChanAnalyse.Math.TrendLine import CTrendLine
 
 from .EigenFX import CEigenFX
@@ -199,17 +210,107 @@ class CSeg(Generic[LINE_TYPE]):
         """线段包含的原始K线数量"""
         return self.get_end_klu().idx - self.get_begin_klu().idx + 1
 
+    @property
+    def klc_lst(self):
+        """
+        线段包含的合并K线的迭代器（从起始笔的第一根到结束笔的最后一根）
+
+        与 `bi_list` 的区别：`bi_list` 是要素列表（笔），`klc_lst` 是 K 线序列，
+        用于计算需要逐根 K 线累积的力度指标（面积、峰值、DIF 极值、RSI）。
+
+        实现方式：从首笔的 `begin_klc` 沿 `next` 链向后走，直到越过末笔的
+        `end_klc`。不能简单地拼接各笔的 `klc_lst`——相邻笔共享端点所在的合并
+        K 线，拼接会重复计入。
+        """
+        if not self.bi_list:
+            return
+        end_idx = self.bi_list[-1].end_klc.idx
+        klc = self.bi_list[0].begin_klc
+        while klc is not None:
+            yield klc
+            if klc.idx >= end_idx:
+                return
+            klc = klc.next
+
+    @property
+    def klc_lst_re(self):
+        """线段包含的合并K线的逆序迭代器"""
+        if not self.bi_list:
+            return
+        begin_idx = self.bi_list[0].begin_klc.idx
+        klc = self.bi_list[-1].end_klc
+        while klc is not None:
+            yield klc
+            if klc.idx <= begin_idx:
+                return
+            klc = klc.pre
+
     def cal_macd_metric(self, macd_algo, is_reverse):
         """
         计算线段的 MACD 背驰指标
-        线段只支持斜率法（SLOPE）和振幅法（AMP）
+
+        支持与 `CBi` 一致的算法集合：`area` / `full_area` / `peak` / `diff` /
+        `diff_peak` / `slope` / `amp` / `rsi`。
+
+        `is_reverse` 只影响 `area`（半面积）：`True` 表示从结束端反向累积。
+
+        历史说明：本方法原先只支持 `slope` / `amp`，且 `CChanConfig` 把线段级别的
+        `macd_algo` 硬编码为 `slope`。改造后线段级别可以表达 DIF 背驰与零轴回抽，
+        这是「次级别走势类型」落在线段级别的前提。
         """
-        if macd_algo == MACD_ALGO.SLOPE:
+        if macd_algo == MACD_ALGO.AREA:
+            return self.Cal_MACD_half(is_reverse)
+        elif macd_algo == MACD_ALGO.PEAK:
+            return self.Cal_MACD_peak()
+        elif macd_algo == MACD_ALGO.FULL_AREA:
+            return self.Cal_MACD_area()
+        elif macd_algo == MACD_ALGO.DIFF:
+            return self.Cal_MACD_diff()
+        elif macd_algo == MACD_ALGO.DIFF_PEAK:
+            return self.Cal_MACD_diff_peak()
+        elif macd_algo == MACD_ALGO.SLOPE:
             return self.Cal_MACD_slope()
         elif macd_algo == MACD_ALGO.AMP:
             return self.Cal_MACD_amp()
+        elif macd_algo == MACD_ALGO.RSI:
+            return self.Cal_Rsi()
         else:
-            raise CChanException(f"unsupport macd_algo={macd_algo} of Seg, should be one of slope/amp", ErrCode.PARA_ERROR)
+            raise CChanException(
+                f"unsupport macd_algo={macd_algo} of Seg, "
+                f"should be one of area/full_area/peak/diff/diff_peak/slope/amp/rsi",
+                ErrCode.PARA_ERROR)
+
+    def Cal_MACD_area(self):
+        """线段 MACD 全面积（只累加与线段同向的柱）"""
+        return cal_macd_area(self.klc_lst, self.is_down(),
+                             begin_idx=self.get_begin_klu().idx, end_idx=self.get_end_klu().idx)
+
+    def Cal_MACD_peak(self):
+        """线段 MACD 同向柱峰值"""
+        return cal_macd_peak(self.klc_lst, self.is_down(),
+                             begin_idx=self.get_begin_klu().idx, end_idx=self.get_end_klu().idx)
+
+    def Cal_MACD_diff(self):
+        """线段区间内 MACD 柱的 max - min（历史语义，与 `diff_peak` 不同）"""
+        return cal_macd_diff(self.klc_lst,
+                             begin_idx=self.get_begin_klu().idx, end_idx=self.get_end_klu().idx)
+
+    def Cal_MACD_diff_peak(self):
+        """线段区间内 DIF（黄白线）极值：下降取 min、上升取 max"""
+        return cal_macd_diff_peak(self.klc_lst, self.is_down(),
+                                  begin_idx=self.get_begin_klu().idx, end_idx=self.get_end_klu().idx)
+
+    def Cal_Rsi(self):
+        """线段 RSI 极值"""
+        return cal_rsi(self.klc_lst, self.is_down(),
+                       begin_idx=self.get_begin_klu().idx, end_idx=self.get_end_klu().idx)
+
+    def Cal_MACD_half(self, is_reverse):
+        """线段 MACD 半面积"""
+        if is_reverse:
+            return cal_macd_half_reverse(self.klc_lst_re, self.get_end_klu().macd.macd)
+        else:
+            return cal_macd_half_obverse(self.klc_lst, self.get_begin_klu().macd.macd)
 
     def Cal_MACD_slope(self):
         """
@@ -217,12 +318,7 @@ class CSeg(Generic[LINE_TYPE]):
         上升线段：(结束高点 - 起始低点) / 结束高点 / K线数量
         下降线段：(起始高点 - 结束低点) / 起始高点 / K线数量
         """
-        begin_klu = self.get_begin_klu()
-        end_klu = self.get_end_klu()
-        if self.is_up():
-            return (end_klu.high - begin_klu.low)/end_klu.high/(end_klu.idx - begin_klu.idx + 1)
-        else:
-            return (begin_klu.high - end_klu.low)/begin_klu.high/(end_klu.idx - begin_klu.idx + 1)
+        return cal_macd_slope(self.get_begin_klu(), self.get_end_klu(), self.is_up())
 
     def Cal_MACD_amp(self):
         """
@@ -230,12 +326,7 @@ class CSeg(Generic[LINE_TYPE]):
         下降线段：(起始高点 - 结束低点) / 起始高点
         上升线段：(结束高点 - 起始低点) / 起始低点
         """
-        begin_klu = self.get_begin_klu()
-        end_klu = self.get_end_klu()
-        if self.is_down():
-            return (begin_klu.high-end_klu.low)/begin_klu.high
-        else:
-            return (end_klu.high-begin_klu.low)/begin_klu.low
+        return cal_macd_amp(self.get_begin_klu(), self.get_end_klu(), self.is_up())
 
     def update_bi_list(self, bi_lst, idx1, idx2):
         """

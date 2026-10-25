@@ -156,6 +156,7 @@ class MACD_ALGO(Enum):
     PEAK = auto()         # MACD峰值（红绿柱的最高点，默认）
     FULL_AREA = auto()     # MACD完整面积（不考虑红绿柱颜色）
     DIFF = auto()         # MACD差值（首尾K线MACD柱子高度差）
+    DIFF_PEAK = auto()     # DIF（黄白线）极值：买取 min(DIF)、卖取 max(DIF)
     SLOPE = auto()         # 笔斜率（价格变化率）
     AMP = auto()           # 笔振幅（涨跌幅）
     VOLUMN = auto()        # 成交量总和

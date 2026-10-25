@@ -31,6 +31,41 @@ from ChanAnalyse.Math.TrendModel import CTrendModel
 from ChanAnalyse.Seg.SegConfig import CSegConfig
 from ChanAnalyse.ZS.ZSConfig import CZSConfig
 
+# 买卖点档位预设
+#
+# 设计要点：预设只展开为一组「默认值」，用户的显式 key 仍在之后覆盖。
+# 因此 `bsp_preset="legacy"` 可一键复现改造前的行为，
+# 而 `bsp_preset="legacy"` + 单项 `bsp1_zero_axis=True` 只让该项生效。
+#
+# `legacy` 的目标是**逐笔逐类型**复现改造前输出，所以除了判据开关，
+# 还必须把 `divergence_rate` / `min_zs_cnt` 以及类二、三买B 的口径一并回退。
+_BSP_PRESETS = {
+    "standard": {},
+    "legacy": {
+        "divergence_rate": float("inf"),
+        "min_zs_cnt": 1,
+        "bsp1_trend": False,
+        "bsp1_new_extreme": False,
+        "bsp1_dif_div": False,
+        "bsp1_zero_axis": False,
+        "bsp1_zs_extend_to_seg_end": True,
+        "bsp2_retrace_zs": False,
+        "bsp2s_require_zs": False,
+        "bsp2s_rate_mode": "disp",
+        "bsp3b_mode": "legacy",
+        "bsp3_peak_on_breakout": False,
+        # 降级路由：legacy 下 bsp1_trend=False，趋势判据关闭 → reason 永不为 'trend'，
+        # 降级本来就不触发；显式写入是防御性的（防止将来单独放开 bsp1_trend 时口径意外变化）
+        "bsp1_downgrade_to_pz": False,
+        # 力度口径：legacy 下 divergence_rate=inf 走 >100 分支、根本不计算 metric，
+        # 显式写 "bi" 是防御性的（防止将来单独放开背驰时口径意外变化）
+        "bsp1_force_scope": "bi",
+        # 区间套特征：默认已 False，显式写入防止将来单独调 legacy 判据开关时
+        # 被特征字段污染等价性基线
+        "bsp1_qjt": False,
+    },
+}
+
 
 class CChanConfig:
     """
@@ -190,8 +225,8 @@ class CChanConfig:
         """
         # 默认参数
         para_dict = {
-            "divergence_rate": float("inf"),
-            "min_zs_cnt": 1,
+            "divergence_rate": 0.9,
+            "min_zs_cnt": 2,
             "bsp1_only_multibi_zs": True,
             "max_bs2_rate": 0.9999,
             "macd_algo": "peak",
@@ -204,15 +239,65 @@ class CChanConfig:
             "max_bsp2s_lv": None,
             "strict_bsp3": False,
             "bsp3a_max_zs_cnt": 1,
+            # 第一类买卖点标准判据
+            "bsp1_trend": True,
+            "bsp1_new_extreme": True,
+            "bsp1_dif_div": True,
+            "bsp1_zero_axis": True,
+            "bsp1_trend_mode": "strict",
+            "bsp1_new_extreme_mode": "trend_start",
+            "bsp1_zs_extend_to_seg_end": False,
+            # 第二类 / 类二标准判据
+            "bsp2_retrace_zs": False,
+            "bsp2s_require_zs": True,
+            "bsp2s_rate_mode": "amp",
+            # 第三类标准判据
+            "bsp3b_mode": "standard",
+            "bsp3_peak_on_breakout": True,
+            "bsp3_follow_1_mode": "sure",
+            # 降级路由（chan-standard-bsp1-change）
+            "bsp1_downgrade_to_pz": True,
+            # 一买力度口径（§4.4）：走势段（默认）/ 单笔
+            "bsp1_force_scope": "swing",
+            # 区间套特征（§4.6）：默认关闭，只写特征不改成立性
+            "bsp1_qjt": False,
+            "bsp1_qjt_depth": 1,
+            # T2 阶梯五轴（chan-standard-bsp2-change）：确认窗口取 2 笔
+            # 为实证定标（《文档/二买确认轴实证报告.md》0.1：窗口 2 把末端
+            # 候选标 ongoing 而非误判 strong，比窗口 1 更保守且不误报）
+            "bsp2_confirm_window": 2,
+            "bsp2_time_axis_strong": 0.5,
+            "bsp2_time_axis_weak": 1.0,
+            "bsp2_confirm_level": "strong",
+            # T3 阶梯四轴（chan-standard-bsp3-change）：确认轴 = 缠论要素 E
+            # 的事后确认层（非成立判据）；窗口取 2 笔与 T2 同档（末端候选
+            # 标 C0 而非误判终态，更保守）。时间轴阈值沿用 T2 门槛待实证校准。
+            "bsp3_confirm_window": 2,
+            "bsp3_confirm_level": "strong",
+            "bsp3_time_axis_strong": 0.5,
+            "bsp3_time_axis_weak": 1.0,
+            # 档位预设
+            "bsp_preset": "standard",
         }
+        # 档位预设展开：先应用预设字典，再让用户显式 key 覆盖
+        # 这样 `bsp_preset="legacy"` 能一键回退改造前的行为，
+        # 而 `bsp_preset="legacy"` + 单项 `bsp1_zero_axis=True` 只让该项生效。
+        preset_name = conf.get("bsp_preset", "standard")
+        para_dict["bsp_preset"] = preset_name
+        if preset_name not in _BSP_PRESETS:
+            raise CChanException(
+                f"unknown bsp_preset={preset_name!r}, should be one of "
+                f"{', '.join(_BSP_PRESETS)}", ErrCode.PARA_ERROR)
+        para_dict.update(_BSP_PRESETS[preset_name])
+
         # 从 conf 中提取参数，使用默认值填充
         args = {para: conf.get(para, default_value) for para, default_value in para_dict.items()}
         self.bs_point_conf = CBSPointConfig(**args)  # **args 将字典解包为关键字参数
 
-        # 线段级别买卖点配置（默认使用 slope 算法，且不要求多笔中枢）
+        # 线段级别买卖点配置：算法与笔级别一致，且不要求多笔中枢
+        # 历史实现把 macd_algo 硬编码为 slope，导致线段级别无法表达 DIF 背驰与
+        # 零轴回抽，标准一买无法在线段级别落地。此处解除硬编码。
         self.seg_bs_point_conf = CBSPointConfig(**args)
-        self.seg_bs_point_conf.b_conf.set("macd_algo", "slope")
-        self.seg_bs_point_conf.s_conf.set("macd_algo", "slope")
         self.seg_bs_point_conf.b_conf.set("bsp1_only_multibi_zs", False)
         self.seg_bs_point_conf.s_conf.set("bsp1_only_multibi_zs", False)
 

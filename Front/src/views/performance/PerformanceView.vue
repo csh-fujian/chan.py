@@ -84,13 +84,13 @@
           >
             <el-table-column label="买卖点类型" width="120" align="center">
               <template #default="{ row }">
-                <!-- 3a/3b 副语义（design D8）：中枢在一类之后/之前，回抽不进中枢 -->
+                <!-- 3a/3b 副语义（chan-standard-bsp）：中枢在下一条线段 / 当前线段，回抽不进中枢 -->
                 <!-- 聚合行不含方向维度（枚举混合买卖样本），badge 用中性样式，方向看侧栏/样本行 -->
                 <el-tooltip
                   v-if="row.bsp_type === '3a' || row.bsp_type === '3b'"
                   :content="row.bsp_type === '3a'
-                    ? '中枢在一类之后，回抽不进中枢'
-                    : '中枢在一类之前，回抽不进中枢'"
+                    ? '中枢在下一条线段，离开后第一次回抽不进入'
+                    : '中枢在当前线段，离开后第一次回抽不进入'"
                   placement="top"
                 >
                   <span class="badge badge--default">
@@ -307,8 +307,8 @@ const categoryItems = [
   { key: '1p', label: '盘整背驰 (PZ-B/PZ-S)' },
   { key: '2', label: '第二类 (2B/2S)' },
   { key: '2s', label: '类二 (L2B/L2S)' },
-  { key: '3a', label: '三类a (中枢后回抽)' },
-  { key: '3b', label: '三类b (中枢前回抽)' },
+  { key: '3a', label: '三类(后) (中枢在下一条线段)' },
+  { key: '3b', label: '三类(内) (中枢在当前线段)' },
 ]
 // 周期词表（design D4 口径：全部/30m/60m/D/W/M，与买卖点页一致）
 const klTypeItems = [
@@ -405,13 +405,13 @@ function isSampleBuy(s: PerformanceSample) {
   return s.direction === 'buy'
 }
 
-// 展示名（design D8）：'3a'/'3b' 经 bspLabel 均映射 3B/3S（撞名），
-// 加枚举尾缀区分；其余类型直接走 bspLabel
+// 展示名（chan-standard-bsp）：统计行按 (bsp_type, kl_type) 聚合，不含方向维度，
+// 因此不能标成 3B/3S（会误导为单一方向）。3a/3b 用中性标签 + 括号副语义区分；
+// 其余类型沿用 bspLabel（这些类型的买卖样本也混在一起，沿用既有展示习惯）。
 function displayLabel(bspType: string): string {
-  const base = bspLabel(bspType, isBuy(bspType))
-  if (bspType === '3a') return `${base}-a`
-  if (bspType === '3b') return `${base}-b`
-  return base
+  if (bspType === '3a') return '三类(后)'
+  if (bspType === '3b') return '三类(内)'
+  return bspLabel(bspType, isBuy(bspType))
 }
 
 // ---- 统计表过滤（方向/类型/周期消费于本地，来源/分组已随请求过滤） ----

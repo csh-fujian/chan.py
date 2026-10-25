@@ -17,12 +17,9 @@
       "type": "stdio"
     },
     "postgres-win": {
-      "command": "cmd",
+      "command": "node",
       "args": [
-        "/c",
-        "npx",
-        "-y",
-        "@sigma4life/postgres-mcp-server"
+        ".tools/mcp/node_modules/@sigma4life/postgres-mcp-server/dist/cli.js"
       ],
       "env": {
         "DATABASE_URL": "postgresql://postgres:postgres@127.0.0.1:5432/chan"

@@ -130,10 +130,12 @@ function typeLabel(t: string) {
   const map: Record<string, string> = {
     '1B': '第一类买点',
     '2B': '第二类买点',
-    '3B': '第三类买点',
+    '3B(后)': '第三类买点（中枢在下一条线段）',
+    '3B(内)': '第三类买点（中枢在当前线段）',
     '1S': '第一类卖点',
     '2S': '第二类卖点',
-    '3S': '第三类卖点',
+    '3S(后)': '第三类卖点（中枢在下一条线段）',
+    '3S(内)': '第三类卖点（中枢在当前线段）',
     'L2B': '类二买点',
     'L2S': '类二卖点',
     'PZ-B': '盘整买点',
@@ -174,7 +176,7 @@ interface NestItem {
 // 多级别买卖点数据（bsp-page-change 4.2）：打开抽屉时调 GET /api/bsp/{code}
 // 拉取该股票各周期真实买卖点索引行，按 kl_type 分组填充各周期子 tab。
 // 字段映射（BspIndexRow → NestItem）：
-//   type      ← bspLabel(bsp_type, is_buy)（'1'/'2'/'2s'/'3a'/'3b'/'1p' → 1B/2B/L2B/3B/PZ-B…）
+//   type      ← bspLabel(bsp_type, is_buy)（'1'/'2'/'2s'/'3a'/'3b'/'1p' → 1B/2B/L2B/3B(后)/3B(内)/PZ-B…）
 //   direction ← is_buy ? 'buy' : 'sell'
 //   price     ← price
 //   date      ← bsp_date（ISO 字符串）→ Date.parse ms 时间戳
@@ -200,12 +202,14 @@ function rowDesc(type: string, isBuy: boolean): string {
   const map: Record<string, string> = {
     '1B': '趋势背驰确认',
     '2B': '一类买点后首次回撤不创新低',
-    '3B': '离开中枢后回抽不进入',
+    '3B(后)': '中枢在下一条线段，离开后第一次回抽不进入',
+    '3B(内)': '中枢在当前线段，离开后第一次回抽不进入',
     'L2B': '中枢内与二类同侧',
     'PZ-B': '盘整背驰（无完整中枢）',
     '1S': '趋势背驰确认',
     '2S': '一类卖点后首次反弹不创新高',
-    '3S': '离开中枢后回升不进入',
+    '3S(后)': '中枢在下一条线段，离开后第一次回升不进入',
+    '3S(内)': '中枢在当前线段，离开后第一次回升不进入',
     'L2S': '中枢内与二类同侧',
     'PZ-S': '盘整背驰（无完整中枢）',
   }

@@ -17,6 +17,17 @@ from ChanAnalyse.Seg.Seg import CSeg
 
 LINE_TYPE = TypeVar('LINE_TYPE', CBi, CSeg)
 
+# 同笔多类型时选取主类型的优先序（信号强度由高到低）。
+# 一类点是趋势转折，信息量最高；类二数量最多、级别最低。
+_PRIMARY_TYPE_PRIORITY = (
+    BSP_TYPE.T1,
+    BSP_TYPE.T1P,
+    BSP_TYPE.T2,
+    BSP_TYPE.T3A,
+    BSP_TYPE.T3B,
+    BSP_TYPE.T2S,
+)
+
 
 class CBS_Point(Generic[LINE_TYPE]):
     """
@@ -67,13 +78,38 @@ class CBS_Point(Generic[LINE_TYPE]):
         """
         添加买卖点类型（一个点可以同时是多种类型）
 
-        例如：一个点可以同时是 T1 和 T1P
+        例如：一个点可以同时是 T1 和 T1P。
+
+        **幂等**：同一笔的同一类型只登记一次。步进模式下未确认线段会被反复
+        重算，`add_bs` 每轮都会命中既有对象并走到这里；若不去重，`type` 会
+        累积成 `[T3B, T3B, ...]`（实测 30m 单笔累积到 45 个），任何按 `type`
+        遍历的统计（`count_types`、`bsp_index` 落库）都会被放大数十倍，
+        使步进与批量的数量出现假性分歧。
         """
-        self.type.append(bs_type)
+        if bs_type not in self.type:
+            self.type.append(bs_type)
 
     def type2str(self):
         """买卖点类型转换为字符串，格式如 '1,2,3a'"""
         return ",".join([x.value for x in self.type])
+
+    @property
+    def primary_type(self) -> BSP_TYPE:
+        """
+        主类型 —— 同一笔属于多个类型时的确定性去重键
+
+        一个价格位置可以同时是多种类型（如二买与三买B 落在同一笔）。下游
+        `bsp_index` 若按类型分行写入，同一笔会产生多行，绩效统计的分母被放大。
+        本属性按固定的「信号强度」优先序从 `type` 中取一个作为主类型，
+        `type` 列表本身保持全部类型不变。
+
+        优先序：T1 > T1P > T2 > T3A > T3B > T2S。
+        理由：一类点是趋势转折，信息量最高；类二数量最多、级别最低。
+        """
+        for candidate in _PRIMARY_TYPE_PRIORITY:
+            if candidate in self.type:
+                return candidate
+        return self.type[0]
 
     def add_another_bsp_prop(self, bs_type: BSP_TYPE, relate_bsp1):
         """
@@ -82,12 +118,21 @@ class CBS_Point(Generic[LINE_TYPE]):
         参数:
             bs_type: 新类型
             relate_bsp1: 关联的第一类买卖点
+
+        关于 `relate_bsp1` 的保留策略（chan-standard-bsp）：同一笔上不同类型的
+        买卖点**允许锚定不同的一买**。标准化后的三买尤其如此——T3A 依托「本线段
+        末笔之前」的中枢、T3B 依托「本线段内」的中枢，两者可以落在同一笔上但
+        对应的中枢与一买不同。此时保留**先登记**的那个（判定顺序 T3A 先于 T3B），
+        不做覆盖，也不断言失败。
+
+        历史实现是 `assert self.relate_bsp1.klu.idx == relate_bsp1.klu.idx`：
+        在默认档 + `min_zs_cnt=1`（文档宣传支持的单项覆盖）下会真实触发，
+        使整只股票的线段级别买卖点计算崩溃。`relate_bsp1` 在仓库内无下游
+        消费方，断言无守护价值，改为保留先登记者。
         """
         self.add_type(bs_type)
         if self.relate_bsp1 is None:
             self.relate_bsp1 = relate_bsp1
-        elif relate_bsp1 is not None:
-            assert self.relate_bsp1.klu.idx == relate_bsp1.klu.idx
 
     def add_feat(self, inp1: Union[str, Dict[str, float], Dict[str, Optional[float]], 'CFeatures'], inp2: Optional[float] = None):
         """

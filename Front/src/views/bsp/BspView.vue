@@ -186,16 +186,22 @@
                       <!-- 确认阶梯级别（bsp-ladder-change 4.2）：徽章 + hover 说明（级别名 + 仓位指引）；
                            L4 实色 badge--rise、L3 warning、L1 info、L2 弱化 default，缺失兜底「未定级」。
                            与「未确认」灰 tag 协调：L4 = 已确认无灰 tag，L1-L3 行保留类型列灰 tag 不动 -->
-                      <el-tooltip
-                        v-if="ladderInfoOf(row)"
-                        :content="ladderTooltip(row)"
-                        placement="top"
-                        :show-after="200"
-                      >
-                        <span class="badge" :class="ladderBadgeClass(row.ladder)">
-                          {{ row.ladder }}
-                        </span>
-                      </el-tooltip>
+                      <!-- 级别列（chan-bsp-ladder-change）：L4 单徽章；
+                           三轴组合值按轴并列徽章（进度/佐证/分型各至多一个）；
+                           NULL 显示「未定级」。各徽章 hover 展示轴名与说明。 -->
+                      <template v-if="ladderInfosOf(row).length">
+                        <el-tooltip
+                          v-for="info in ladderInfosOf(row)"
+                          :key="info.level"
+                          :content="`${info.axis} · ${info.name} — ${info.desc}`"
+                          placement="top"
+                          :show-after="200"
+                        >
+                          <span class="badge ladder-badge" :class="ladderBadgeClass(info)">
+                            {{ info.level }}
+                          </span>
+                        </el-tooltip>
+                      </template>
                       <span v-else class="badge badge--default">未定级</span>
                     </template>
                   </el-table-column>
@@ -385,7 +391,16 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+/**
+ * 买卖点页。
+ * 页面缓存（design.md D10，2026-10-20 修订）：纳入 AppShell KeepAlive 白名单——
+ * 切走再切回保留筛选条件 / 分页 / 滚动位置与列表内容，不重挂载。
+ * 缓存复活经 onActivated 静默刷新数据（列表与板块聚合），保留「回到页面看到最新买卖点」
+ * 的原有语义，但不重置查询条件、不置 loading（避免缓存内容被骨架替换而闪烁）。
+ */
+defineOptions({ name: 'BspView' })
+
+import { ref, reactive, onMounted, onActivated, onBeforeUnmount } from 'vue'
 import type { AutocompleteInstance } from 'element-plus'
 import { ElMessage } from 'element-plus'
 import { useRouter } from 'vue-router'
@@ -399,7 +414,7 @@ import { getFolders, addStock, type WatchFolder } from '@/api/modules/watchlist'
 import { createMonitor, getMonitorGroups, createMonitorGroup, type MonitorGroup } from '@/api/modules/monitor'
 import { searchStocks } from '@/api/modules/stock'
 import { ALL_BSP_LABELS, bspLabel } from '@/utils/bsp'
-import { isLadder, ladderInfo, ladderPosition, type LadderInfo } from '@/utils/bspLadder'
+import { ladderInfos, ladderPosition, parseLadder, type LadderInfo } from '@/utils/bspLadder'
 import type { BspRecord, BspAggregate } from '@/api/types'
 
 // 周期词表（design D1）：30分 → 60分 → 日线 → 周线 → 月线，无 1/5/15 分钟
@@ -418,25 +433,26 @@ function klLabel(v: string) {
 
 // ---- 级别列（bsp-ladder-change 4.2）：徽章色 + hover 说明文案 ----
 /** 徽章样式：L4 实色 badge--rise / L3 warning / L1 info / L2（及缺省）弱化 default */
-function ladderBadgeClass(ladder: string | null | undefined): string {
-  switch (ladder) {
-    case 'L4': return 'badge--rise'
-    case 'L3': return 'badge--warning'
-    case 'L1': return 'badge--info'
+function ladderBadgeClass(info: LadderInfo): string {
+  // 按轴分色系（chan-bsp-ladder-change）：确认实色、进度 info、佐证 success、分型 warning
+  switch (info.kind) {
+    case 'confirmed': return 'badge--rise'
+    case 'progress': return 'badge--info'
+    case 'corroboration': return 'badge--success'
+    case 'fractal': return 'badge--warning'
     default: return 'badge--default'
   }
 }
-/** 级别定义查询：缺 ladder / 非法值返回 null（模板 v-if 分支兜底「未定级」） */
-function ladderInfoOf(row: BspRecord): LadderInfo | null {
-  return isLadder(row.ladder) ? ladderInfo(row.ladder) : null
+/** 级别定义查询：组合串逐档展开（非法值返回空数组，模板兜底「未定级」） */
+function ladderInfosOf(row: BspRecord): LadderInfo[] {
+  return ladderInfos(row.ladder)
 }
-/** hover 说明：级别名 · 仓位指引 — 一句说明（与 K 线图 tooltip 文案同源自 bspLadder 词表；
- *  仓位指引按方向取买/卖镜像文案，卖点显示退出阶梯如「空仓」「减仓至 1/2」） */
+/** hover 说明：已由模板内逐徽章描述取代（三轴各自说明），保留供其他调用方复用 */
 function ladderTooltip(row: BspRecord): string {
-  const info = ladderInfoOf(row)
-  return info
-    ? `${info.name} · ${ladderPosition(info, row.direction === 'buy')} — ${info.desc}`
-    : ''
+  const infos = ladderInfosOf(row)
+  if (!infos.length) return ''
+  const pos = ladderPosition(parseLadder(row.ladder), row.direction === 'buy')
+  return `${infos.map((i) => `${i.axis}:${i.name}`).join(' · ')} · ${pos}`
 }
 
 // ---- 查询 ----
@@ -486,8 +502,13 @@ const total = ref(0)
 // 统计（侧栏 count）
 const stats = reactive({ total: 0, buy: 0, sell: 0 })
 
-async function loadList() {
-  loading.value = true
+/**
+ * 拉取列表 + 侧栏统计。
+ * @param silent 静默刷新（页面缓存切回时用）：不置 loading、失败保留现有内容，
+ *   避免缓存列表被骨架或清空替换。
+ */
+async function loadList(silent = false) {
+  if (!silent) loading.value = true
   // 每次请求前同步日期范围（控件可能被用户改写/清空）
   syncDateRangeToQuery()
   try {
@@ -504,27 +525,30 @@ async function loadList() {
     stats.sell = sellRes.total
     stats.total = buyRes.total + sellRes.total
   } catch {
+    // 静默刷新失败：保留缓存内容（下一轮激活或手动查询再重试）
+    if (silent) return
     records.value = []
     total.value = 0
     stats.total = 0
     stats.buy = 0
     stats.sell = 0
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
 }
 
 // 板块聚合
 const aggLoading = ref(false)
 const aggregate = ref<BspAggregate[]>([])
-async function loadAggregate() {
-  aggLoading.value = true
+async function loadAggregate(silent = false) {
+  if (!silent) aggLoading.value = true
   try {
     aggregate.value = await getBspAggregate()
   } catch {
+    if (silent) return
     aggregate.value = []
   } finally {
-    aggLoading.value = false
+    if (!silent) aggLoading.value = false
   }
 }
 
@@ -858,9 +882,33 @@ function formatBspTime(row: { bsp_date: number; kl_type: string }) {
   return `${date} ${hh}:${mm}`
 }
 
+// 首次挂载后首次 activated 与 onMounted 重复，跳过（见下方 onActivated）
+let activatedOnce = false
+
 onMounted(() => {
   loadList()
   loadAggregate()
+})
+
+// 页面缓存（design.md D10，2026-10-20 修订）：首次挂载走 onMounted；切走后再切回只触发
+// onActivated（onMounted 不再执行）。此时静默刷新列表与板块聚合——保留筛选条件/分页与
+// 已渲染内容，只把数据更新到最新（与未缓存时「切回重拉」语义一致，但无骨架闪烁）。
+onActivated(() => {
+  // 仅缓存复活触发（首次挂载后紧跟的 activated 由 onMounted 已覆盖，不重复拉）
+  if (!activatedOnce) {
+    activatedOnce = true
+    return
+  }
+  loadList(true)
+  loadAggregate(true)
+})
+
+// 卸载清理防抖定时器（缓存页亦可能在 AppShell 卸载时销毁，如登出）
+onBeforeUnmount(() => {
+  if (priceTimer) {
+    clearTimeout(priceTimer)
+    priceTimer = null
+  }
 })
 </script>
 

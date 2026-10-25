@@ -2,7 +2,9 @@ import type { BspRecord, BspAggregate } from '@/api/types'
 import type { BspIndexRow } from '@/api/modules/bsp'
 import { stocks } from './stocks'
 
-const bspTypes = ['1B', '2B', '3B', '1S', '2S', 'L2B', 'L2S', 'PZ-B', 'PZ-S']
+// 与 utils/bsp.ts 的 ALL_BSP_LABELS 同集合（chan-standard-bsp：3a/3b 语义分叉后
+// 不再共用一个「3B」标签，mock 侧也须拆开，否则筛选下拉选不到任何记录）
+const bspTypes = ['1B', '2B', '3B(后)', '3B(内)', '1S', '2S', 'L2B', 'L2S', '3S(后)', '3S(内)', 'PZ-B', 'PZ-S']
 // 周期词表（design D1）：与 BspView.klOptions 同集合 — 30m/60m/D/W/M，无 1/5/15 分钟
 const klTypes = ['30m', '60m', 'D', 'W', 'M']
 
@@ -14,10 +16,22 @@ function rand(seed: number) {
  * is_sure（bsp-sure-annotation 4.4）：真实形态中未确认点天然聚在索引尾部
  * （依托尾部虚段），按此形态构造——最后 6 条 is_sure=false，其余 true；
  * 未确认行日期贴近当前（尾部 = 最新），保证默认「最近三个交易日」范围内可见
- * ladder（bsp-ladder-change 4.3）：is_sure=true → 'L4'；未确认行在 'L1'/'L2'/'L3'
- * 轮转覆盖三态（口径对齐后端落库链路：确认 → L4，未确认无背驰 → L2，虚笔 → L2 兜底） */
-const UNSURE_LADDERS = ['L1', 'L2', 'L3'] as const
+ * ladder（chan-bsp-ladder-change）：确认 → 'L4'；未确认的一买家族在**三轴组合值**
+ * 轮转（进度轴 L1/L2 + 佐证轴 L2-x + 分型轴 L3-x），非一买类型为 null（「未定级」）。
+ * 覆盖形状：三轴齐备、两轴、单轴、NULL 四种，保证前端各分支都能被 mock 驱动。 */
+const UNSURE_LADDERS = [
+  'L2|L2-3|L3-3',
+  'L1|L3-2',
+  'L2|L3-1',
+  'L1',
+  'L1|L2-1|L3-1',
+] as const
 let unsureIdx = 0
+
+/** 一买家族类型（1 / 1p / PZ）——只有它们携带三轴组合值 */
+function isBsp1Family(type: string): boolean {
+  return type.startsWith('1') || type.startsWith('PZ')
+}
 
 export const bspRecords: BspRecord[] = Array.from({ length: 60 }, (_, i) => {
   const stock = stocks[i % stocks.length]
@@ -42,7 +56,12 @@ export const bspRecords: BspRecord[] = Array.from({ length: 60 }, (_, i) => {
     kl_type: klTypes[i % klTypes.length],
     change_pct: +((r - 0.5) * 10).toFixed(2),
     is_sure: isSure,
-    ladder: isSure ? 'L4' : UNSURE_LADDERS[unsureIdx++ % UNSURE_LADDERS.length],
+    // 已确认 → L4；未确认的一买家族 → 三轴组合轮转；非一买类型 → null（未定级）
+    ladder: isSure
+      ? 'L4'
+      : isBsp1Family(bspType)
+        ? UNSURE_LADDERS[unsureIdx++ % UNSURE_LADDERS.length]
+        : null,
   }
 })
 
@@ -83,8 +102,14 @@ export function getBspByCode(code: string, klTypesFilter?: string[]): BspIndexRo
         time_key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} 00:00:00`,
         // 每周期尾部 2 条未确认（bsp-sure-annotation 4.4，形态对齐真实索引的尾部预览）
         is_sure: j < counts[kl] - 2,
-        // 确认阶梯（bsp-ladder-change 4.3）：确认 → L4；尾部未确认在 L1/L2/L3 轮转
-        ladder: j < counts[kl] - 2 ? 'L4' : UNSURE_LADDERS[i % UNSURE_LADDERS.length],
+        // 三轴阶梯（chan-bsp-ladder-change）：确认 → L4；未确认一买家族 → 组合轮转；
+        // 非一买类型 → null（未定级）
+        ladder:
+          j < counts[kl] - 2
+            ? 'L4'
+            : isBsp1Family(raw)
+              ? UNSURE_LADDERS[i % UNSURE_LADDERS.length]
+              : null,
       })
       i++
     }

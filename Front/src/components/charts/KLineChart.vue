@@ -35,26 +35,23 @@
         </span>
         <span class="bsp-ladder-tip__types mono">{{ bspLadderTip.typesLabel }}</span>
       </div>
+      <!-- 三轴区块（chan-bsp-ladder-change）：每个已达成的轴一行，
+           未达成的轴不展示（证据缺席比「明确没有」更准确）。 -->
       <div class="bsp-ladder-tip__rows">
         <div
-          v-for="l in LADDER_LEVELS"
-          :key="l.level"
-          class="bsp-ladder-tip__row"
-          :class="{ 'is-current': l.level === bspLadderTip.ladder }"
+          v-for="info in ladderInfosOf(bspLadderTip.ladder)"
+          :key="info.level"
+          class="bsp-ladder-tip__row is-current"
         >
-          <span class="bsp-ladder-tip__lv mono">{{ l.level }}</span>
-          <span class="bsp-ladder-tip__name">{{ l.name }}</span>
-          <!-- 仓位指引按悬浮标记方向取（卖点镜像文案，bspLadder.ladderPosition） -->
-          <span class="bsp-ladder-tip__pos">{{ ladderPosition(l, bspLadderTip.isBuy) }}</span>
+          <span class="bsp-ladder-tip__lv mono">{{ info.level }}</span>
+          <span class="bsp-ladder-tip__name">{{ info.axis }} · {{ info.name }}</span>
+          <span class="bsp-ladder-tip__pos">{{ info.kind === 'confirmed' ? ladderPosition(parseLadder(bspLadderTip.ladder), bspLadderTip.isBuy) : '' }}</span>
         </div>
         <div v-if="!bspLadderTip.ladder" class="bsp-ladder-tip__row is-current">
           <span class="bsp-ladder-tip__lv mono">--</span>
-          <span class="bsp-ladder-tip__name">未定级（数据缺 ladder 字段或降级）</span>
+          <span class="bsp-ladder-tip__name">未定级（非一买类型本次未接入新阶梯，或不可评估）</span>
           <span class="bsp-ladder-tip__pos">--</span>
         </div>
-      </div>
-      <div v-if="bspLadderTip.l1Resonant" class="bsp-ladder-tip__sub">
-        L1 小级别共振佐证同时成立（当前按判定顺序标 {{ bspLadderTip.ladder }}）
       </div>
       <div class="bsp-ladder-tip__note">{{ LADDER_ORDER_NOTE }}</div>
     </div>
@@ -94,11 +91,11 @@ import {
   type ChanSegMeta,
 } from '@/components/chan'
 import {
-  isLadder,
-  ladderInfo,
+  ladderInfos,
   ladderPosition,
-  LADDER_LEVELS,
+  parseLadder,
   LADDER_ORDER_NOTE,
+  type LadderInfo,
 } from '@/utils/bspLadder'
 import {
   useVirtualBsp,
@@ -184,22 +181,29 @@ interface BspLadderTip {
   show: boolean
   top: number
   left: number
+  /** 三轴组合串（`L2|L2-3|L3-2`）或 `L4` 或 null（未定级） */
   ladder: string | null
   isBuy: boolean
   typesLabel: string
-  /** L3 命中且 L1 共振同时成立的副标记（后端 L3 优先裁定，design D1） */
-  l1Resonant: boolean
 }
 const bspLadderTip = ref<BspLadderTip>({
-  show: false, top: 0, left: 0, ladder: null, isBuy: true, typesLabel: '', l1Resonant: false,
+  show: false, top: 0, left: 0, ladder: null, isBuy: true, typesLabel: '',
 })
 
-/** 级别 → 徽章色（L4 实色 / L1-L3 弱化，design D6 语义与买卖点页级别列一致） */
+/** 级别 → 徽章色（chan-bsp-ladder-change：按轴分色，与买卖点页级别列一致） */
 function ladderBadgeClass(ladder: string | null): string {
-  if (ladder === 'L4') return 'rise'
-  if (ladder === 'L3') return 'warning'
-  if (ladder === 'L1') return 'info'
+  const infos = ladder ? ladderInfos(ladder) : []
+  const kind = infos[0]?.kind
+  if (kind === 'confirmed') return 'rise'
+  if (kind === 'progress') return 'info'
+  if (kind === 'corroboration') return 'success'
+  if (kind === 'fractal') return 'warning'
   return 'default'
+}
+
+/** 组合串逐档展开（模板逐轴渲染；NULL/非法值返回空数组 → 未定级分支） */
+function ladderInfosOf(ladder: string | null): LadderInfo[] {
+  return ladder ? ladderInfos(ladder) : []
 }
 
 /** 估算浮层尺寸（定宽 + 估算高：头部 + 4 行 + 脚注），用于越界翻转 */
@@ -210,7 +214,6 @@ const TIP_GAP = 14
 
 /** figure 命中 → 展示浮层（位置贴鼠标右上；右缘/下缘越界翻转） */
 function showBspLadderTip(meta: ChanBspMeta, x: number, y: number): void {
-  const info = ladderInfo(meta.ladder)
   const label = chanBspLabel(meta.types, meta.isBuy)
   let left = x + TIP_GAP
   let top = y - TIP_HEIGHT / 2
@@ -224,10 +227,10 @@ function showBspLadderTip(meta: ChanBspMeta, x: number, y: number): void {
     show: true,
     top,
     left,
-    ladder: info?.level ?? null,
+    // 原样传组合串：模板用 ladderInfosOf 逐轴展开（chan-bsp-ladder-change）
+    ladder: meta.ladder ?? null,
     isBuy: meta.isBuy,
     typesLabel: label,
-    l1Resonant: false, // L1 共振副标记：单字段语义下 L3 命中时无独立 L1 状态可考，先常 false
   }
 }
 
@@ -390,7 +393,8 @@ function rebuildBspOverlays(): void {
       barTs,
       high: bar.high,
       low: bar.low,
-      ladder: isLadder(b.ladder) ? b.ladder : undefined,
+      // 组合串原样透传（chan-bsp-ladder-change）；非法值置 undefined → 未定级兜底
+      ladder: b.ladder && ladderInfos(b.ladder).length ? b.ladder : undefined,
     })
   }
 

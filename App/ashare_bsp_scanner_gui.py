@@ -518,11 +518,10 @@ class AkshareGUI(QMainWindow):
             "bi_strict": self.bi_strict_cb.isChecked(),  # 笔严格模式
             "trigger_step": False,  # 不启用逐步触发模式
             "skip_step": 0,
-            "divergence_rate": float("inf"),  # 背驰比率
-            "bsp2_follow_1": False,  # 二类买卖点不跟随一类
-            "bsp3_follow_1": False,  # 三类买卖点不跟随一类
-            "min_zs_cnt": 0,  # 最小中枢数量
-            "bs1_peak": False,
+            # 买卖点判定走内核默认档位（标准缠论口径），不在此处覆盖
+            # divergence_rate / min_zs_cnt / bs1_peak；如需旧口径用 "bsp_preset": "legacy"。
+            "bsp2_follow_1": False,  # 二类买卖点不跟随一类（小转大场景）
+            "bsp3_follow_1": False,  # 三类买卖点不跟随一类（小转大场景）
             "macd_algo": "peak",  # MACD 算法
             "bs_type": "1,1p,2,2s,3a,3b",  # 启用的买卖点类型
             "print_warning": False,

@@ -17,6 +17,7 @@ from ChanAnalyse.ChanConfig import CChanConfig
 from ChanAnalyse.Common.CEnum import AUTYPE, DATA_SRC, KL_TYPE
 
 from .cache import get_chan_cache
+from .config_fingerprint import config_fingerprint
 from .serializer import serialize_chan
 
 # ---- 周期字符串 -> KL_TYPE 映射 ----
@@ -111,7 +112,7 @@ def _resolve_data_src(period: str) -> str:
     )
 
 
-# ---- L1 区间套子级别映射（bsp-ladder-change design D3 修订二）----
+# ---- 阶梯佐证轴的子级别映射（chan-bsp-ladder-change design D3）----
 # 本级别 → 共振判定的直接子级别（单级直连，无跨级传递）：
 # 5m→(30m 的子级)、30m→5m、D→30m、W→D、M→W。
 # 语义约束：每个级别只看**直接一级**子级别的买卖点做共振判定，不递归——
@@ -128,33 +129,45 @@ SUB_LEVEL_MAP: dict[KL_TYPE, KL_TYPE] = {
 
 
 def resolve_sub_level(kl_type: KL_TYPE) -> Optional[KL_TYPE]:
-    """L1 共振子级别解析（单级直连）：30m/60m→5m、D→30m、W→D、M→W；
-    5m 及以下无子级返回 None。不做跨级传递（D 的 L1 只看 30m，不看 5m）。
+    """阶梯佐证轴的子级别解析（单级直连）：30m/60m→5m、D→30m、W→D、M→W；
+    5m 及以下无子级返回 None。不做跨级传递（D 的佐证轴只看 30m，不看 5m）。
     """
     return SUB_LEVEL_MAP.get(kl_type)
 
 
-def _compute_chan(symbol: str, kl_type: KL_TYPE, data_src: str) -> CChan:
-    """创建 CChan 实例并执行完整计算。"""
-    config = CChanConfig(
+def _make_chan_config() -> CChanConfig:
+    """构造 /api/klines 链路使用的 CChanConfig。
+
+    单独抽出以便上层计算买卖点配置指纹——指纹必须来自**同一个**配置对象，
+    否则缓存校验与实际计算可能用到不同口径。
+
+    此处不得显式覆盖任何 bsp 参数。一旦覆盖就会绕开内核的 `bsp_preset` 档位，
+    使本入口与其它入口的买卖点口径不一致。需要切换口径时只改 `bsp_preset`。
+    """
+    return CChanConfig(
         conf={"trigger_step": False, "kl_data_check": False},
     )
+
+
+def _compute_chan(symbol: str, kl_type: KL_TYPE, data_src: str) -> CChan:
+    """创建 CChan 实例并执行完整计算。"""
     chan = CChan(
         code=symbol,
         data_src=data_src,
         lv_list=[kl_type],
-        config=config,
+        config=_make_chan_config(),
         autype=AUTYPE.QFQ,
     )
     return chan
 
 
 def compute_sub_chan(symbol: str, kl_type: KL_TYPE) -> Optional[CChan]:
-    """L1 区间套子级别计算（bsp-ladder-change D3）。
+    """阶梯佐证轴的子级别计算（chan-bsp-ladder-change D3）。
 
     对日线及以上级别额外计算子级别（D→30m / W→D / M→W）CChan，供
-    serializer 的 L1 共振判定。子级别失败（数据缺失/计算异常）返回 None，
-    调用方降级为不计算 L1（未确认行落 L2），不阻断主级别响应。
+    serializer 的佐证轴判定（L2-3 / L2-2 / L2-1）。子级别失败（数据缺失/
+    计算异常）返回 None，调用方降级为不评估佐证轴（该轴不携带标签），
+    不阻断主级别响应。
 
     计算复用 chan_stable_prefix 缓存（get_serialized_chan 同款链路），
     同一 (symbol, sub_kl_type) 重复请求不重算序列化（缓存命中返回缓存）。
@@ -181,5 +194,6 @@ def get_serialized_chan(symbol: str, period: str) -> dict:
     data_src = _resolve_data_src(period)
     chan = _compute_chan(symbol, kl_type, data_src)
     result = serialize_chan(chan, kl_type)
-    get_chan_cache().set(symbol, kl_type, result)
+    get_chan_cache().set(symbol, kl_type, result,
+                         fingerprint=config_fingerprint(_make_chan_config()))
     return result

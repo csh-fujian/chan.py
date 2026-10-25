@@ -112,11 +112,11 @@ if __name__ == "__main__":
         "trigger_step": True,  # 打开步进模式
         "bi_strict": True,
         "skip_step": 0,
-        "divergence_rate": float("inf"),
+        # 本演示依赖改造前的旧买卖点口径（背驰不设阈值、不要求中枢数量），
+        # 用档位预设显式声明，而不是散写裸参数——这样口径来源可追溯。
+        "bsp_preset": "legacy",
         "bsp2_follow_1": False,
         "bsp3_follow_1": False,
-        "min_zs_cnt": 0,
-        "bs1_peak": False,
         "macd_algo": "peak",
         "bs_type": '1,2,3a,1p,2s,3b',
         "print_warning": True,

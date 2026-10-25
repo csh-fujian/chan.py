@@ -135,19 +135,23 @@ KLineChart 是命令式 Canvas 库。chart 实例放在**普通变量**（非 `r
 - **刷新语义**：本期不加显式刷新按钮；切换周期下拉触发 `watch(current{symbol,period})` 重载（见 D6）。后续若需强制重算再加。
 - **图例折叠**：不占常驻高度，悬停/点击右上角图标展开，避免遮挡主图。
 
-### D10. 页面缓存：KeepAlive 挂在布局层（AppShell），仅缓存 K 线页（2026-10-04 修订）
+### D10. 页面缓存：KeepAlive 挂在布局层（AppShell），缓存 K 线 / 买卖点 / 策略信号页（2026-10-20 修订）
 
 需求：K 线页操作后切走再切回，排版与数据保持原样。方案：
 
-- **缓存范围（2026-10-04 修订）**：`<KeepAlive include>` 白名单只含 K 线页组件（`KLineView`，script setup 组件需 `defineOptions({ name: 'KLineView' })` 显式命名——include 按组件名匹配，匿名组件不命中）。其余应用内页面不缓存：切回重新挂载、数据现拉（回归无缓存默认行为）。修订动机：全页缓存维护面大（各页带参/弹层/定时器语义各异），仅 K 线页（图表画布重 + 复位成本高）值得付这份复杂度。
-- **缓存位置**：`AppShell.vue` 的 `<router-view>` 包 `<KeepAlive include="['KLineView']">`，子组件以 `:key="route.name"` 缓存。空白布局（login/403）不经 AppShell，天然不缓存。
+- **缓存范围（2026-10-20 修订）**：`<KeepAlive include>` 白名单含 K 线页（`KLineView`）、买卖点页（`BspView`）、策略信号页（`StrategySignalView`）。script setup 组件需 `defineOptions({ name })` 显式命名——include 按组件名匹配，匿名组件不命中。其余应用内页面不缓存：切回重新挂载、数据现拉。
+  - 历史：2026-10-04 曾收窄为仅 K 线页（理由：全页缓存维护面大）。2026-10-20 按用户需求恢复买卖点页与策略信号页缓存——这两页是「查列表 → 跳 K 线看图 → 返回继续查看」的高频往返入口，每次折返重置筛选条件/分页/滚动位置的成本最高。两页副作用面窄（见下方「缓存页副作用处理」），可控。
+- **缓存位置**：`AppShell.vue` 的 `<router-view>` 包 `<KeepAlive :include="[...]">`，子组件以 `:key="route.name"` 缓存。空白布局（login/403）不经 AppShell，天然不缓存。
 - **App.vue 移除 `:key="route.path"`**：该 key 令布局组件随路径整体重建，KeepAlive 无法跨页存活。移除后 App 级 `router-fade` 过渡仅在「空白布局 ↔ 应用布局」切换（登录/403）时触发。
 - **应用内页面切换不加过渡**：KeepAlive 换页直接完成，不套 `<transition>`。原因：滚动恢复要求「新页面 DOM 就位后再定位」，`out-in` 过渡会把入场推迟一个动画周期，`scrollBehavior`（`nextTick` 后执行）会落在空占位上导致定位被钳制；去掉页面级过渡后时序确定、零闪烁。登录↔应用的 App 级过渡保留（登录页为单屏，无恢复问题）。
-- **会话隔离**：登出 `push('/login')` 使 AppShell 卸载 → KeepAlive 缓存随之销毁；`to.name === 'login'` 时清空滚动位置记忆。重新登录后从干净状态开始。
-- **滚动位置（语义收窄）**：`router.beforeEach` 记录 `from.fullPath → window.scrollY`、`scrollBehavior` 取「记忆 → savedPosition → top: 0」。非缓存页重挂载后列表重新加载，恢复离开时滚动位置意义有限——记忆 Map 全局保留无害，实际恢复效果只在 K 线页（缓存复活、内容即时就位）上有意义。
-- **带参跳入**（仅 K 线页需要）：缓存键用 `route.name`，跨页带参跳转（如 `bsp → kline?code=`）命中已缓存实例、`onMounted` 不再执行 → K 线页已有 `watch(() => route.query)` 兜底（参数非空且与上次已应用值不同才重载）。非缓存页每次重挂载，`onMounted` 必然执行，无需该兜底。
-- **图表尺寸自愈（仅 K 线页需要）**：`useEcharts` 的 `onActivated(resize)` 与 KLineChart 的 RO 忽略 0 尺寸事件、`onActivated` 逐副图 `setPaneOptions({id, height:130})` 断言 + `resize()` 重排（失活隐藏期 `resize()` 经 `_measurePaneHeight` 把副图 pane 固定高度永久压成 0 的缺陷自愈）——修订后仅 K 线页走缓存复活路径，此自愈逻辑的受益方收窄，实现保留不动。
-- **已知边界**：`append-to-body` 弹层（对话框/抽屉）Teleport 到 body，KeepAlive deactivate 不搬运 teleport 内容——仅影响 K 线页（唯一缓存页），且正常交互路径到不了「带着弹层切页」；若浏览器前进/后退 + 开启中抽屉出现残留，再单独处理。
+- **缓存页副作用处理（2026-10-20 新增）**：缓存页切回时 `onMounted` 不再执行，而原「切回重挂载现拉」的语义隐含了数据刷新。处理方式：首次挂载仍走 `onMounted`（首次紧跟的 `onActivated` 用 `activatedOnce` 标志跳过），此后每次 `onActivated` 调 `loadXxx(true)` 静默刷新——不置 `loading`、请求失败保留已渲染内容，保留「回到页面看到最新数据」而缓存内容不被骨架或空态替换。
+  - 买卖点页：列表 + 侧栏统计 + 板块聚合静默刷新；`onBeforeUnmount` 清理价格联动防抖定时器。
+  - 策略信号页：策略定义（任务列表）+ 信号列表静默刷新；`onDeactivated(stopPolling)` / `onActivated(ensurePolling())` 使 3s running 进度轮询在隐藏期间停摆，不在后台空转。
+- **会话隔离**：登出 `push('/login')` 使 AppShell 卸载 → KeepAlive 缓存随之销毁（各缓存页 `onUnmounted` 清理定时器）；`to.name === 'login'` 时清空滚动位置记忆。重新登录后从干净状态开始。
+- **滚动位置**：`router.beforeEach` 记录 `from.fullPath → window.scrollY`、`scrollBehavior` 取「记忆 → savedPosition → top: 0」。缓存页复活后内容即时就位，恢复滚动位置有意义。
+- **带参跳入**（仅 K 线页需要）：缓存键用 `route.name`，跨页带参跳转（如 `bsp → kline?code=`）命中已缓存实例、`onMounted` 不再执行 → K 线页已有 `watch(() => route.query)` 兜底（参数非空且与上次已应用值不同才重载）。买卖点页/策略信号页无带参跳入语义，`onActivated` 静默刷新即可。
+- **图表尺寸自愈（仅 K 线页需要）**：`useEcharts` 的 `onActivated(resize)` 与 KLineChart 的 RO 忽略 0 尺寸事件、`onActivated` 逐副图 `setPaneOptions({id, height:130})` 断言 + `resize()` 重排（失活隐藏期 `resize()` 经 `_measurePaneHeight` 把副图 pane 固定高度永久压成 0 的缺陷自愈）。
+- **已知边界**：`append-to-body` 弹层（对话框/抽屉）Teleport 到 body，KeepAlive deactivate 不搬运 teleport 内容。买卖点页/策略信号页的弹层与抽屉均为 `append-to-body`，正常交互路径到不了「带着弹层切页」；若浏览器前进/后退 + 开启中抽屉出现残留，再单独处理。
 
 ## Risks / Trade-offs
 

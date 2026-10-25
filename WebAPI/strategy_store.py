@@ -274,9 +274,12 @@ def resolve_scope_codes(
     - manual：前端多选/搜索添加，直接传 code 列表
     - watchlist：传 folder_id，从 PG watchlist_item 读该文件夹股票 → 固化
       （创建时点快照，此后文件夹变化无关）
-    - bsp_query：传 /bsp 页当前查询条件 dict（bsp_types/kl_type/is_buy/
+    - bsp_query：传 /bsp 页当前查询条件 dict（bsp_type/kl_type/is_buy/
       is_sure/date_from/date_to/keyword），调 bsp_store.query_bsp 取 code
-      列表 → 固化（去重，不按页截断——逐页翻完聚合）
+      列表 → 固化（去重，不按页截断——逐页翻完聚合）。
+      `bsp_type` 是前端下拉的**方向化标签**（1B/2B/3B(后)…），由
+      `bsp_store.resolve_bsp_type` 转成原始枚举 + 方向约束后下推；
+      `is_buy` 若也显式给出则优先于标签隐含的方向。
     - all：返回 None（scope_codes 落 NULL，执行时枚举 DuckDB 全量 + ST 过滤）
 
     范围为空（manual 无码/watchlist 空文件夹/bsp 查询无命中）抛 ValueError
@@ -303,7 +306,22 @@ def resolve_scope_codes(
     if scope_type == "bsp_query":
         if not bsp_query or not isinstance(bsp_query, dict):
             raise ValueError("bsp_query 范围必须携带查询条件对象")
-        from .bsp_store import query_bsp
+        from .bsp_store import query_bsp, resolve_bsp_type
+
+        # bsp_type → 原始枚举 + 方向约束（与 /api/bsp 同一解析，chan-standard-bsp）。
+        # 前端 TaskDialog 传的是**方向化标签**（1B/2B/3B(后)…），而 query_bsp 只认
+        # 原始枚举（'1'/'2'/'3a'…）。此处不解析就会出现「选了类型却按全类型固化」——
+        # 静默失效，且新拆分的三买标签会命中零行。
+        bsp_types, label_is_buy = (
+            resolve_bsp_type(str(bsp_query["bsp_type"]))
+            if bsp_query.get("bsp_type")
+            else ([], None)
+        )
+        # 方向：标签给出的方向优先；显式 is_buy 存在时以显式为准（两者冲突时
+        # 取显式值——用户手选的比标签隐含的更具体，且不会出现矛盾组合）。
+        is_buy = bsp_query.get("is_buy")
+        if is_buy is None:
+            is_buy = label_is_buy
 
         codes: list[str] = []
         page = 1
@@ -313,8 +331,8 @@ def resolve_scope_codes(
                 kl_type=bsp_query.get("kl_type", ""),
                 date_from=bsp_query.get("date_from", ""),
                 date_to=bsp_query.get("date_to", ""),
-                bsp_types=bsp_query.get("bsp_types"),
-                is_buy=bsp_query.get("is_buy"),
+                bsp_types=bsp_types or None,
+                is_buy=is_buy,
                 keyword=bsp_query.get("keyword", ""),
                 page=page,
                 page_size=200,

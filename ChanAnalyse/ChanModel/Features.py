@@ -74,3 +74,12 @@ class CFeatures:
         else:
             # inp1 是 key，inp2 是 value
             self.__features.update({inp1: inp2})
+
+    def del_feat(self, key):
+        """删除特征项（不存在时静默返回），供特征重算时清理陈旧值。
+
+        典型场景：区间套命中标记由 True 重算回 False 时，必须同时摘除
+        命中点索引，否则会出现 `bsp1_qjt_hit=False` 却仍带 `bsp1_qjt_sub_idx`
+        的自相矛盾组合。
+        """
+        self.__features.pop(key, None)

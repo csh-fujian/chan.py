@@ -30,3 +30,14 @@
 -- 修复：补列（惰性 DDL 已同步加到 monitor_store._ensure_tables()，本段仅为记录）。
 ALTER TABLE monitor
     ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- 2026-10-21 chan-standard-bsp / D11：买卖点配置指纹列（macOS 机器上执行）
+-- 与 update-win.sql 同批变更的另一侧记录。背景与语义完全一致：
+-- chan_snapshot / chan_stable_prefix 的键不含配置，切档位后旧结果会被直接复用，
+-- 表现为「配置改了但输出没变」。两表各加 config_fingerprint 供读取时比对。
+-- 本段在 macOS 上运行期间产生，实际加列由各 store 的惰性 DDL 完成，此处仅为记录。
+-- 两条语句均幂等，可重复执行（重复执行不报错）。
+ALTER TABLE chan_snapshot
+    ADD COLUMN IF NOT EXISTS config_fingerprint VARCHAR;
+ALTER TABLE chan_stable_prefix
+    ADD COLUMN IF NOT EXISTS config_fingerprint VARCHAR;

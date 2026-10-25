@@ -13,12 +13,109 @@ from typing import Generic, List, Optional, TypeVar
 
 from ChanAnalyse.Bi.Bi import CBi
 from ChanAnalyse.BuySellPoint.BSPointConfig import CPointConfig
+from ChanAnalyse.Common.CEnum import MACD_ALGO
 from ChanAnalyse.Common.ChanException import CChanException, ErrCode
 from ChanAnalyse.Common.func_util import has_overlap
 from ChanAnalyse.KLine.KLine_Unit import CKLine_Unit
+from ChanAnalyse.Math.Metric import (
+    cal_macd_amp,
+    cal_macd_area,
+    cal_macd_diff,
+    cal_macd_diff_peak,
+    cal_macd_half_obverse,
+    cal_macd_half_reverse,
+    cal_macd_peak,
+    cal_macd_slope,
+    cal_rsi,
+)
 from ChanAnalyse.Seg.Seg import CSeg
 
 LINE_TYPE = TypeVar('LINE_TYPE', CBi, "CSeg")
+
+# 没有区间版本、只能退回单笔口径的力度算法（chan-standard-bsp1-change D7-c）。
+# Metric.py 只为 8 种算法提供了 begin_idx/end_idx 区间版本；成交量与换手率类
+# 依赖 `CBi.Cal_MACD_trade_metric`（逐笔累加，无区间参数），因此 span 口径
+# 对它们不生效——退回单笔并在 feature 标注 `bsp1_force_scope_effective`。
+BI_ONLY_MACD_ALGOS = frozenset({
+    "volumn", "amount", "volumn_avg", "amount_avg", "turnrate_avg",
+})
+
+
+def _span_metric(window, macd_algo, is_reverse: bool, fallback=None):
+    """把窗口内的要素串联后按区间取力度指标（走势段口径，D7）。
+
+    参数:
+        window: 要素列表（CBi / CSeg），按 idx 升序。None 表示不启用窗口
+        macd_algo: MACD_ALGO 枚举
+        is_reverse: 是否反向取值（进入段正向、离开段反向）
+        fallback: window 为 None 时的单笔取值回调；不传则由调用方处理
+
+    返回:
+        力度指标浮点值
+
+    **窗口内各要素的 klc_lst 串联后按起始/结束 K 线 idx 过滤**，因此
+    `[bi_a, bi_b, bi_c]` 等价于「从 bi_a 起点到 bi_c 终点这一整段」——
+    这正是「进入/离开中枢的次级别走势」应比较的粒度。
+
+    成交量/换手率类算法没有区间版本（见 `BI_ONLY_MACD_ALGOS`），退回
+    单笔口径：进入段取窗口首笔、离开段取窗口末笔。
+    """
+    if window is None:
+        if fallback is None:
+            return None
+        return fallback()
+    window = list(window)
+    if not window:
+        if fallback is None:
+            return None
+        return fallback()
+    algo_name = getattr(macd_algo, "name", str(macd_algo)).lower()
+    if algo_name in BI_ONLY_MACD_ALGOS:
+        # 无区间版本：退回单笔（进入段取首笔正向、离开段取末笔反向）
+        bi = window[-1] if is_reverse else window[0]
+        return bi.cal_macd_metric(macd_algo, is_reverse=is_reverse)
+
+    # 拼接窗口内全部要素的合并 K 线，按首尾 K 线 idx 过滤
+    first, last = window[0], window[-1]
+    begin_idx = first.get_begin_klu().idx
+    end_idx = last.get_end_klu().idx
+    klc_iter = [klc for ele in window for klc in ele.klc_lst]
+    # **方向取自要素自身**，不能由 `is_reverse` 推导：`is_reverse` 的语义是
+    # 「半面积从哪一端累加」（只对 AREA 有意义），而 `CBi.cal_macd_metric` 的
+    # `is_reverse=True` 并不翻转要素方向（`Cal_MACD_peak` 始终用 `self.is_down()`）。
+    # 窗口内各要素同向，取末笔的方向即为整段方向。
+    is_down = last.is_down()
+
+    if macd_algo == MACD_ALGO.AREA:
+        # AREA（半面积）：从取值端累加到柱子转向为止
+        if is_reverse:
+            return cal_macd_half_reverse(list(reversed(klc_iter)), last.get_end_klu().macd.macd,
+                                         end_idx=end_idx)
+        return cal_macd_half_obverse(klc_iter, first.get_begin_klu().macd.macd,
+                                     begin_idx=begin_idx)
+    if macd_algo == MACD_ALGO.PEAK:
+        return cal_macd_peak(klc_iter, is_down, begin_idx=begin_idx, end_idx=end_idx)
+    if macd_algo == MACD_ALGO.FULL_AREA:
+        return cal_macd_area(klc_iter, is_down, begin_idx=begin_idx, end_idx=end_idx)
+    if macd_algo == MACD_ALGO.DIFF:
+        return cal_macd_diff(klc_iter, begin_idx=begin_idx, end_idx=end_idx)
+    if macd_algo == MACD_ALGO.DIFF_PEAK:
+        return cal_macd_diff_peak(klc_iter, is_down,
+                                  begin_idx=begin_idx, end_idx=end_idx)
+    if macd_algo == MACD_ALGO.SLOPE:
+        return cal_macd_slope(first.get_begin_klu(), last.get_end_klu(), is_up=not is_down)
+    if macd_algo == MACD_ALGO.AMP:
+        return cal_macd_amp(first.get_begin_klu(), last.get_end_klu(), is_up=not is_down)
+    if macd_algo == MACD_ALGO.RSI:
+        return cal_rsi(klc_iter, is_down, begin_idx=begin_idx, end_idx=end_idx)
+    # 兜底：未知算法退回末笔（保持与单笔口径可比的语义）
+    return window[-1].cal_macd_metric(macd_algo, is_reverse=is_reverse)
+
+
+def is_span_supported(macd_algo) -> bool:
+    """该力度算法是否支持区间取值（否则会退回单笔口径）。"""
+    algo_name = getattr(macd_algo, "name", str(macd_algo)).lower()
+    return algo_name not in BI_ONLY_MACD_ALGOS
 
 
 class CZS(Generic[LINE_TYPE]):
@@ -281,13 +378,18 @@ class CZS(Generic[LINE_TYPE]):
         """
         return seg.start_bi.idx <= self.begin_bi.idx <= seg.end_bi.idx
 
-    def is_divergence(self, config: CPointConfig, out_bi=None):
+    def is_divergence(self, config: CPointConfig, out_bi=None,
+                      b_window: Optional[List] = None, c_window: Optional[List] = None):
         """
         判断中枢是否发生背驰
 
         参数:
             config: 买卖点配置
             out_bi: 离开中枢的笔（如果为 None，使用 bi_out）
+            b_window: 进入段力度取值窗口（要素列表）。None = 沿用单笔口径
+                （`get_bi_in()`）；非 None 时按整段聚合（§4.4 走势段口径）
+            c_window: 离开段力度取值窗口（要素列表）。None = 沿用单笔口径
+                （`out_bi` / `get_bi_out()`）
 
         返回:
             (是否背驰, 背驰率)
@@ -298,7 +400,16 @@ class CZS(Generic[LINE_TYPE]):
 
         背驰率 = 离开笔 MACD 指标 / 进入笔 MACD 指标
         背驰率 < divergence_rate 时，认为发生背驰。
-        divergence_rate > 100 时，"保送"（无条件视为背驰）。
+
+        `divergence_rate > 100` 表示**显式关闭背驰判据**（历史实现称「保送」）：
+        此时本函数不构成任何过滤，但调用方仍必须独立执行结构判据
+        （趋势前提、创趋势新低、DIF 背驰、零轴回抽），不得因为背驰被关闭
+        就把该点当成「通过全部条件」。
+        `bsp_preset="standard"` 的默认值是 0.9，不进入该分支。
+
+        **窗口参数（chan-standard-bsp1-change D7）**：本函数只负责「两段比大小」，
+        窗口语义由调用方定义（`BSPointList._cal_force_windows`）。两个参数均为
+        None 时行为与改造前**逐字节一致**——这是向后兼容的硬契约。
 
         注意：
         - 进入笔用正向计算（is_reverse=False）
@@ -306,13 +417,24 @@ class CZS(Generic[LINE_TYPE]):
         """
         if not self.end_bi_break(out_bi):  # 最后一笔必须突破中枢
             return False, None
-        in_metric = self.get_bi_in().cal_macd_metric(config.macd_algo, is_reverse=False)
-        if out_bi is None:
+        in_metric = _span_metric(
+            b_window, config.macd_algo, is_reverse=False,
+            fallback=lambda: self.get_bi_in().cal_macd_metric(config.macd_algo, is_reverse=False),
+        )
+        if c_window is not None:
+            out_metric = _span_metric(c_window, config.macd_algo, is_reverse=True)
+        elif out_bi is None:
             out_metric = self.get_bi_out().cal_macd_metric(config.macd_algo, is_reverse=True)
         else:
             out_metric = out_bi.cal_macd_metric(config.macd_algo, is_reverse=True)
 
-        if config.divergence_rate > 100:  # 保送：无条件视为背驰
+        if config.divergence_rate > 100:
+            # 显式关闭背驰判据：不阻塞，但也不宣称「背驰成立」。
+            # 口径锁定（chan-standard-bsp1-change task 2.2a）：>100 魔数与
+            # BSPointList.treat_bsp1 降级路由的 diver_proven 判定
+            # （divergence_rate <= 100 才承认背驰实证）共用同一口径——
+            # 本分支返回的 True 是空真（放行闸门），降级路由不得把它当证据。
+            # 禁止任一侧单独改阈值。
             return True, out_metric/in_metric
         else:
             return out_metric <= config.divergence_rate*in_metric, out_metric/in_metric

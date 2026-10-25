@@ -28,6 +28,7 @@ from ..bsp_store import (
     get_price_at,
     query_bsp,
     query_bsp_aggregate,
+    resolve_bsp_type,
 )
 from ..chan_service import resolve_period
 from ..incremental_engine import catch_up
@@ -46,34 +47,6 @@ def _check_date_param(value: str, name: str) -> str:
     except ValueError:
         raise HTTPException(status_code=422, detail=f"{name} 需为 YYYY-MM-DD 日期")
     return value
-
-
-# 方向化标签 → (原始枚举集合, is_buy)；与前端 utils/bsp.ts TYPE_MAP 同构（design D11）
-# 原始枚举: '1','2','2s','3a','3b','1p'
-_DIRECTIONAL_LABELS: dict[str, tuple[list[str], bool]] = {
-    "1B": (["1"], True),
-    "1S": (["1"], False),
-    "2B": (["2"], True),
-    "2S": (["2"], False),
-    "L2B": (["2s"], True),
-    "L2S": (["2s"], False),
-    "3B": (["3a", "3b"], True),
-    "3S": (["3a", "3b"], False),
-    "PZ-B": (["1p"], True),
-    "PZ-S": (["1p"], False),
-}
-
-
-def _resolve_bsp_type(bsp_type: str) -> tuple[list[str], Optional[bool]]:
-    """bsp_type 查询参数 → (原始枚举集合, is_buy 约束)。
-
-    方向化标签（2B/3S/PZ-B...）→ 枚举集合 + 方向约束（design D11，修复选标签
-    查不到记录的既有 bug）；原始枚举直传（如 '2'）→ 仅类型匹配、无方向约束。
-    """
-    if bsp_type in _DIRECTIONAL_LABELS:
-        types, is_buy = _DIRECTIONAL_LABELS[bsp_type]
-        return types, is_buy
-    return [bsp_type], None
 
 
 def _to_ms(bsp_date_iso: str, time_key: str) -> int:
@@ -137,7 +110,7 @@ async def bsp_list(
     # 过滤下推（2.3/2.6）：keyword/kl_type/bsp_type/direction/date_from~date_to
     # 同一 WHERE，COUNT 与分页共用，total = 过滤后总数；无命中 list=[] 且 total=0
     # bsp_type 支持方向化标签（2B/3S/PZ-B...，design D11）与原始枚举直传
-    bsp_types, label_is_buy = _resolve_bsp_type(bsp_type) if bsp_type else ([], None)
+    bsp_types, label_is_buy = resolve_bsp_type(bsp_type) if bsp_type else ([], None)
     if label_is_buy is not None:
         is_buy = label_is_buy  # 标签自带方向语义，覆盖 direction 参数
 

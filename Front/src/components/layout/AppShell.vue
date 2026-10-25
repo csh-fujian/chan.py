@@ -2,11 +2,12 @@
   <div class="app-shell">
     <Topnav />
     <main class="content">
-      <!-- 页面缓存（design.md D10，2026-10-04 修订）：仅 K 线页缓存（include 白名单按组件名匹配，
-           KLineView 需 defineOptions 显式命名），切回时排版与数据保持原样；其余页面不缓存、重挂载现拉。
+      <!-- 页面缓存（design.md D10，2026-10-20 修订）：K 线 / 买卖点 / 策略信号三页缓存
+           （include 白名单按组件名匹配，脚本 setup 组件需 defineOptions 显式命名），
+           切回时排版与数据保持原样；其余页面不缓存、重挂载现拉。
            应用内换页不加过渡：保证 scrollBehavior 在 DOM 就位后恢复滚动位置。 -->
       <router-view v-slot="{ Component, route }">
-        <KeepAlive :include="['KLineView']">
+        <KeepAlive :include="['KLineView', 'BspView', 'StrategySignalView']">
           <component :is="Component" :key="route.name ?? route.path" />
         </KeepAlive>
       </router-view>

@@ -280,6 +280,10 @@ class CChan:
                 continue
             yield snapshot
             yielded = True
+        # 回放结束后补一次区间套注解：调用方持有的正是本对象，
+        # 因此终态与批量模式共享同一份命中集合（tasks 10.7）。
+        # 不做逐快照注解——那是 O(快照数 × 买卖点数 × 次级点数) 的平方级开销。
+        self._refresh_qjt()
         if not yielded:
             yield self
 
@@ -317,8 +321,53 @@ class CChan:
             ...
 
         if not self.conf.trigger_step:  # 非回放模式全部算完之后才算一次中枢和线段
-            for lv in self.lv_list:
-                self.kl_datas[lv].cal_seg_and_zs()
+            self._finalize_all_levels()
+        else:
+            # 步进模式下各次级已由逐根推进算完，但区间套注解仍须补一次：
+            # 逐根注解会拿到半成品次级结果，只在收尾统一算才能与批量终态一致。
+            self._refresh_qjt()
+
+    def _refresh_qjt(self):
+        """注入次级容器引用并重跑区间套注解（`bsp1_qjt` 关闭时无操作）。
+
+        与 `_finalize_all_levels` 的阶段 2 同源：`sub_bs_point_lst` 是**只读
+        临时引用**，不参与 `__deepcopy__` / pickle 的指针重建。
+        最低级别没有次级容器，其 `sub_bs_point_lst` 保持不存在。
+
+        **必须从最低级别向上注解**：`bsp1_qjt_depth > 1` 时父级的递归下钻要
+        读「次级自己的 `sub_bs_point_lst`」，只有先给次级接上它的次级，父级的
+        第二层才存在。自顶向下会让深度 > 1 恒退化为深度 1（静默失效）。
+        """
+        if not self.conf.bs_point_conf.b_conf.bsp1_qjt:
+            return
+        for lv_idx in range(len(self.lv_list) - 2, -1, -1):
+            lst = self.kl_datas[self.lv_list[lv_idx]].bs_point_lst
+            sub_lst = self.kl_datas[self.lv_list[lv_idx + 1]].bs_point_lst
+            lst.sub_bs_point_lst = sub_lst
+            lst._annotate_qjt()
+
+    def _finalize_all_levels(self):
+        """非步进模式的收尾：逐级别算段/中枢/买卖点，再注入次级容器并补区间套注解。
+
+        必须分**两阶段**：
+        1. 先把**所有**级别算完（`cal_seg_and_zs` 内部的 `_annotate_qjt` 此时
+           拿不到次级结果，`sub_bs_point_lst` 尚未注入 → 全部 `qjt_hit=False`）
+        2. 再逐级别注入次级容器并**重跑注解**，此时次级买卖点已就绪
+
+        若把注入与计算写在同一轮循环里，父级注解会在子级算完之前执行，
+        区间套要么取到空容器、要么取到半成品——实测会导致「时间区间在范围内、
+        方向也一致，但命中恒为 False」的静默失效。
+
+        **注入的是只读临时引用**（chan-standard-bsp1-change design D7-q）：
+        `sub_bs_point_lst` 只挂在本级别 `CBSPointList` 上供注解阶段读取，
+        **不加入 `__deepcopy__` / `chan_dump_pickle` 的手工重建清单**——
+        它不参与指针图，也绝不持久化（与 `sup_kl`/`sub_kl_list` 的教训一致）。
+        """
+        for lv in self.lv_list:
+            self.kl_datas[lv].cal_seg_and_zs()
+
+        # 阶段 2：注入次级容器并重跑区间套注解
+        self._refresh_qjt()
 
     def init_lv_klu_iter(self, stockapi_cls):
         """
@@ -433,8 +482,7 @@ class CChan:
             yield from self.load_iterator(lv_idx=0, parent_klu=None, step=step)
 
             if not step:  # 非回放模式全部算完之后才算一次中枢和线段
-                for lv in self.lv_list:
-                    self.kl_datas[lv].cal_seg_and_zs()
+                self._finalize_all_levels()
         except Exception:
             raise
         finally:
@@ -682,12 +730,28 @@ class CChan:
         参数:
             file_path: 保存路径
 
-        保存前清理双向引用（pre/next），避免循环引用导致序列化失败。
-        保存后恢复双向引用。
+        保存前清理双向引用（pre/next）与「所属上级」反向引用（parent_seg），
+        避免循环引用与深链导致序列化失败。保存后恢复这些引用。
+
+        **为什么必须摘除 parent_seg**：`CSeg.update_bi_list` 给线段内每一笔写入
+        `parent_seg = self`，给线段线段内每一段写入 `parent_seg = segseg`；而
+        `CSeg.eigen_fx`（特征序列）里的 `CEigen` 又指回笔/线段。于是 pickle 会沿
+
+            CSeg.eigen_fx → CEigen → CBi → parent_seg → CSeg(下一段) → ...
+
+        把**整条线段序列串成一条单链**，嵌套深度 ≈ 10 × 线段数（实测六组截断
+        数据比值稳定在 9.7~10.9）。Python 3.12 的 C 实现 pickler 有独立于
+        `sys.setrecursionlimit` 的 C 栈上限（实测 1498 层），`sh.600007` 5m 的
+        385 段 → 3746 层必然溢出——这正是「把 setrecursionlimit 调到 60 万仍
+        报 RecursionError」的原因，那个旋钮对 C pickler 无效。
+
+        parent_seg 与 pre/next 同性质：纯反向指针，可由 `seg.bi_list` /
+        `segseg.bi_list` 无损重建，因此一并摘除、加载后一并重建，不改变任何
+        计算逻辑。
 
         Python 特性：
-        - sys.setrecursionlimit(0x100000) 提高递归深度限制
-          pickle 序列化复杂对象结构可能需要更深的递归栈
+        - sys.setrecursionlimit(0x100000) 提高递归深度限制（仅对纯 Python
+          递归有效；C pickler 的深度上限是解释器内建的，调不动）
         """
         _pre_limit = sys.getrecursionlimit()
         sys.setrecursionlimit(0x100000)  # 增大递归深度，支持复杂对象序列化
@@ -710,9 +774,47 @@ class CChan:
                 segseg.pre = None
                 segseg.next = None
 
-        with open(file_path, "wb") as f:
-            pickle.dump(self, f)
+        # 摘除「所属上级」反向引用（见上方 docstring）。保留原值以便 dump 后
+        # 就地恢复——不依赖 `seg.bi_list` 的完整性假设，导出路径与内存对象
+        # 严格对称。加载路径由 `chan_pickle_restore` 从容器反推重建。
+        _saved_parent = []
+        for kl_list in self.kl_datas.values():
+            for bi in kl_list.bi_list:
+                if bi.parent_seg is not None:
+                    _saved_parent.append((bi, bi.parent_seg))
+                    bi.parent_seg = None
+            for seg in kl_list.seg_list:
+                if seg.parent_seg is not None:
+                    _saved_parent.append((seg, seg.parent_seg))
+                    seg.parent_seg = None
 
+        # 摘除区间套的次级容器临时引用（chan-standard-bsp1-change design D7-q）：
+        # 它是跨越级别容器的只读引用，只服务于计算期的注解阶段。若不摘除，
+        # pickle 会把整棵跨级别容器图都拖进来（并且与父级形成环）。
+        # 它不参与指针图、不需要在加载后重建——恢复原型时由
+        # `_finalize_all_levels` 重新注入。
+        _detached = []
+        for kl_list in self.kl_datas.values():
+            lst = getattr(kl_list, 'bs_point_lst', None)
+            if lst is not None and getattr(lst, 'sub_bs_point_lst', None) is not None:
+                _detached.append(lst)
+                lst.sub_bs_point_lst = None
+
+        # 非步进模式下 `g_kl_iter` 仍持有已耗尽的生成器，pickle 无法序列化
+        # （`TypeError: cannot pickle 'generator' object`）。计算已完成，
+        # 这些迭代器不再需要——临时清空，序列化后恢复原对象。
+        _g_kl_iter = self.g_kl_iter
+        self.g_kl_iter = defaultdict(list)
+
+        try:
+            with open(file_path, "wb") as f:
+                pickle.dump(self, f)
+        finally:
+            for lst in _detached:
+                lst.sub_bs_point_lst = None  # 保持摘除状态
+            for obj, parent in _saved_parent:
+                obj.parent_seg = parent
+            self.g_kl_iter = _g_kl_iter
         sys.setrecursionlimit(_pre_limit)
         self.chan_pickle_restore()  # 恢复双向引用
 
@@ -737,11 +839,20 @@ class CChan:
 
     def chan_pickle_restore(self):
         """
-        恢复 pickle 后的双向引用关系
+        恢复 pickle 后的引用关系
 
-        由于 pickle 序列化时清除了 pre/next 双向引用，
-        加载后需要重新建立这些引用关系。
-        遍历各级别的 K线、笔、线段、线段线段，重建双向链表。
+        序列化时清除了两类引用，加载后都要重建：
+
+        1. **双向链表 pre/next**：遍历各级别的 K 线、笔、线段、线段线段重建。
+        2. **所属上级 parent_seg**：从 `seg.bi_list` 反推笔的所属线段、从
+           `segseg.bi_list` 反推线段的所属线段线段——与 `CSeg.update_bi_list`
+           写入的是同一组关系，所以重建结果与导出前逐笔一致。旧快照里
+           parent_seg 是完整序列化的，此时重建为幂等覆写，同样无害。
+           （`CSegListComm` 同时供 `seg_list` 与 `segseg_list` 使用，前者元素
+           是笔、后者元素是线段，两处都必须重建。）
+
+        幂等性很重要：本方法同时被 `chan_dump_pickle`（导出后就地恢复内存
+        对象）与 `chan_load_pickle`（加载后恢复）调用。
         """
         for kl_list in self.kl_datas.values():
             last_klu = None
@@ -769,12 +880,14 @@ class CChan:
                     last_bi.next = bi
                 last_bi = bi
 
-            # 恢复线段链表
+            # 恢复线段链表，以及「笔 → 所属线段」反向引用（见 docstring 第 2 点）
             for seg in kl_list.seg_list:
                 seg.pre = last_seg
                 if last_seg:
                     last_seg.next = seg
                 last_seg = seg
+                for bi in seg.bi_list:
+                    bi.parent_seg = seg
 
             # 恢复线段线段链表
             for segseg in kl_list.segseg_list:
@@ -782,3 +895,6 @@ class CChan:
                 if last_segseg:
                     last_segseg.next = segseg
                 last_segseg = segseg
+                # 同 parent_seg 的重建：segseg 的 bi_list 装的是线段
+                for seg in segseg.bi_list:
+                    seg.parent_seg = segseg

@@ -92,23 +92,31 @@ def _serialize_zs(zs_list) -> List[Dict[str, Any]]:
     return result
 
 
-def _serialize_bsp(bs_point_lst, kl_list=None, sub_bsps=None, kl_type=None, sub_kl_type=None, sub_bs_point_lst=None) -> List[Dict[str, Any]]:
+def _serialize_bsp(bs_point_lst, kl_list=None, sub_bsps=None, kl_type=None,
+                   sub_kl_type=None, sub_bs_point_lst=None, sub_kl=None) -> List[Dict[str, Any]]:
     """序列化买卖点列表.
 
     is_sure：确认状态（bsp-sure-annotation D5），口径与 bsp_index 落库一致
     （水位线推导，复用 WebAPI/bsp_sure.py 公共工具函数），与 bi/seg 的 is_sure
     契约对齐。
 
-    ladder：确认阶梯（bsp-ladder-change D3）——本链路（/api/klines，单股请求）
-    按需计算 L1：sub_bsps 为子级别买卖点列表（None = 无子级别/不计算）。
-    kl_list 传入用于 L3 前前笔查找（缺省尝试 bs_point_lst 所在容器）。
-    kl_type/sub_kl_type 传入用于 L1 共振窗口差异化（分钟级窄窗，D3 修订二）。
-    sub_bs_point_lst 传入用于子级点确认过滤（D3 修订三：佐证须子级 L4）。
+    ladder：三轴阶梯（chan-bsp-ladder-change D1/D3）——本链路（/api/klines，
+    单股请求）按需计算佐证轴：sub_bs_point_lst 为子级别买卖点容器
+    （None = 无子级别/不计算），sub_kl 为子级别 CKLine_List（L2-1 分型档）。
+    kl_list / kl_type / sub_kl_type 保留为旧签名兼容参数。
     """
     from .bsp_ladder import cal_ladder
     from .bsp_sure import bsp_is_sure
 
     bi_list = kl_list.bi_list if kl_list is not None else None
+    # T2 五轴（chan-standard-bsp2-change D1/D3）：确认轴/时间轴需要
+    # 本级别笔列表与配置。零改动覆盖：cal_ladder 类型分派后 T2 自动
+    # 走五轴，参数从既有签名成员透传。
+    bsp_cfg = None
+    try:
+        bsp_cfg = bs_point_lst.config
+    except Exception:
+        bsp_cfg = None
     result: List[Dict[str, Any]] = []
     for bsp in bs_point_lst.getSortedBspList():
         result.append({
@@ -122,9 +130,22 @@ def _serialize_bsp(bs_point_lst, kl_list=None, sub_bsps=None, kl_type=None, sub_
                 bi_list=bi_list, sub_bsps=sub_bsps,
                 kl_type=kl_type, sub_kl_type=sub_kl_type,
                 sub_bs_point_lst=sub_bs_point_lst,
+                sub_kl=sub_kl,
+                bi_list_ref=bi_list,
+                cfg=_cfg_for(bsp, bsp_cfg),
             ),
         })
     return result
+
+
+def _cfg_for(bsp, bsp_cfg):
+    """按买卖侧取 CPointConfig（与落库链路 `_extract_bsp_rows` 同一口径）。"""
+    if bsp_cfg is None:
+        return None
+    try:
+        return bsp_cfg.GetBSConfig(bool(bsp.is_buy))
+    except Exception:
+        return None
 
 
 def serialize_chan(chan: CChan, kl_type: KL_TYPE, sub_chan: CChan = None, sub_kl_type: KL_TYPE = None) -> Dict[str, Any]:
@@ -135,7 +156,7 @@ def serialize_chan(chan: CChan, kl_type: KL_TYPE, sub_chan: CChan = None, sub_kl
         chan: 已完成计算的 CChan 实例
         kl_type: 要导出的 K 线级别
         sub_chan: 子级别 CChan 实例（bsp-ladder-change D3：/api/klines 链路
-            按需计算 L1 区间套共振；None = 不计算 L1）
+            按需计算佐证轴；None = 不评估佐证轴）
         sub_kl_type: 子级别 K 线级别（与 sub_chan 配对）
 
     返回:
@@ -145,13 +166,16 @@ def serialize_chan(chan: CChan, kl_type: KL_TYPE, sub_chan: CChan = None, sub_kl
 
     sub_bsps = None
     sub_bs_point_lst = None
+    sub_kl = None
     if sub_chan is not None and sub_kl_type is not None:
         try:
-            sub_bs_point_lst = sub_chan[sub_kl_type].bs_point_lst
+            sub_kl = sub_chan[sub_kl_type]
+            sub_bs_point_lst = sub_kl.bs_point_lst
             sub_bsps = list(sub_bs_point_lst.getSortedBspList())
         except Exception:
-            sub_bsps = None  # 子级别计算失败 → 不计算 L1，降级 L2
+            sub_bsps = None  # 子级别计算失败 → 不做佐证轴
             sub_bs_point_lst = None
+            sub_kl = None
 
     return {
         "klines": _serialize_klines(kl_list),
@@ -162,6 +186,6 @@ def serialize_chan(chan: CChan, kl_type: KL_TYPE, sub_chan: CChan = None, sub_kl
         "bsp": _serialize_bsp(
             kl_list.bs_point_lst, kl_list=kl_list, sub_bsps=sub_bsps,
             kl_type=kl_type, sub_kl_type=sub_kl_type,
-            sub_bs_point_lst=sub_bs_point_lst,
+            sub_bs_point_lst=sub_bs_point_lst, sub_kl=sub_kl,
         ),
     }

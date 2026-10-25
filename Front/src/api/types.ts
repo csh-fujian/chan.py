@@ -131,9 +131,9 @@ export interface BspPoint {
   types: string[] // 原始枚举: '1','2','2s','3a','3b','1p'
   /** 确认状态（bsp-sure-annotation D5）：依托线段已确认为 true，依托虚段（未确认段）为 false */
   is_sure: boolean
-  /** 确认阶梯级别（bsp-ladder-change D3）：'L1' 小级别区间套 / 'L2' 虚笔候选 /
-   *  'L3' 背驰预警 / 'L4' 确认买卖点；缺失 = 未定级（前端兜底展示） */
-  ladder?: string
+  /** 确认阶梯（chan-bsp-ladder-change）：`'L4'` 已确认，或三轴组合值如
+   *  `'L2|L2-3|L3-2'`（进度轴 | 佐证轴 | 分型轴）；null/缺失 = 未定级 */
+  ladder?: string | null
 }
 
 export interface ChanResult {
@@ -162,9 +162,9 @@ export interface BspRecord {
   change_pct: number
   /** 确认状态（bsp-sure-annotation）：依托线段已确认为 true（定型信号），依托虚段为 false（预览信号，可能随重算消失） */
   is_sure: boolean
-  /** 确认阶梯级别（bsp-ladder-change D6）：'L1'/'L2'/'L3'/'L4'；存量行 NULL 由后端按 is_sure 映射兜底，
-   *  缺失时前端兜底「未定级」 */
-  ladder?: string
+  /** 确认阶梯（chan-bsp-ladder-change）：`'L4'` 已确认，或三轴组合值如
+   *  `'L2|L2-3|L3-2'`；null = 未定级（非一买类型本次未接入新阶梯） */
+  ladder?: string | null
 }
 
 export interface BspAggregate {

@@ -54,8 +54,15 @@ class ChanCache:
         except Exception:
             return False
 
-    def get(self, code: str, kl_type: KL_TYPE) -> Tuple[bool, Optional[Dict[str, Any]]]:
+    def get(self, code: str, kl_type: KL_TYPE,
+            fingerprint: Optional[str] = None) -> Tuple[bool, Optional[Dict[str, Any]]]:
         """查询缓存。
+
+        参数:
+            fingerprint: 当前买卖点配置的指纹。为 None 时跳过指纹校验
+                （兼容尚无配置上下文的只读调用方）；提供时，与缓存行中
+                记录的指纹不一致即视为未命中——否则切档位后会直接返回
+                旧口径的 JSON，表现为「改了配置但输出没变」。
 
         Returns:
             (True, data_dict) — 缓存命中，data_dict 就是 API 返回体
@@ -67,7 +74,7 @@ class ChanCache:
             with self._conn.cursor() as cur:
                 cur.execute(
                     """SELECT last_sure_ts, bi_json, seg_json, zs_json,
-                              seg_zs_json, bsp_json
+                              seg_zs_json, bsp_json, config_fingerprint
                        FROM chan_stable_prefix
                        WHERE code=%s AND kl_type=%s""",
                     (code, kl_type.name),
@@ -75,7 +82,10 @@ class ChanCache:
                 row = cur.fetchone()
                 if row is None:
                     return False, None
-                last_sure_ts, bi_json, seg_json, zs_json, seg_zs_json, bsp_json = row
+                (last_sure_ts, bi_json, seg_json, zs_json,
+                 seg_zs_json, bsp_json, cached_fp) = row
+                if fingerprint is not None and cached_fp != fingerprint:
+                    return False, None
                 # 缓存中不包含 klines — klines 每次都从 DuckDB 重读
                 # klines 字段由调用方填充
                 return True, {
@@ -89,7 +99,8 @@ class ChanCache:
         except Exception:
             return False, None
 
-    def set(self, code: str, kl_type: KL_TYPE, result: Dict[str, Any]) -> None:
+    def set(self, code: str, kl_type: KL_TYPE, result: Dict[str, Any],
+            fingerprint: Optional[str] = None) -> None:
         """写入缓存（upsert）。"""
         if not self._ensure_conn():
             return
@@ -107,15 +118,16 @@ class ChanCache:
                 cur.execute(
                     """INSERT INTO chan_stable_prefix
                           (code, kl_type, last_sure_ts, bi_json, seg_json,
-                           zs_json, seg_zs_json, bsp_json)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                           zs_json, seg_zs_json, bsp_json, config_fingerprint)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                        ON CONFLICT (code, kl_type) DO UPDATE SET
                           last_sure_ts = EXCLUDED.last_sure_ts,
                           bi_json = EXCLUDED.bi_json,
                           seg_json = EXCLUDED.seg_json,
                           zs_json = EXCLUDED.zs_json,
                           seg_zs_json = EXCLUDED.seg_zs_json,
-                          bsp_json = EXCLUDED.bsp_json""",
+                          bsp_json = EXCLUDED.bsp_json,
+                          config_fingerprint = EXCLUDED.config_fingerprint""",
                     (
                         code,
                         kl_type.name,
@@ -125,6 +137,7 @@ class ChanCache:
                         json.dumps(result.get("zs", []), ensure_ascii=False),
                         json.dumps(result.get("seg_zs", []), ensure_ascii=False),
                         json.dumps(result.get("bsp", []), ensure_ascii=False),
+                        fingerprint,
                     ),
                 )
             self._conn.commit()

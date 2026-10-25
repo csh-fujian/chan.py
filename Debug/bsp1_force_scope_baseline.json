@@ -1,0 +1,725 @@
+{
+ "codes": [
+  "sh.600000",
+  "sh.600004",
+  "sh.600006",
+  "sh.600007",
+  "sh.600008",
+  "sh.600009",
+  "sh.600010",
+  "sh.600011",
+  "sh.600015",
+  "sh.600016",
+  "sh.600018",
+  "sh.600019",
+  "sh.600020",
+  "sh.600021",
+  "sh.600023",
+  "sh.600025",
+  "sh.600026",
+  "sh.600028",
+  "sh.600029",
+  "sh.600030",
+  "sz.000001",
+  "sz.000002",
+  "sz.000006",
+  "sz.000007",
+  "sz.000008",
+  "sz.000009",
+  "sz.000010",
+  "sz.000011",
+  "sz.000012",
+  "sz.000014",
+  "sz.000016",
+  "sz.000017",
+  "sz.000019",
+  "sz.000020",
+  "sz.000021",
+  "sz.000025",
+  "sz.000026",
+  "sz.000027",
+  "sz.000029",
+  "sz.000031",
+  "sz.301123"
+ ],
+ "config": {
+  "autype": "QFQ",
+  "begin_time": "2019-01-01",
+  "bsp_preset": "standard",
+  "end_time": "2026-10-20",
+  "kl_type": "K_DAY"
+ },
+ "points": [
+  {
+   "bi": 47,
+   "code": "sh.600000",
+   "diver": false,
+   "ratio": 0.414388346,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 95,
+   "code": "sh.600000",
+   "diver": true,
+   "ratio": 0.577825107,
+   "sure": true,
+   "types": [
+    "1"
+   ]
+  },
+  {
+   "bi": 84,
+   "code": "sh.600004",
+   "diver": true,
+   "ratio": 0.476722127,
+   "sure": true,
+   "types": [
+    "1"
+   ]
+  },
+  {
+   "bi": 8,
+   "code": "sh.600006",
+   "diver": false,
+   "ratio": 0.055178912,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 38,
+   "code": "sh.600006",
+   "diver": false,
+   "ratio": 0.290795771,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 77,
+   "code": "sh.600006",
+   "diver": false,
+   "ratio": 0.613347344,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 19,
+   "code": "sh.600007",
+   "diver": false,
+   "ratio": 0.701376032,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 33,
+   "code": "sh.600007",
+   "diver": false,
+   "ratio": 0.216789206,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 44,
+   "code": "sh.600007",
+   "diver": false,
+   "ratio": 0.643206753,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 12,
+   "code": "sh.600008",
+   "diver": false,
+   "ratio": 0.45865976,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 34,
+   "code": "sh.600008",
+   "diver": false,
+   "ratio": 0.341147628,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 82,
+   "code": "sh.600008",
+   "diver": false,
+   "ratio": 0.472207141,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 96,
+   "code": "sh.600009",
+   "diver": false,
+   "ratio": 0.521021584,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 8,
+   "code": "sh.600010",
+   "diver": false,
+   "ratio": 0.691791171,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 75,
+   "code": "sh.600011",
+   "diver": true,
+   "ratio": 0.47428259,
+   "sure": true,
+   "types": [
+    "1"
+   ]
+  },
+  {
+   "bi": 9,
+   "code": "sh.600015",
+   "diver": false,
+   "ratio": 0.037812279,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 39,
+   "code": "sh.600015",
+   "diver": false,
+   "ratio": 0.573072971,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 79,
+   "code": "sh.600015",
+   "diver": false,
+   "ratio": 0.588454017,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 31,
+   "code": "sh.600016",
+   "diver": true,
+   "ratio": 0.836860304,
+   "sure": true,
+   "types": [
+    "1"
+   ]
+  },
+  {
+   "bi": 39,
+   "code": "sh.600016",
+   "diver": false,
+   "ratio": 0.608647501,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 85,
+   "code": "sh.600016",
+   "diver": false,
+   "ratio": 0.402993453,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 59,
+   "code": "sh.600018",
+   "diver": false,
+   "ratio": 0.779079513,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 79,
+   "code": "sh.600018",
+   "diver": false,
+   "ratio": 0.251432539,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 84,
+   "code": "sh.600018",
+   "diver": false,
+   "ratio": 0.3349362,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 95,
+   "code": "sh.600018",
+   "diver": true,
+   "ratio": 0.741825905,
+   "sure": true,
+   "types": [
+    "1"
+   ]
+  },
+  {
+   "bi": 11,
+   "code": "sh.600019",
+   "diver": false,
+   "ratio": 0.461496242,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 58,
+   "code": "sh.600019",
+   "diver": false,
+   "ratio": 0.031849028,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 51,
+   "code": "sh.600019",
+   "diver": true,
+   "ratio": 0.66095265,
+   "sure": true,
+   "types": [
+    "1"
+   ]
+  },
+  {
+   "bi": 87,
+   "code": "sh.600020",
+   "diver": false,
+   "ratio": 0.502791366,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 89,
+   "code": "sh.600021",
+   "diver": false,
+   "ratio": 0.062731515,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 25,
+   "code": "sh.600026",
+   "diver": false,
+   "ratio": 0.53595977,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 19,
+   "code": "sh.600028",
+   "diver": true,
+   "ratio": 0.631121872,
+   "sure": true,
+   "types": [
+    "1"
+   ]
+  },
+  {
+   "bi": 59,
+   "code": "sh.600028",
+   "diver": true,
+   "ratio": 0.536712194,
+   "sure": true,
+   "types": [
+    "1"
+   ]
+  },
+  {
+   "bi": 10,
+   "code": "sh.600029",
+   "diver": false,
+   "ratio": 0.170883626,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 68,
+   "code": "sh.600029",
+   "diver": false,
+   "ratio": 0.462116595,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 106,
+   "code": "sh.600029",
+   "diver": false,
+   "ratio": 0.099253824,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 49,
+   "code": "sh.600030",
+   "diver": false,
+   "ratio": 0.07171804,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 41,
+   "code": "sz.000001",
+   "diver": false,
+   "ratio": 0.633770372,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 51,
+   "code": "sz.000001",
+   "diver": false,
+   "ratio": 0.666464418,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 91,
+   "code": "sz.000001",
+   "diver": false,
+   "ratio": 0.506625014,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 84,
+   "code": "sz.000001",
+   "diver": false,
+   "ratio": 0.233909753,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 66,
+   "code": "sz.000002",
+   "diver": false,
+   "ratio": 0.403251295,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 84,
+   "code": "sz.000002",
+   "diver": false,
+   "ratio": 0.232311725,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 18,
+   "code": "sz.000006",
+   "diver": false,
+   "ratio": 0.157090757,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 56,
+   "code": "sz.000006",
+   "diver": false,
+   "ratio": 0.704807892,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 55,
+   "code": "sz.000007",
+   "diver": false,
+   "ratio": 0.417262256,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 80,
+   "code": "sz.000008",
+   "diver": false,
+   "ratio": 0.225109825,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 8,
+   "code": "sz.000009",
+   "diver": false,
+   "ratio": 0.415907118,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 66,
+   "code": "sz.000009",
+   "diver": false,
+   "ratio": 0.231094289,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 71,
+   "code": "sz.000009",
+   "diver": false,
+   "ratio": 0.235139451,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 60,
+   "code": "sz.000010",
+   "diver": false,
+   "ratio": 0.43604095,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 12,
+   "code": "sz.000011",
+   "diver": false,
+   "ratio": 0.889412869,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 44,
+   "code": "sz.000011",
+   "diver": false,
+   "ratio": 0.026009594,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 74,
+   "code": "sz.000011",
+   "diver": false,
+   "ratio": 0.576342923,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 63,
+   "code": "sz.000012",
+   "diver": false,
+   "ratio": 0.898059772,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 40,
+   "code": "sz.000012",
+   "diver": false,
+   "ratio": 0.731389787,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 8,
+   "code": "sz.000014",
+   "diver": false,
+   "ratio": 0.648105488,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 64,
+   "code": "sz.000014",
+   "diver": false,
+   "ratio": 0.209360209,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 86,
+   "code": "sz.000014",
+   "diver": false,
+   "ratio": 0.343770604,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 94,
+   "code": "sz.000016",
+   "diver": true,
+   "ratio": 0.417741375,
+   "sure": true,
+   "types": [
+    "1"
+   ]
+  },
+  {
+   "bi": 80,
+   "code": "sz.000017",
+   "diver": false,
+   "ratio": 0.871318851,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 60,
+   "code": "sz.000019",
+   "diver": false,
+   "ratio": 0.120545564,
+   "sure": false,
+   "types": [
+    "1p"
+   ]
+  },
+  {
+   "bi": 38,
+   "code": "sz.000026",
+   "diver": true,
+   "ratio": 0.409549549,
+   "sure": true,
+   "types": [
+    "1"
+   ]
+  },
+  {
+   "bi": 21,
+   "code": "sz.000027",
+   "diver": true,
+   "ratio": 0.822798622,
+   "sure": true,
+   "types": [
+    "1"
+   ]
+  },
+  {
+   "bi": 59,
+   "code": "sz.000027",
+   "diver": true,
+   "ratio": 0.65776756,
+   "sure": true,
+   "types": [
+    "1"
+   ]
+  },
+  {
+   "bi": 30,
+   "code": "sz.000031",
+   "diver": true,
+   "ratio": 0.481500769,
+   "sure": true,
+   "types": [
+    "1"
+   ]
+  },
+  {
+   "bi": 62,
+   "code": "sz.000031",
+   "diver": true,
+   "ratio": 0.36127213,
+   "sure": true,
+   "types": [
+    "1"
+   ]
+  }
+ ],
+ "watermark": "2026-10-20"
+}

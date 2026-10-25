@@ -17,7 +17,7 @@ export const strategies: Strategy[] = [
     id: 2,
     name: '30分钟二三买共振',
     description: '30分钟级别二买和三买同时出现的股票，要求中枢突破放量',
-    bsp_types: ['2B', '3B'],
+    bsp_types: ['2B', '3B(后)', '3B(内)'],
     kl_type: '30m',
     industries: ['新能源', '电子', '半导体'],
     status: 'active',

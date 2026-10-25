@@ -13,6 +13,8 @@ ST 股票排除（openspec 变更 exclude-st-stocks）离线冒烟自测。
 - 6.1 /api/klines 对 ST 返回 404 且不碰缓存、不触发计算
 - 6.2 /api/klines 在名称来源不可用时放行（不 503）
 - 7.6 名称来源不可用时策略任务复位为 paused（后台路径与 EOD 路径），不留 running
+- 8.1 bsp_index 读侧三个查询（query_bsp / query_bsp_aggregate /
+  get_bsp_by_code）一律携带 ST 排除谓词，且 COUNT 与分页共用同一 where
 
 运行：  .venv/bin/python Debug/test_st_exclusion.py
 """
@@ -261,9 +263,14 @@ def _raise_unavailable(code):
 
 
 class _StubCache:
-    """缓存桩：未命中。放行路径会先经过缓存读取，不能让它抛异常。"""
+    """缓存桩：未命中。放行路径会先经过缓存读取，不能让它抛异常。
 
-    def get(self, symbol, kl_type):
+    `get` 必须收下 `fingerprint` 关键字参数——`ChanCache.get` 自
+    bsp 配置指纹引入后签名变为 `get(code, kl_type, fingerprint=None)`，
+    桩不接受该参数会让「放行至计算」路径在缓存层抛 TypeError 而假失败。
+    """
+
+    def get(self, symbol, kl_type, fingerprint=None):
         return False, None
 
 
@@ -339,6 +346,87 @@ check("EOD：名称来源不可用 → 复位 paused", (7, "paused") in _eod_cal
 _eod_calls.clear()
 _eod_run(_raise_other)
 check("EOD：其他异常 → 仍复位 done（原行为不变）", (7, "done") in _eod_calls, str(_eod_calls))
+
+
+# ---------------------------------------------------------------------------
+# 8.1 bsp_index 读侧排除 ST
+#
+# 写入侧（recompute_stock）早已按 D6 跳过 ST，但存量 ST 行仍在 bsp_index 里。
+# 读侧若不过滤，买卖点页 / 区间套 / 行业聚合仍会展示已停止分析的标的。
+# 用假游标捕获 SQL，断言三个查询函数都带 ST_EXCLUDE_SQL 与 stock join。
+# ---------------------------------------------------------------------------
+print("\n[8.1] bsp_index 读侧携带 ST 排除谓词")
+
+from WebAPI import bsp_store
+
+
+class _CapturingCursor:
+    """记录所有 execute 的 (sql, params)，返回空结果。"""
+
+    def __init__(self):
+        self.executed = []
+
+    def execute(self, sql, params=None):
+        self.executed.append((sql, params))
+
+    def fetchone(self):
+        return (0,)  # COUNT(*) / LIMIT 1 都按「无行」处理
+
+    def fetchall(self):
+        return []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class _StubConn:
+    def __init__(self, cur):
+        self._cur = cur
+
+    def cursor(self):
+        return self._cur
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
+
+    def close(self):
+        pass
+
+
+def _capture(fn, *args, **kwargs):
+    cur = _CapturingCursor()
+    # _ensure_tables 也会 execute 建表语句，会把查询 SQL 挤出断言口径；
+    # 且它携带自己的连接路径，与本用例只关心「查询 WHERE」无关，故短路掉。
+    with _Patch(bsp_store, _get_pg_conn=lambda: _StubConn(cur),
+                _ensure_tables=lambda: None):
+        fn(*args, **kwargs)
+    return cur.executed
+
+
+_sqls = _capture(bsp_store.query_bsp, page=1, page_size=10)
+check("query_bsp 生成的 SQL 均含 ST 排除",
+      bool(_sqls) and all(ST_EXCLUDE_SQL in s for s, _ in _sqls), str(len(_sqls)))
+check("query_bsp COUNT 与分页共用同一 where（同一份 SQL 片段出现两次）",
+      len(_sqls) == 2 and _sqls[0][1][:len(_sqls[0][1])] == _sqls[1][1][:len(_sqls[0][1])])
+
+_sqls = _capture(bsp_store.query_bsp_aggregate)
+check("query_bsp_aggregate 含 ST 排除",
+      bool(_sqls) and ST_EXCLUDE_SQL in _sqls[0][0])
+check("query_bsp_aggregate LEFT JOIN stock（ST_EXCLUDE_SQL 依赖别名 s）",
+      "LEFT JOIN stock s" in _sqls[0][0])
+
+_sqls = _capture(bsp_store.get_bsp_by_code, "sz.000001")
+check("get_bsp_by_code（无 kl_types）含 ST 排除",
+      bool(_sqls) and ST_EXCLUDE_SQL in _sqls[0][0])
+_sqls = _capture(bsp_store.get_bsp_by_code, "sz.000001", ["D", "30m"])
+check("get_bsp_by_code（带 kl_types）含 ST 排除",
+      bool(_sqls) and ST_EXCLUDE_SQL in _sqls[0][0])
 
 
 # ---------------------------------------------------------------------------
