@@ -15,6 +15,8 @@ Java 开发者注意：
   Java 对比：类似于 Java 的 static 字段
 """
 
+import logging
+
 import baostock as bs
 
 from ChanAnalyse.Common.CEnum import AUTYPE, DATA_FIELD, KL_TYPE
@@ -23,6 +25,30 @@ from ChanAnalyse.Common.func_util import kltype_lt_day, str2float
 from ChanAnalyse.KLine.KLine_Unit import CKLine_Unit
 
 from .CommonStockAPI import CCommonStockApi
+
+log = logging.getLogger("baostock")
+
+
+def repair_ohlc(item: dict, code: str, time_str: str = "") -> bool:
+    """把 OHLC 互相矛盾的 K 线修正为自洽值，返回是否发生修正。
+
+    BaoStock 的指数历史数据存在精度瑕疵：如上证 1991-05-09 的
+    close=109.29 低于 low=109.31，深证成指 2016 年多行 low 比 close
+    高 0.001。这类行会让 CKLine_Unit.check() 抛异常、整段拉取失败，
+    故灌数时按 min/max 修正（open/close 原值保留，只纠正 low/high）。
+    """
+    o, h, l, c = (item[DATA_FIELD.FIELD_OPEN], item[DATA_FIELD.FIELD_HIGH],
+                  item[DATA_FIELD.FIELD_LOW], item[DATA_FIELD.FIELD_CLOSE])
+    true_low = min(o, h, l, c)
+    true_high = max(o, h, l, c)
+    if l == true_low and h == true_high:
+        return False
+    log.warning("%s %s OHLC 不一致已修正: low %.4f->%.4f, high %.4f->%.4f "
+                "[open=%s high=%s low=%s close=%s]",
+                code, time_str, l, true_low, h, true_high, o, h, l, c)
+    item[DATA_FIELD.FIELD_LOW] = true_low
+    item[DATA_FIELD.FIELD_HIGH] = true_high
+    return True
 
 
 def create_item_dict(data, column_name):
@@ -126,8 +152,14 @@ class CBaoStock(CCommonStockApi):
 
     is_connect = None  # 类级别属性，记录登录状态
 
-    def __init__(self, code, k_type=KL_TYPE.K_DAY, begin_date=None, end_date=None, autype=AUTYPE.QFQ):
+    def __init__(self, code, k_type=KL_TYPE.K_DAY, begin_date=None, end_date=None, autype=AUTYPE.QFQ,
+                 repair_bad_ohlc=False):
+        """repair_bad_ohlc=True 时修正指数历史数据中 OHLC 自相矛盾的行（见 repair_ohlc）。
+
+        默认 False 保持 CChan/演示脚本的原有严格行为；灌数脚本按需开启。
+        """
         super(CBaoStock, self).__init__(code, k_type, begin_date, end_date, autype)
+        self.repair_bad_ohlc = repair_bad_ohlc
 
     def get_kl_data(self):
         """
@@ -172,7 +204,10 @@ class CBaoStock(CCommonStockApi):
         # 逐行读取数据
         # rs.next() 移动到下一行，类似于 Java ResultSet.next()
         while rs.error_code == '0' and rs.next():
-            yield CKLine_Unit(create_item_dict(rs.get_row_data(), GetColumnNameFromFieldList(fields)))
+            item = create_item_dict(rs.get_row_data(), GetColumnNameFromFieldList(fields))
+            if self.repair_bad_ohlc:
+                repair_ohlc(item, self.code, str(item[DATA_FIELD.FIELD_TIME]))
+            yield CKLine_Unit(item)
 
     def SetBasciInfo(self):
         """

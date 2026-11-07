@@ -13,6 +13,9 @@
 # - 首次全历史回填请改用 Data/download_kl.py 加 --full（本脚本只做增量）。
 # - DuckDB 单文件只允许一个写进程，脚本启动前会检查是否已有灌数进程在跑。
 # - 可用 --code-prefix 按市场过滤（见 Data/download_kl.py），本脚本默认全市场。
+# - PG_DSN 缺省同 start_backend.sh（host=127.0.0.1 ... dbname=chan ...）：灌数完成后
+#   会把标的补建进 PG stock 表，K 线页搜索下拉才能搜到。可用环境变量覆盖；
+#   PG_DSN=none 显式关闭 PG 同步（纯 DuckDB 灌数）。
 
 set -euo pipefail
 
@@ -22,6 +25,10 @@ PY=".venv/bin/python"
 LOG_DIR="Log"
 mkdir -p "$LOG_DIR"
 DRYRUN="${DRYRUN:-0}"
+
+# PostgreSQL 连接（与 start_backend.sh 同默认值，可用 PG_DSN 环境变量覆盖）
+PG_DSN="${PG_DSN:-host=127.0.0.1 port=5432 dbname=chan user=postgres password=postgres}"
+export PG_DSN
 
 # ---------------------------------------------------------------------------
 # 单写者保护：DuckDB 读写互斥，第二个写进程只会互相等锁
@@ -42,6 +49,11 @@ fi
 run_cmd() {
     local logfile="$1"; shift
     echo "→ 执行: $*"
+    # 只报状态，绝不回显连接串（含密码）
+    case "${PG_DSN,,}" in
+        none|off|0) echo "→ PG_DSN: 已关闭（不写 PG）" ;;
+        *)          echo "→ PG_DSN: 已配置" ;;
+    esac
     echo "→ 日志: $logfile"
     if [[ "$DRYRUN" == "1" ]]; then
         echo "[dry-run] 跳过实际执行"

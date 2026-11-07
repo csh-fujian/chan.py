@@ -96,8 +96,16 @@ class StubZS:
         self.begin_bi = StubEle(0)
         self.end_bi = StubEle(1)
 
-    def out_bi_is_peak(self, idx):
+    def out_bi_is_peak(self, idx, strict=True):
+        # `strict` 是 chan-bsp1-extreme 新增的极值严格性开关，由
+        # `BSP_CONF.bs1_peak_strict` 传入。本桩件只验证降级路由的短路顺序，
+        # 极值结果由用例直接指定，故忽略该参数（保留形参以免签名不匹配）。
         return self._peak, None
+
+    def end_bi_break(self, end_bi=None):
+        # 突破判定由用例间接控制（`is_divergence` 已返回预设结果）。
+        # 桩件默认「已突破」，因为所有用例的前提都是离开笔跌破中枢。
+        return True
 
     def get_bi_in(self):
         return self.bi_in
@@ -136,7 +144,9 @@ class StandardRecorder:
         self.rest = rest or (True, None, {})
         self.calls = []
 
-    def __call__(self, ele, ele_list, zs_lst, cfg, is_buy):
+    def __call__(self, ele, ele_list, zs_lst, cfg, is_buy, full_ele_list=None):
+        # full_ele_list 是 chan-bsp1-extreme 为 `bsp1_new_extreme_mode="level"`
+        # 新增的形参；本桩件不验证跨线段取值，仅保留形参以匹配签名。
         self.calls.append((cfg.bsp1_trend, cfg.bsp1_new_extreme_mode))
         # 关趋势的那次调用 = rest_ok 重跑
         if not cfg.bsp1_trend:

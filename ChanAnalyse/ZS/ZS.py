@@ -485,12 +485,16 @@ class CZS(Generic[LINE_TYPE]):
         return (end_bi.is_down() and end_bi._low() < self.low) or \
             (end_bi.is_up() and end_bi._high() > self.high)
 
-    def out_bi_is_peak(self, end_bi_idx: int):
+    def out_bi_is_peak(self, end_bi_idx: int, strict: bool = True):
         """
         判断离开笔是否是中枢之后的最极值笔
 
         参数:
             end_bi_idx: 线段的结束笔索引
+            strict: 极值严格性（`chan-bsp1-extreme`）。True = 严格优，
+                相等极值不放行；False = 改造前的宽松口径。
+                取值来自配置项 `bs1_peak_strict`——**必须由调用方传入，
+                不要在内部硬编码**，否则 legacy 档无法保持逐笔等价。
 
         返回:
             (是否是最极值, 与最近一笔的差距比例)
@@ -498,6 +502,16 @@ class CZS(Generic[LINE_TYPE]):
         查找逻辑：
         在中枢内部的笔中，找离结束笔最近的一笔，
         判断离开笔是否比中枢内的笔都更极端。
+
+        **严格优（`chan-bsp1-extreme`：极值判定为严格优）**：相等极值不算「更极端」。
+        本判据与 `BSPJudgement.check_new_extreme` 是同一契约的两侧实现——
+        前者比较「中枢内部笔」，后者比较「趋势范围内同向要素」，两者的
+        严格性必须一致，否则 `bs1_peak` 与 `bsp1_new_extreme` 会互相打架：
+        一个放行双底、另一个拦下，最终结论取决于检查顺序。
+
+        例外：`strict=False` 是 legacy 档的**受控回退**，此时本判据与
+        `check_new_extreme` 的严格性确实不一致——但 legacy 档下
+        `bsp1_new_extreme=False`（整条判据不参与判定），不一致不会产生冲突。
         """
         assert len(self.bi_lst) > 0
         if self.bi_out is None:
@@ -506,8 +520,12 @@ class CZS(Generic[LINE_TYPE]):
         for bi in self.bi_lst:
             if bi.idx > end_bi_idx:
                 break
-            if (self.bi_out.is_down() and bi._low() < self.bi_out._low()) or \
-               (self.bi_out.is_up() and bi._high() > self.bi_out._high()):
+            # 严格优用 <= / >=；宽松（legacy）用 < / >
+            if self.bi_out.is_down():
+                hit = bi._low() <= self.bi_out._low() if strict else bi._low() < self.bi_out._low()
+            else:
+                hit = bi._high() >= self.bi_out._high() if strict else bi._high() > self.bi_out._high()
+            if hit:
                 return False, None
             r = abs(bi.get_end_val()-self.bi_out.get_end_val())/self.bi_out.get_end_val()
             if r < peak_rate:

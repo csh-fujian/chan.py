@@ -123,3 +123,63 @@ BEGIN
         ALTER TABLE bsp_index ALTER COLUMN ladder TYPE VARCHAR(32);
     END IF;
 END $$;
+
+-- 2026-10-26 chan-config-panel / D1：缠论参数配置真源（Windows 机器上执行）
+-- 背景：K 线页新增「缠论参数配置」抽屉，用户保存的参数需持久化并作为计算链路的
+--       第三层覆盖（内核默认 → bsp_preset 预设 → 用户显式配置）。单行表（id 固定 1）
+--       存全量快照，便于配置指纹取稳定哈希，也避免多行部分更新的中间态。
+-- 幂等：CREATE TABLE IF NOT EXISTS；`chk_chan_config_singleton` 防误插第二行。
+-- 注意：实际表结构契约在 `WebAPI/chan_config_store._ensure_tables()`（模块导入时执行），
+--       本条为变更记录，两处定义须保持一致。
+CREATE TABLE IF NOT EXISTS chan_config (
+    id          SMALLINT PRIMARY KEY DEFAULT 1,
+    config      JSONB NOT NULL DEFAULT '{}',
+    overrides   JSONB NOT NULL DEFAULT '{}',
+    preset      VARCHAR NOT NULL DEFAULT 'standard',
+    version     BIGINT NOT NULL DEFAULT 1,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_by  VARCHAR,
+    CONSTRAINT chk_chan_config_singleton CHECK (id = 1)
+);
+
+-- 2026-10-26 chan-config-panel / D3 补充：`overrides` 列（旧库升级，Windows 机器上执行）
+-- 语义：`config` 存全量快照（展示/审计），`overrides` 只存用户显式改过的键（生效语义）。
+--       两者分离才能让「未覆盖项在切档位时跟随预设」成立。
+-- 幂等：ADD COLUMN IF NOT EXISTS。
+ALTER TABLE chan_config ADD COLUMN IF NOT EXISTS overrides JSONB NOT NULL DEFAULT '{}';
+
+-- 2026-10-26 chan-config-panel / D8：批量重算任务表（Windows 机器上执行）
+-- 背景：抽屉内「同步所有股票」对全部 (code, kl_type, autype) 键执行全量重写，
+--       耗时数分钟，需可查询的进度与「结果是否已过期」判定（config_version 比对）。
+--       不复用 sync_job —— 该表 domains 语义是股票元数据域，与买卖点重算无关。
+-- 幂等：CREATE TABLE IF NOT EXISTS。
+CREATE TABLE IF NOT EXISTS chan_config_sync_job (
+    id             SERIAL PRIMARY KEY,
+    config_version BIGINT,
+    status         VARCHAR NOT NULL DEFAULT 'running',
+    total          INT NOT NULL DEFAULT 0,
+    done           INT NOT NULL DEFAULT 0,
+    failed         INT NOT NULL DEFAULT 0,
+    summary        JSONB,
+    started_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    finished_at    TIMESTAMPTZ,
+    CONSTRAINT chk_chan_config_sync_job_status
+        CHECK (status IN ('running','interrupted','done','failed'))
+);
+
+-- 2026-11-07 K线页默认展示上证指数 + 灌数标的同步进 PG（Windows 机器上执行）
+-- 背景：K 线页搜索下拉走 GET /api/stocks → stock_store.list_stocks()（读 PG stock 表），
+--       而灌数链路 Data/download_kl.py 只写 DuckDB。新灌的标的（如大盘指数）DuckDB
+--       能算 K 线但搜索搜不到。新增 Data/sync_stock_master.py 做回填，并让灌数脚本
+--       自动调用 stock_store.ensure_stock_row() 补建。
+-- 数据约定（非 DDL，复用现有 board 列）：
+--   指数在 stock.board 上写作 '指数'，由 stock_store.INDEX_BOARD 定义，
+--   list_pool_codes(exclude_index=True) 据此把指数排除出逐股元数据同步池
+--   （指数没有巨潮档案/财务三表/股东户数，留在池里只会稳定失败），
+--   但指数**保留**在 stock 表并出现在搜索下拉（list_stocks 不过滤指数）。
+-- 幂等：以下语句可重复执行 —— 先把已存在为 '指数' 的 8 个大盘指数行补齐级别/复权类型，
+--       未建行时为空操作（真正的建行由 Data/sync_stock_master.py 完成）。
+UPDATE stock SET board = '指数'
+ WHERE code IN ('sh.000001','sh.000010','sh.000016','sh.000300',
+                'sh.000852','sh.000905','sz.399001','sz.399006')
+   AND board <> '指数';

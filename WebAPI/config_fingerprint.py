@@ -37,6 +37,7 @@ FINGERPRINT_KEYS: Iterable[str] = (
     "max_bs2_rate",
     "macd_algo",
     "bs1_peak",
+    "bs1_peak_strict",
     "bs_type",
     "bsp2_follow_1",
     "bsp3_follow_1",
@@ -93,17 +94,62 @@ def _normalize(value: Any) -> Any:
     return value
 
 
+def _pick(obj, names) -> Dict[str, Any]:
+    """按属性名从配置子对象取值（缺失的属性跳过），值统一走 `_normalize()`。"""
+    out: Dict[str, Any] = {}
+    if obj is None:
+        return out
+    for name in names:
+        if isinstance(obj, dict):
+            if name in obj:
+                out[name] = _normalize(obj[name])
+        elif hasattr(obj, name):
+            out[name] = _normalize(getattr(obj, name))
+    return out
+
+
+# 结构段参与指纹的属性名。
+#
+# 这些参数（笔/线段/中枢/MACD）不在 `FINGERPRINT_KEYS` 里 —— 它们不是买卖点判据
+# 开关，但会**改变买卖点赖以成立的结构**：改 `bi_fx_check` 会重排所有笔，
+# 改 `zs_combine` 会改变中枢数量与边界，改 `macd.fast` 会改变力度对比数值。
+# 不纳入指纹的话，配置抽屉里改这些参数会静默复用旧快照（「配置改了但输出没变」
+# 的同一类故障），因此这里按模块分段收录（chan-config-panel design D5）。
+#
+# 注意属性名与配置 key 不同（`need_combine`/`is_strict`/`left_method`）：
+# 指纹只要求稳定，不要求与配置字典同形，直接按属性名取。
+_BI_ATTRS = ("bi_algo", "is_strict", "bi_fx_check", "gap_as_kl",
+             "bi_end_is_peak", "bi_allow_sub_peak")
+_SEG_ATTRS = ("seg_algo", "left_method")
+_ZS_ATTRS = ("need_combine", "zs_combine_mode", "one_bi_zs", "zs_algo")
+_MACD_ATTRS = ("fast", "slow", "signal")
+
+
 def collect_config(conf) -> Dict[str, Any]:
-    """从 `CChanConfig` 实例提取参与指纹的配置项。
+    """从 `CChanConfig` 实例提取参与指纹的配置项（结构化分段）。
+
+    分段结构（chan-config-panel design D5）：
+
+        bsp       —— 买卖点判据（`FINGERPRINT_KEYS`，原有能力）
+        seg_bsp   —— 线段级别的买卖点判据差异
+        bi/seg/zs —— 结构算法（笔/线段/中枢）
+        macd      —— MACD 三参数
+        indicator —— 仅当笔级别 `macd_algo=rsi` 时含 `rsi_cycle`
 
     取买入侧配置（`bs_point_conf.b_conf`）——买卖两侧由同一份 `args` 构造，
     只有 `-buy` / `-sell` 后缀显式覆盖时才会不同。为覆盖该情形，
     卖出侧中被显式改变的值也一并纳入。
+
+    **分段是 BREAKING 的**：顶层结构由「平铺的 key」变为「按模块分组」，
+    存量快照的指纹全部失配 → 首次重算走全量。与 `LADDER_SCHEMA_VERSION`
+    bump 是同类机制，无需迁移脚本。
     """
     out: Dict[str, Any] = {}
     bsp_conf = getattr(conf, "bs_point_conf", None)
     if bsp_conf is None:
         return out
+
+    bsp: Dict[str, Any] = {}
     for side_name, side in (("b", bsp_conf.b_conf), ("s", bsp_conf.s_conf)):
         for key in FINGERPRINT_KEYS:
             if not hasattr(side, key):
@@ -111,17 +157,34 @@ def collect_config(conf) -> Dict[str, Any]:
             val = _normalize(getattr(side, key))
             # 买侧全部收录；卖侧只收录与买侧不同的（即被 -sell 覆盖的项）
             if side_name == "b":
-                out[key] = val
+                bsp[key] = val
             else:
-                b_key = out.get(key)
+                b_key = bsp.get(key)
                 if val != b_key:
-                    out[f"{key}@sell"] = val
-    # 线段级别配置独立于笔级别（历史上被硬编码为 slope），单独纳入
+                    bsp[f"{key}@sell"] = val
+    out["bsp"] = bsp
+
+    # 线段级别配置独立于笔级别（-seg 后缀只覆盖后者），单独一段
     seg_conf = getattr(conf, "seg_bs_point_conf", None)
     if seg_conf is not None:
-        for key in ("macd_algo", "bsp1_only_multibi_zs"):
-            if hasattr(seg_conf.b_conf, key):
-                out[f"seg_{key}"] = _normalize(getattr(seg_conf.b_conf, key))
+        out["seg_bsp"] = {
+            f"{key}": _normalize(getattr(seg_conf.b_conf, key))
+            for key in ("macd_algo", "bsp1_only_multibi_zs")
+            if hasattr(seg_conf.b_conf, key)
+        }
+
+    # 结构段：会改变笔/线段/中枢从而改变买卖点
+    out["bi"] = _pick(getattr(conf, "bi_conf", None), _BI_ATTRS)
+    out["seg"] = _pick(getattr(conf, "seg_conf", None), _SEG_ATTRS)
+    out["zs"] = _pick(getattr(conf, "zs_conf", None), _ZS_ATTRS)
+    out["macd"] = _pick(getattr(conf, "macd_config", None), _MACD_ATTRS)
+
+    # 指标段：RSI 只在作为力度算法时影响结果（其它情况下 `cal_rsi` 与输出无关，
+    # 纳入会让「为了别处看图而开 RSI」这种无害改动触发全量重算）
+    algo = bsp.get("macd_algo")
+    if isinstance(algo, str) and algo.endswith(".RSI"):
+        out["indicator"] = _pick(conf, ("cal_rsi", "rsi_cycle"))
+
     return out
 
 

@@ -25,6 +25,9 @@
   --warning-dim: rgba(240, 185, 11, 0.14);
   --info: #3B82F6;
 
+  --accent-cyan: #22D3EE;
+  --accent-cyan-dim: rgba(34, 211, 238, 0.12);
+
   /* 主色（基线部分主题无关；--accent-hover 随主题翻转明暗） */
   --accent-base: #3B82F6;
   --accent-active: #1D4ED8;

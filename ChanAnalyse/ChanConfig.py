@@ -60,6 +60,13 @@ _BSP_PRESETS = {
         # 力度口径：legacy 下 divergence_rate=inf 走 >100 分支、根本不计算 metric，
         # 显式写 "bi" 是防御性的（防止将来单独放开背驰时口径意外变化）
         "bsp1_force_scope": "bi",
+        # 力度算法：legacy 逐笔等价的必要条件（chan-bsp1-extreme）。默认档已改为
+        # full_area，不显式写回 "peak" 就会偏离 258/69/318/317/61/50 基线。
+        "macd_algo": "peak",
+        # 极值严格性：legacy 下 bs1_peak 仍开启，必须显式回退为宽松口径，
+        # 否则「相等极值不放行」（chan-bsp1-extreme）会改变 legacy 一买基线
+        # （实测 258→255）。这是档位等价的必要条件，不是防御性写法。
+        "bs1_peak_strict": False,
         # 区间套特征：默认已 False，显式写入防止将来单独调 legacy 判据开关时
         # 被特征字段污染等价性基线
         "bsp1_qjt": False,
@@ -229,8 +236,13 @@ class CChanConfig:
             "min_zs_cnt": 2,
             "bsp1_only_multibi_zs": True,
             "max_bs2_rate": 0.9999,
-            "macd_algo": "peak",
+            # 力度算法（chan-bsp1-extreme）：整段柱体面积。单根峰值对「急跌赶底」
+            # 钝感——跌幅大、时间短的 c 段单根柱子天然更深，即使整段动能已衰竭
+            # 也会被判为不背驰。41 只日线横评见 design.md D1。
+            "macd_algo": "full_area",
             "bs1_peak": True,
+            # 极值严格性（chan-bsp1-extreme）：standard 档默认严格优
+            "bs1_peak_strict": True,
             "bs_type": "1,1p,2,2s,3a,3b",
             "bsp2_follow_1": True,
             "bsp3_follow_1": True,

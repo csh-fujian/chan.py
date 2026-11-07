@@ -10,6 +10,40 @@ Java 开发者注意：
 
 from .CEnum import BI_DIR, KL_TYPE
 
+# 各交易所的指数代码前缀。必须按交易所判定：sh.000001 是上证指数，
+# 而 sz.000001 是平安银行（个股），只按数字段判会误伤。
+#   sh.000xxx 上证指数系列（含 sh.000001/000010/000016/000300/000852/000905/000688）
+#   sh.880xxx 通达信板块指数
+#   sz.399xxx 深证指数系列（深市无 399 开头的个股）
+#   bj.899xxx 北证指数（如 bj.899050 北证50）
+INDEX_CODE_PREFIXES = {
+    "sh": ("000", "880"),
+    "sz": ("399",),
+    "bj": ("899",),
+}
+
+
+def is_index_code(code: str) -> bool:
+    """
+    判断 code 是否为指数（而非 A 股个股/B 股/基金）
+
+    参数:
+        code: 带市场前缀的代码，如 "sh.000001"
+    返回:
+        True 表示指数；无法识别（无 '.'、未知交易所）一律返回 False
+    使用场景：
+        - 灌数时跳过分级请求：BaoStock 指数没有分钟级别数据，请求必失败
+        - 指数入 stock 表后与个股区分（board = "指数"）
+    注意：单一只按数字段判会误伤 —— sh.000001 是上证指数，sz.000001 是平安银行
+    """
+    if not code or "." not in code:
+        return False
+    exch, num = code.split(".", 1)
+    prefixes = INDEX_CODE_PREFIXES.get(exch.lower())
+    if prefixes is None:
+        return False
+    return num[:3] in prefixes
+
 
 def kltype_lt_day(_type: KL_TYPE):
     """

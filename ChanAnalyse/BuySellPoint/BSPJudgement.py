@@ -68,39 +68,64 @@ def check_trend(ele, ele_list, zs_lst, is_buy: bool, mode: str = "strict"):
 
 
 def check_new_extreme(ele, ele_list, zs_lst, is_buy: bool,
-                      mode: str = "trend_start"):
+                      mode: str = "trend_start", full_ele_list=None):
     """
     创趋势新低/新高
 
     `ele` 是待判定的离开要素（一买所在的那一笔/线段）。要求它的极值严格优于
     「趋势起点之后、到 `ele` 为止」的全部同向要素。
 
+    **严格优（`chan-bsp1-extreme`：极值判定为严格优）**：相等极值也计入 worse，即「回到前低」
+    （双底/平低）不构成创出。`CZS.out_bi_is_peak` 是同一契约的另一侧实现，两处
+    的严格性必须一致——只改一侧会让 `bs1_peak` 与 `bsp1_new_extreme` 互相打架。
+    `out_bi_is_peak` 的 `strict=False` 是 legacy 档的受控回退（见 `bs1_peak_strict`），
+    该档下 `bsp1_new_extreme=False`，本函数根本不参与判定，不会与回退口径冲突。
+
     起点口径（`mode`）：
         trend_start : 第一个趋势中枢的进入要素（默认，覆盖完整趋势）
         prev_zs_in  : 最后一个趋势中枢的进入要素（只与 b 段比）
         all         : 该线段内全部同向要素
+        level       : 该要素之前的全量同向要素（跨线段，不受 `ele_list` 边界限制）。
+                      **未提供 `full_ele_list` 时退回 `all` 的取值**——沉默降级会
+                      让调用方以为口径已收紧而实际没变，因此这里显式要求调用方
+                      传全量列表（`BSPointList.treat_bsp1` 传 `bi_list.bi_list`）。
 
-    返回 (ok, info)，info 含 `ref_start_idx` 与 `worse_cnt`。
+    返回 (ok, info)，info 含 `ref_start_idx`、`worse_cnt` 与 `mode_effective`
+    （实际生效的口径，`level` 降级时会体现出来）。
     """
     pair = get_trend_zs_pair(zs_lst, is_buy, "strict") or get_trend_zs_pair(zs_lst, is_buy, "overlap")
-    if mode == "all" or pair is None:
+    mode_effective = mode
+    if mode == "level":
+        if full_ele_list is None:
+            # 无全量列表：退回 all（线段内），并在 info 里标明实际口径
+            ele_pool = ele_list
+            mode_effective = "all"
+        else:
+            ele_pool = full_ele_list
         start_idx = 0
-    elif mode == "prev_zs_in":
-        z2 = pair[1]
-        bi_in = z2.bi_in
-        start_idx = bi_in.idx if bi_in is not None else 0
-    else:  # trend_start
-        z1 = pair[0]
-        bi_in = z1.bi_in
-        start_idx = bi_in.idx if bi_in is not None else 0
+    elif mode == "all" or pair is None:
+        ele_pool = ele_list
+        start_idx = 0
+    else:
+        ele_pool = ele_list
+        if mode == "prev_zs_in":
+            z2 = pair[1]
+            bi_in = z2.bi_in
+            start_idx = bi_in.idx if bi_in is not None else 0
+        else:  # trend_start
+            z1 = pair[0]
+            bi_in = z1.bi_in
+            start_idx = bi_in.idx if bi_in is not None else 0
 
-    same_dir = [e for e in ele_list
+    same_dir = [e for e in ele_pool
                 if e.idx >= start_idx and e.idx < ele.idx and e.is_down() == is_buy]
     if is_buy:
-        worse = [e.idx for e in same_dir if e._low() < ele._low()]
+        # 严格优：<= 计入 worse，相等极值不通过（见 docstring 的严格优契约）
+        worse = [e.idx for e in same_dir if e._low() <= ele._low()]
     else:
-        worse = [e.idx for e in same_dir if e._high() > ele._high()]
-    return len(worse) == 0, {'ref_start_idx': start_idx, 'worse_cnt': len(worse)}
+        worse = [e.idx for e in same_dir if e._high() >= ele._high()]
+    return len(worse) == 0, {'ref_start_idx': start_idx, 'worse_cnt': len(worse),
+                             'new_extreme_mode_effective': mode_effective}
 
 
 def check_dif_divergence(ele, zs, is_buy: bool):
@@ -145,12 +170,15 @@ def check_zero_axis(ele, zs, is_buy: bool):
     return hit, {'zero_axis_hit': hit}
 
 
-def check_bsp1_standard(ele, ele_list, zs_lst, cfg, is_buy: bool):
+def check_bsp1_standard(ele, ele_list, zs_lst, cfg, is_buy: bool, full_ele_list=None):
     """
     第一类买卖点的四项标准判据
 
     按「趋势 → 新低 → DIF 背驰 → 零轴」顺序短路，返回
     `(ok, reason, info)`。`reason` 为首个不通过的条件名，全部通过时为 None。
+
+    `full_ele_list`：该级别全量要素列表，仅 `bsp1_new_extreme_mode="level"` 时使用
+    （跨线段取值）。其余口径忽略该参数，因此不传等于「不支持 level」，不会静默改变行为。
 
     注意：本函数只覆盖四项新增判据。`bs1_peak` 与面积背驰仍由
     `treat_bsp1` 走 `CZS.is_divergence` 的既有链路，不在此重复。
@@ -165,7 +193,9 @@ def check_bsp1_standard(ele, ele_list, zs_lst, cfg, is_buy: bool):
         if not ok:
             return False, 'trend', info
     if cfg.bsp1_new_extreme:
-        ok, i = check_new_extreme(ele, ele_list, zs_lst, is_buy, cfg.bsp1_new_extreme_mode)
+        ok, i = check_new_extreme(ele, ele_list, zs_lst, is_buy,
+                                  cfg.bsp1_new_extreme_mode,
+                                  full_ele_list=full_ele_list)
         info.update(i)
         if not ok:
             return False, 'new_extreme', info

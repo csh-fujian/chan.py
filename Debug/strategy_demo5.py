@@ -114,10 +114,11 @@ if __name__ == "__main__":
         "skip_step": 0,
         # 本演示依赖改造前的旧买卖点口径（背驰不设阈值、不要求中枢数量），
         # 用档位预设显式声明，而不是散写裸参数——这样口径来源可追溯。
+        # legacy 预设已锁定 macd_algo="peak" 与 bs1_peak_strict=False，
+        # 不再单独重写，避免口径出现两个来源。
         "bsp_preset": "legacy",
         "bsp2_follow_1": False,
         "bsp3_follow_1": False,
-        "macd_algo": "peak",
         "bs_type": '1,2,3a,1p,2s,3b',
         "print_warning": True,
         "zs_algo": "normal",

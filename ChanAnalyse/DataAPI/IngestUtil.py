@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from ChanAnalyse.Common.CEnum import AUTYPE, KL_TYPE
+from ChanAnalyse.Common.func_util import is_index_code
 from .KLineStore import ctime_to_str
 
 log = logging.getLogger("ingest")
@@ -80,7 +81,8 @@ def validate(df: pd.DataFrame):
 
     返回 (valid_df, rejected_count, warnings)。
     - 拒绝：OHLC 关系非法（high < max(open,close)、low > min(open,close)、
-      high < low、价格非负不满足）；时间乱序（time_key 相对运行最大值回退）。
+      high < low、价格非正——全空字段会被 str2float 兜底成 0.0）；时间乱序
+      （time_key 相对运行最大值回退）。
     - 告警但保留：单根涨跌幅超阈值（如除权除息导致的真实跳空）。
     """
     warnings = []
@@ -89,7 +91,9 @@ def validate(df: pd.DataFrame):
         (df["high"] < df[["open", "close"]].max(axis=1))
         | (df["low"] > df[["open", "close"]].min(axis=1))
         | (df["high"] < df["low"])
-        | ((df[["open", "high", "low", "close"]] < 0).any(axis=1))
+        # 价格必须为正：BaoStock 对停牌/早期缺失的交易日会返回全空字段，
+        # str2float('') 兜底成 0.0，若不拦会当成一根 0 价 K 线入库
+        | ((df[["open", "high", "low", "close"]] <= 0).any(axis=1))
     )
     rejected = int(bad.sum())
     valid = df[~bad].reset_index(drop=True)
@@ -266,6 +270,10 @@ def iter_ingest_jobs(cfg: dict):
     """按配置文件展开为 (code, KL_TYPE, AUTYPE) 三元组，供批量灌数/状态遍历。
 
     可选 cfg["code_prefix"]（如 "sz."）：只保留该前缀的股票，用于按市场分跑。
+
+    指数只保留日线及以上：BaoStock 对指数不提供分钟级别数据（BaoStockAPI 会抛
+    「指数是没有分钟级别数据的」），请求必失败。这里前置剔除，避免每轮批量灌数
+    都在这类必然失败的任务上浪费请求与退避时间。
     """
     defaults = cfg.get("defaults", {})
     default_autype = defaults.get("autype", "QFQ")
@@ -274,6 +282,11 @@ def iter_ingest_jobs(cfg: dict):
         code = s["code"]
         if prefix and not code.startswith(prefix):
             continue
-        for kt in s.get("kl_types", ["K_DAY"]):
+        index_like = is_index_code(code)
+        for kt_name in s.get("kl_types", ["K_DAY"]):
+            kt = parse_kl_type(kt_name)
+            if index_like and kt.value < KL_TYPE.K_DAY.value:
+                log.debug("[%s] 指数无 %s 级别数据，跳过该任务", code, kt.name)
+                continue
             for au in s.get("autypes", [default_autype]):
-                yield code, parse_kl_type(kt), parse_autype(au)
+                yield code, kt, parse_autype(au)

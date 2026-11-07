@@ -114,6 +114,27 @@ def _normalize_time(value, is_end: bool = False) -> str:
 LOCK_RETRY_ATTEMPTS = 30
 LOCK_RETRY_INTERVAL = 0.2
 
+# 锁冲突的错误特征串（跨平台）。
+#
+# DuckDB 在 POSIX 上抛 `Could not set lock on file`，而 Windows 上是
+# `IO Error: Cannot open file "...": 另一个程序正在使用此文件，进程无法访问。`
+# —— 只匹配前者会让 Windows 下的并发（灌数 + 批量同步 + 看盘同时开）直接
+# 抛错而不是等待。批量同步要连续打开 73 次连接，撞上持锁窗口的概率并不低。
+_LOCK_ERROR_PATTERNS = (
+    "Could not set lock",
+    "Cannot open file",
+    "另一个程序正在使用此文件",
+    "being used by another process",
+    "Conflicting lock",
+    "Resource temporarily unavailable",
+)
+
+
+def _is_lock_conflict(err: Exception) -> bool:
+    """判断异常是否为 DuckDB 文件锁冲突（按错误文案特征，跨平台）。"""
+    msg = str(err)
+    return any(pat in msg for pat in _LOCK_ERROR_PATTERNS)
+
 
 class KLineStore:
     """K 线存储：打开/创建 DuckDB 单文件，建表，提供 upsert 与 query。
@@ -160,7 +181,7 @@ class KLineStore:
             try:
                 return duckdb.connect(db_path, read_only=read_only)
             except Exception as e:
-                if "Could not set lock" not in str(e):
+                if not _is_lock_conflict(e):
                     raise
                 last_err = e
                 if attempt + 1 < LOCK_RETRY_ATTEMPTS:

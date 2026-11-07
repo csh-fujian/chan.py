@@ -17,6 +17,10 @@ REM   - DuckDB single file allows only one writer; script checks for a running
 REM     ingest process before starting.
 REM   - Use --code-prefix to filter by market (see Data\download_kl.py);
 REM     this script defaults to all markets.
+REM   - PG_DSN defaults to local chan db (same as start_backend.bat): every
+REM     ingested code is also upserted into PG `stock` so the K-line page
+REM     search dropdown can find it. Override with the PG_DSN env var;
+REM     set PG_DSN=none to skip the PG sync entirely (DuckDB only).
 REM ============================================================================
 
 REM Always run from repo root
@@ -26,6 +30,19 @@ set "PY=.venv\Scripts\python.exe"
 set "LOG_DIR=Log"
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
 if "%DRYRUN%"=="" set "DRYRUN=0"
+
+REM ---------------------------------------------------------------------------
+REM PostgreSQL connection (same default as start_backend.bat, override with PG_DSN)
+REM After each ingest the code is upserted into PG `stock` (the K-line page search
+REM dropdown reads it). PG unreachable only skips that step, ingest still succeeds.
+REM Disable the PG sync:  set PG_DSN=none ^& sync_kl.bat
+REM (Keep this block ASCII-only: cmd.exe mangles the following lines when a
+REM  UTF-8 batch file mixes chcp 65001 with multi-byte REM lines.)
+REM ---------------------------------------------------------------------------
+if "%PG_DSN%"=="" set "PG_DSN=host=127.0.0.1 port=5432 dbname=chan user=postgres password=postgres"
+REM pg_dsn_hint: only the state, never the connection string (it carries a password).
+REM Keep the none/off/0 test in sync with Data/download_kl.py sync_pg_stock_master().
+if /I "%PG_DSN%"=="none" ( set "pg_dsn_hint=disabled (PG_DSN=none)") else if /I "%PG_DSN%"=="off" ( set "pg_dsn_hint=disabled (PG_DSN=off)") else if "%PG_DSN%"=="0" ( set "pg_dsn_hint=disabled (PG_DSN=0)") else ( set "pg_dsn_hint=configured")
 
 REM ---------------------------------------------------------------------------
 REM Single-writer guard: DuckDB read/write is mutually exclusive,
@@ -148,12 +165,19 @@ REM ---------------------------------------------------------------------------
 set "logfile=%~1"
 set "cmdline=%~2"
 echo [执行] !cmdline!
+echo [PG_DSN] !pg_dsn_hint!
 echo [日志] !logfile!
 if "%DRYRUN%"=="1" ( echo [dry-run] 跳过实际执行& exit /b 0 )
-powershell -NoProfile -Command "& { & !cmdline! 2>&1 | ForEach-Object ToString | Tee-Object -FilePath '!logfile!' -Append; exit $LASTEXITCODE }"
-set "rc=!errorlevel!"
-if !rc! NEQ 0 ( echo [ERR] 退出码 !rc!（可能有失败任务或已熔断自停）— 重跑本脚本同一选项即可断点续传 ) else ( echo [OK] 完成，日志: !logfile! )
-exit /b !rc!
+REM 编码：chcp 65001 只改 cmd 自己的代码页，PowerShell 5.1 的 [Console]::OutputEncoding
+REM 默认仍是 GBK —— 它会按 GBK 解码 Python 的 UTF-8 输出，中文全乱码并原样写进日志。
+REM 这里显式把 PS 的 stdout 解码设为 UTF-8，并让 Python 子进程也按 UTF-8 输出。
+REM （Tee-Object 的 -Encoding 是 PS 6+ 参数，5.1 不支持，故不改 Tee 的输出侧。）
+powershell -NoProfile -Command "[Console]::OutputEncoding=[Text.Encoding]::UTF8; $env:PYTHONIOENCODING='utf-8'; & { & !cmdline! 2>&1 | ForEach-Object ToString | Tee-Object -FilePath '!logfile!' -Append; exit $LASTEXITCODE }"
+REM 变量名必须避开 task_single_* 的累加器 rc：cmd 的 call 共享同一个环境块，
+REM 两处都用 rc 会把累加器冲成当次子命令的退出码（4 个级别全挂只报 2）。
+set "cmd_rc=!errorlevel!"
+if !cmd_rc! NEQ 0 ( echo [ERR] 退出码 !cmd_rc!（可能有失败任务或已熔断自停）— 重跑本脚本同一选项即可断点续传 ) else ( echo [OK] 完成，日志: !logfile! )
+exit /b !cmd_rc!
 
 REM ---------------------------------------------------------------------------
 REM Task primitives: options 1-6 are composed from these
@@ -163,21 +187,21 @@ REM %1=code  %2=sleep  %3=logfile -> exit code = number of failed levels
 set "code=%~1"
 set "sleep_s=%~2"
 set "logfile=%~3"
-set "rc=0"
+set "fail_n=0"
 for %%k in (K_5M K_15M K_30M K_60M) do (
     call :run_cmd "!logfile!" "'%PY%' Data\download_kl.py --code !code! --kl-type %%k --autype QFQ --sleep !sleep_s!"
-    if !errorlevel! NEQ 0 set /a "rc+=1"
+    if !errorlevel! NEQ 0 set /a "fail_n+=1"
 )
-exit /b !rc!
+exit /b !fail_n!
 
 :task_single_daily
 REM %1=code  %2=sleep  %3=logfile -> exit code = number of failed levels
 set "code=%~1"
 set "sleep_s=%~2"
 set "logfile=%~3"
-set "rc=0"
+set "fail_n=0"
 for %%k in (K_DAY K_WEEK K_MON) do (
     call :run_cmd "!logfile!" "'%PY%' Data\download_kl.py --code !code! --kl-type %%k --autype QFQ --sleep !sleep_s!"
-    if !errorlevel! NEQ 0 set /a "rc+=1"
+    if !errorlevel! NEQ 0 set /a "fail_n+=1"
 )
-exit /b !rc!
+exit /b !fail_n!

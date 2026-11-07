@@ -23,6 +23,7 @@ K 线灌数脚本：从 BaoStock 拉取原始 K 线 → 校验 → 幂等写入�
 
 import argparse
 import logging
+import os
 import sys
 import time
 from datetime import date, datetime
@@ -30,6 +31,7 @@ from datetime import date, datetime
 import pandas as pd
 
 from ChanAnalyse.Common.CEnum import KL_TYPE
+from ChanAnalyse.Common.func_util import is_index_code
 from ChanAnalyse.DataAPI.IngestUtil import (
     DEFAULT_BAR_LAG_MINUTES,
     DEFAULT_STALE_HOURS,
@@ -80,13 +82,53 @@ class BatchAborted(RuntimeError):
 
 
 # ---------------------------------------------------------------------------
+# PG stock 主数据同步（灌数后的交互层索引）
+# ---------------------------------------------------------------------------
+# K 线页搜索下拉走 GET /api/stocks → stock_store.list_stocks()（读 PG stock 表），
+# 而灌数只写 DuckDB。新灌的标的若不进 PG，DuckDB 能算出 K 线但搜索搜不到。
+# 故每个任务完成后补一次「只建不覆盖」的主数据同步。
+def sync_pg_stock_master(code, kl_type_name, autype_name) -> None:
+    """把单个标的补建进 PG stock 表并并集更新级别；PG 不可用时静默跳过。
+
+    失败只记 warning：PG 是交互层索引，DuckDB 才是数据本体，
+    不应因 PG 不可达而让整批灌数失败（与 /api/klines「PG 故障不影响计算」取向一致）。
+    PG_DSN 设为 none/off/0 时显式关闭同步（纯 DuckDB 灌数场景）。
+    """
+    dsn = os.environ.get("PG_DSN", "").strip()
+    if not dsn or dsn.lower() in ("none", "off", "0"):
+        log.debug("[%s] 跳过 PG 同步（未配置或已禁用 PG_DSN）", code)
+        return
+    try:
+        from WebAPI import stock_store
+    except Exception as e:  # 后端依赖缺失（如未装 psycopg2）
+        log.debug("[%s] 跳过 PG 同步（导入失败）：%s", code, e)
+        return
+    try:
+        board = stock_store.INDEX_BOARD if stock_store.is_index_code(code) else ""
+        outcome = stock_store.ensure_stock_row(code=code, board=board)
+        if outcome == "no-pg":
+            log.debug("[%s] 跳过 PG 同步（PG 不可达）", code)
+            return
+        stock_store.sync_kl_types(code, [kl_type_name], [autype_name])
+        log.debug("[%s] PG stock 主数据已同步（%s）", code, outcome)
+    except Exception as e:
+        log.warning("[%s] PG stock 主数据同步失败（不影响灌数）：%s", code, e)
+
+
+# ---------------------------------------------------------------------------
 # 拉取：复用 CBaoStock
 # ---------------------------------------------------------------------------
 def fetch_baostock(code, k_type, autype, begin, end):
-    """拉取 [begin, end] 区间的 K 线，返回 CKLine_Unit 列表。"""
+    """拉取 [begin, end] 区间的 K 线，返回 CKLine_Unit 列表。
+
+    repair_bad_ohlc=True：BaoStock 指数历史数据存在 OHLC 自相矛盾的脏行
+    （如上证 1991-05、深证成指 2016 年多行），严格模式会在 CKLine_Unit.check()
+    直接抛异常导致整段拉取失败。灌数时按 min/max 修正后入库。
+    """
     from ChanAnalyse.DataAPI.BaoStockAPI import CBaoStock
 
-    api = CBaoStock(code=code, k_type=k_type, begin_date=begin, end_date=end, autype=autype)
+    api = CBaoStock(code=code, k_type=k_type, begin_date=begin, end_date=end, autype=autype,
+                    repair_bad_ohlc=True)
     return list(api.get_kl_data())
 
 
@@ -145,14 +187,25 @@ def fetch_with_retry(code, k_type, autype, begin, end, *, retries=DEFAULT_RETRY_
 # 缺口检测（仅日线及以上有意义）
 # ---------------------------------------------------------------------------
 def detect_gaps(store: KLineStore, code, kl_type, autype, cal):
-    """返回 [begin, end] 范围内缺失的交易日列表（按交易日历判定，节假日不误判）。"""
+    """返回 [begin, end] 范围内缺失的交易日列表（按交易日历判定，节假日不误判）。
+
+    交易日历（exchange_calendars 的 XSHG）起点约 2006-11-07，早于该时点的
+    历史（如上证指数 1990 年起的日线）无法判定交易日，故把区间左端裁到
+    日历首个 session，避免 sessions_in_range 抛 DateOutOfBounds。
+    """
     if kl_type.value < KL_TYPE.K_DAY.value:
         return []  # 分钟级不做「交易日」缺口检测
     df = store.query(code, kl_type.name, autype.name)
     if df.empty:
         return []
     dates = pd.DatetimeIndex(pd.to_datetime(df["time_key"].str[:10]).unique())
-    sessions = cal.sessions_in_range(dates.min(), dates.max())
+    start, end = dates.min(), dates.max()
+    first_session = cal.first_session if hasattr(cal, "first_session") else None
+    if first_session is not None and start < first_session:
+        start = first_session   # 日历不可覆盖的更早期历史不参与判定
+    if start > end:
+        return []
+    sessions = cal.sessions_in_range(start, end)
     missing = sessions.difference(dates)
     return [d.strftime("%Y-%m-%d") for d in missing]
 
@@ -367,6 +420,9 @@ def ingest_from_config(cfg: dict) -> dict:
                 else:
                     results[key] = {"status": "ok", "rows": n}
                     log.info("[%s] 完成，写入 %d 行", code, n)
+                # 新增/更新的标的同步进 PG stock 表，K 线页搜索下拉才能搜到。
+                # 失败不影响灌数结果（PG 只是交互层的索引，DuckDB 才是数据本体）。
+                sync_pg_stock_master(code, kt.name, au.name)
                 fail_streak = 0
                 backoff_level = 0
             except Exception as e:
@@ -538,6 +594,13 @@ def main(argv=None):
     autype = parse_autype(args.autype)
     cal = get_calendar()
 
+    # 指数没有分钟级别数据（BaoStock 必抛「指数是没有分钟级别数据的」）。
+    # 这里前置判定并正常退出 0：批量脚本（Script/sync_kl.bat）按退出码统计失败级别数，
+    # 这种「请求必然失败」的任务不该被算作失败、也不该让断点续跑每次都重试一遍。
+    if k_type.value < KL_TYPE.K_DAY.value and is_index_code(args.code):
+        print(f"skip: {args.code} 是指数，无 {k_type.name} 级别数据（不请求接口）")
+        return 0
+
     stats = {}
     with KLineStore(args.db_path) as store:
         n = ingest(
@@ -556,6 +619,8 @@ def main(argv=None):
               f"（水位 {stats['watermark']} ≥ 应有 {stats['expected']}），未请求接口")
     else:
         print(f"done: wrote {n} rows for {args.code} {k_type.name} {autype.name}")
+    # 无论本轮是否真写入，都确保该标的在 PG stock 表里存在（K 线页搜索依赖）
+    sync_pg_stock_master(args.code, k_type.name, autype.name)
     return 0
 
 

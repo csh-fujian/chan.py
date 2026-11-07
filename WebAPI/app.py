@@ -16,6 +16,7 @@ from . import meta_sync
 from .routers import (
     alerts,
     bsp,
+    chan_config,
     monitor,
     performance,
     qa,
@@ -247,3 +248,4 @@ app.include_router(screener.router)
 app.include_router(alerts.router)
 app.include_router(system.router)
 app.include_router(qa.router)
+app.include_router(chan_config.router)

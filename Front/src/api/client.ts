@@ -20,11 +20,18 @@ client.interceptors.request.use((config) => {
 /**
  * 提取后端错误文案：优先 FastAPI HTTPException 的 `detail`，其次兼容 `message`；
  * 无文案时回退兜底文案（error 契约 UI：必须展示后端 detail/message）。
+ *
+ * `detail` 可能是**结构化对象**（如缠论参数校验 422 返回
+ * `{message, param, kernel_message}`），此时取其中的 `message`。
  */
 function extractErrorText(data: unknown, fallback: string): string {
   if (data && typeof data === 'object') {
     const detail = (data as { detail?: unknown }).detail
     if (typeof detail === 'string' && detail.trim()) return detail
+    if (detail && typeof detail === 'object') {
+      const inner = (detail as { message?: unknown }).message
+      if (typeof inner === 'string' && inner.trim()) return inner
+    }
     const message = (data as { message?: unknown }).message
     if (typeof message === 'string' && message.trim()) return message
   }

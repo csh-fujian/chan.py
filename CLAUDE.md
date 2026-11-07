@@ -164,6 +164,30 @@ CChan (ChanAnalyse/Chan.py)  ← 门面，接收 stock code + CChanConfig
 
 > **惰性 DDL 才是真正的 schema 契约**：各 store 模块（`bsp_store` / `monitor_store` / `strategy_store` / `stock_store` / `watchlist_store` / `qa_store` / `llm_store`）在**模块导入时**执行 `_ensure_tables()`（`CREATE TABLE IF NOT EXISTS` + `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`），运行时自动补表补列。因此新增表/列时**必须先改对应模块的 `_ensure_tables()`**，两个 `update-*.sql` 只是变更记录。另注意 `WebAPI/init.sql` 已与实物漂移（如它为 `bsp_index`/`chan_structure`/`chan_snapshot` 声明了 `id`/`created_at`，而实际表由惰性 DDL 建成、没有这些列），**不要以 `init.sql` 判断实际表结构**。
 
+## 缠论参数配置（`chan-config-panel`）
+
+缠论参数已全部开放为业务配置，由 K 线页顶栏「缠论参数」按钮打开的抽屉维护（58 项：判据 33 / 标注 8 / 结构 15）。
+
+| 模块 | 职责 |
+|------|------|
+| `WebAPI/chan_config_store.py` | `chan_config` + `chan_config_sync_job` 惰性 DDL、读写（`load()` 带版本缓存）、派生键（`apply_derived()`）、档位回填（`load_preset()`/`_preset_injected()`）、构造期校验（`validate_config()`/`validate_preset()`）、点号键桥接（`to_kernel()`/`to_flat()`） |
+| `WebAPI/chan_config_schema.py` | 58 项参数元数据（分组 / 控件 / 白话解释 / 默认值反射） |
+| `WebAPI/routers/chan_config.py` | `GET/PUT /api/chan-config`、`GET /schema`、`POST /recompute`、`POST /sync`、`GET /sync/status` |
+| `Front/src/components/kline/ChanConfigDrawer.vue` | 抽屉主体（草稿态 + 保存并重算 + 批量同步轮询） |
+| `Front/src/stores/chanConfig.ts` | `saved`/`schema`/`draft` 三态 + `dirtyCount` |
+
+- **单一出口**：`chan_service._make_chan_config()` 与 `incremental_engine._make_chan_config()` 都走 `chan_config_store.build_conf()`，各自只补 `trigger_step` / `kl_data_check`。此处**不得**再显式覆盖任何 bsp 参数。
+- **三层优先级**：内核硬编码默认 → `bsp_preset` 展开 → 用户 overrides。
+- **档位存在 `preset` 列，不在 `overrides` 里，必须由计算出口回填**：前端 `computeOverrides()` 拿 `bsp_preset` 与档位基线比对，相等就不写（它本来就不是「用户改过的项」），所以库里 `preset` 列是档位的唯一真源。`load()` 故意**不**返回 `bsp_preset`（保持 overrides 纯净），由 `build_conf()` / `effective_config()` 里的 `_preset_injected()` 用 `load_preset()` 补上。漏了这一步 `CChanConfig` 只会看到硬编码默认 `standard`，**切到 legacy 后一处判据都不跟着变**（实测：`min_zs_cnt` 仍 2、`divergence_rate` 仍 0.9）。同理 `routers/chan_config.py` 的 `_conf_from_meta()` 反射 `effective` / `params[].default` 时也要补档位，否则界面显示与图上计算不是一回事。
+- **`GET /api/chan-config` 整份响应必须走 `store.encode_config()`**：legacy 档 `divergence_rate=inf`，裸返回会让 starlette 在 `json.dumps` 处抛 `Out of range float values are not JSON compliant: inf`（500）。`/schema` 早就这么做了，`/` 以前漏着，档位修好后立刻暴露。
+- **`PUT` 的 `preset` 字段必须单独校验**：它绕过 `validate_config()`（那只校验 `overrides`），但现在真正进入计算链路 —— 非法档位名一旦落库，此后**每次** `CChanConfig(...)` 都抛 `unknown bsp_preset`，**全站 K 线请求 500**。`put_config()` 写入前调 `validate_preset()`，合法清单直接取内核 `_BSP_PRESETS`（不复制）。
+- **三条基线别混用**（`GET /schema` 同时返回）：`params[].default` 是按当前已存配置反射的（会漂移，只能用于展示）；`kernel_defaults` 是出厂默认；**算 overrides 与「恢复默认」必须用 `preset_baselines[当前档位]`**。用 `params[].default` 会让已保存的覆盖项在下一次保存时静默丢失；用 `kernel_defaults` 会把 legacy 档预设展开的十余项误判成用户覆盖、写死进 overrides，使档位切换失效。
+- **点号键桥接**：元数据/前端/DB 用 `macd.fast`，内核要 `{"macd": {"fast": ...}}`，只在 `to_kernel()`/`to_flat()` 转换。
+- **派生键**：5 个量能类 `macd_algo` 自动补 `macd_algo-seg=peak`；`rsi` 自动补 `cal_rsi=True`。缺失会直接崩（`Seg.py` 抛 `unsupport macd_algo` / `klu.rsi` 属性不存在）。派生只在**计算出口**（`load()` / `effective_config()` / `build_conf()`）生成：`load_with_meta().overrides` 返回的是**用户显式改过的原始键**，不含派生键 —— 那不是用户配的，混进去会让 `GET → PUT` 往返把它当作用户覆盖回传。
+- **`inf` 只能以字符串跨 JSON**：标准 JSON 不接受非有限浮点。前端勾「不限」发 `"inf"`，`validate_config()` 用 `_decode_value()` 还原成 `float("inf")` 再校验并返回，`save()` 落库时再 `_encode_value()` 转回 `"inf"`。`GET /schema` 整份响应也走 `encode_config()`——legacy 档的 `divergence_rate=inf` 会让裸 `json.dumps` 直接 500。**`None` 一律拒绝**（内核默认可空的 `max_bsp2s_lv` 除外，由 `_nullable_keys()` 反射判定）：`divergence_rate=None` 能通过构造，却在计算期 `None <= 100` 抛 `TypeError`。
+- **`ConfigWithCheck.get()` 会 del 传进去的 dict** —— `validate_config()` 必须传副本，否则报错时字典已空、定不出哪个参数非法。
+- **指纹已结构化**（`config_fingerprint.collect_config()` 分 `bsp`/`seg_bsp`/`bi`/`seg`/`zs`/`macd`/`indicator` 七段），结构参数改动也会强制全量重算。这是 BREAKING 变更，存量快照首次重算一律走全量。
+
 ## 前端（`Front/`）
 
 Vue3 + Vite + TypeScript + Element Plus + ECharts + KLineChart + Pinia，暗色专业终端风格，A 股红涨绿跌。结构见 `Front/README.md`。

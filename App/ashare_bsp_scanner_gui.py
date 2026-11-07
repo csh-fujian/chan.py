@@ -519,10 +519,12 @@ class AkshareGUI(QMainWindow):
             "trigger_step": False,  # 不启用逐步触发模式
             "skip_step": 0,
             # 买卖点判定走内核默认档位（标准缠论口径），不在此处覆盖
-            # divergence_rate / min_zs_cnt / bs1_peak；如需旧口径用 "bsp_preset": "legacy"。
+            # divergence_rate / min_zs_cnt / bs1_peak / macd_algo / bs1_peak_strict；
+            # 如需旧口径用 "bsp_preset": "legacy"。
+            # （macd_algo 曾在此处硬写 "peak"，与「不覆盖」的约定矛盾，且会让本入口
+            #  成为唯一偏离内核默认 full_area 的入口，已移除）
             "bsp2_follow_1": False,  # 二类买卖点不跟随一类（小转大场景）
             "bsp3_follow_1": False,  # 三类买卖点不跟随一类（小转大场景）
-            "macd_algo": "peak",  # MACD 算法
             "bs_type": "1,1p,2,2s,3a,3b",  # 启用的买卖点类型
             "print_warning": False,
             "zs_algo": "normal",  # 中枢算法

@@ -19,6 +19,11 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+# 指数判定的单一真源在 ChanAnalyse/Common/func_util：灌数脚本（Data/download_kl.py）
+# 需要在无 PG 依赖下剔除指数的分钟级任务，而 WebAPI → ChanAnalyse 是既有依赖方向
+# （反向会成环）。这里只做转出，保持 `from WebAPI.stock_store import is_index_code` 可用。
+from ChanAnalyse.Common.func_util import is_index_code  # noqa: F401  (对外 API，勿删)
+
 from .config import PG_DSN
 
 log = logging.getLogger("stock_store")
@@ -796,11 +801,29 @@ def code_exists(code: str) -> bool:
         conn.close()
 
 
-def list_pool_codes(enabled: Optional[bool] = None, exclude_st: bool = False) -> list[str]:
+# ---------------------------------------------------------------------------
+# 指数识别（大盘指数入 stock 表后需要与 A 股个股区分）
+# ---------------------------------------------------------------------------
+# 判定实现在 ChanAnalyse/Common/func_util.is_index_code（单一真源），
+# 见文件头导入处说明。
+
+# 指数在 stock.board 上的取值（list_pool_codes 据此排除）
+INDEX_BOARD = "指数"
+
+
+def list_pool_codes(
+    enabled: Optional[bool] = None,
+    exclude_st: bool = False,
+    exclude_index: bool = True,
+) -> list[str]:
     """列出股票池代码；enabled=None 表示全部行（identity 域用）。
 
     exclude_st=True 时排除 ST 股票（逐股元数据域用）；identity 域不排除，
     以便识别新股、更名与 ST 进入/退出。
+
+    exclude_index=True（默认）排除指数：指数没有巨潮档案/财务三表/股东户数，
+    留在池里只会让逐股元数据域稳定失败，也会被选股器当成标的扫描。
+    指数**仍**存在于 stock 表并出现在搜索下拉（list_stocks 不过滤指数）。
     """
     _ensure_tables()
     conn = _get_pg_conn()
@@ -813,6 +836,9 @@ def list_pool_codes(enabled: Optional[bool] = None, exclude_st: bool = False) ->
         params.append(enabled)
     if exclude_st:
         conditions.append(ST_EXCLUDE_SQL)
+    if exclude_index:
+        conditions.append("s.board <> %s")
+        params.append(INDEX_BOARD)
     where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
     try:
         with conn.cursor() as cur:
@@ -890,6 +916,101 @@ def apply_identity(
         conn.close()
 
 
+def ensure_stock_row(
+    code: str,
+    name: str = "",
+    exchange: str = "",
+    board: str = "",
+    ipo_date=None,
+    kl_types: Optional[list[str]] = None,
+    autypes: Optional[list[str]] = None,
+    overwrite_name: bool = False,
+) -> str:
+    """**只补建、不覆盖**：行不存在则 INSERT，已存在则保持原样（除非 overwrite_name）。
+
+    用途：灌数链路（`Data/download_kl.py`）把新标的写入 DuckDB 后，需要让它在
+    PG `stock` 表里存在，K 线页搜索下拉（`GET /api/stocks`）才能搜到。
+    与 `apply_identity` 的区别：
+    - 不参与「三所名单缺失 → enabled=false」判定（指数本就不在任何一所的 A 股名单里）；
+    - 已存在的行默认**保持原样**，不覆盖身份域已写入的名称/板块/行业（identity 域才是
+      个股身份的真源，灌数链路不应反向污染它）。
+
+    overwrite_name=True 仅用于**指数**：指数不参与 identity 域同步（被排除出池），
+    BaoStock 是它名称的唯一来源，因此需要允许修正（如 `深证成份指数(价格)` → `深证成份指数`）。
+
+    返回 'created' | 'exists' | 'no-pg'。
+    """
+    _ensure_tables()
+    conn = _get_pg_conn()
+    if conn is None:
+        return "no-pg"
+    try:
+        with conn.cursor() as cur:
+            conflict = (
+                "DO UPDATE SET name = EXCLUDED.name, name_py = EXCLUDED.name_py, "
+                "updated_at = NOW()"
+                if overwrite_name
+                else "DO NOTHING"
+            )
+            cur.execute(
+                f"""
+                INSERT INTO stock (code, name, name_py, exchange, board, ipo_date, kl_types, autypes)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (code) {conflict}
+                """,
+                (
+                    code,
+                    name or code,
+                    gen_name_py(name or code),
+                    exchange,
+                    board,
+                    ipo_date,
+                    kl_types or [],
+                    autypes or [],
+                ),
+            )
+            created = cur.rowcount > 0
+        conn.commit()
+        # DO UPDATE 时 rowcount 也 > 0，无法据此区分「新建」与「改名」，统一返回 created/exists
+        return "created" if created else "exists"
+    finally:
+        conn.close()
+
+
+def sync_kl_types(code: str, kl_types: list[str], autypes: list[str]) -> bool:
+    """把某标的已灌入 DuckDB 的级别/复权类型合并进 stock 表（幂等并集）。
+
+    灌数是增量的：先灌 K_DAY 再灌 K_5M 时，stock.kl_types 必须是并集而非覆盖，
+    否则「已有哪些级别」的信息会随最后一次灌数丢失。
+    行不存在则不动（应先 ensure_stock_row）。返回是否发生变更。
+    """
+    _ensure_tables()
+    conn = _get_pg_conn()
+    if conn is None:
+        return False
+    try:
+        with conn.cursor() as cur:
+            # 用 PostgreSQL 数组并集去重：unnest + DISTINCT 保持幂等
+            cur.execute(
+                """
+                UPDATE stock SET
+                    kl_types = (
+                        SELECT ARRAY(SELECT DISTINCT x FROM unnest(stock.kl_types || %s::varchar[]) AS x ORDER BY x)
+                    ),
+                    autypes  = (
+                        SELECT ARRAY(SELECT DISTINCT x FROM unnest(stock.autypes || %s::varchar[]) AS x ORDER BY x)
+                    )
+                WHERE code = %s
+                """,
+                (list(kl_types), list(autypes), code),
+            )
+            changed = cur.rowcount > 0
+        conn.commit()
+        return changed
+    finally:
+        conn.close()
+
+
 def apply_profile(
     code: str,
     full_name: str = "",
@@ -900,8 +1021,7 @@ def apply_profile(
     found_date=None,
     website: str = "",
     email: str = "",
-    phone: str = "",
-    fax: str = "",
+    phone: str = "",    fax: str = "",
     reg_addr: str = "",
     office_addr: str = "",
     postal_code: str = "",

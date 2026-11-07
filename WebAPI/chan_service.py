@@ -141,12 +141,16 @@ def _make_chan_config() -> CChanConfig:
     单独抽出以便上层计算买卖点配置指纹——指纹必须来自**同一个**配置对象，
     否则缓存校验与实际计算可能用到不同口径。
 
-    此处不得显式覆盖任何 bsp 参数。一旦覆盖就会绕开内核的 `bsp_preset` 档位，
-    使本入口与其它入口的买卖点口径不一致。需要切换口径时只改 `bsp_preset`。
+    口径来源（design D1 三层优先级，由 `chan_config_store.build_conf()` 统一落地）：
+        内核默认  →  `bsp_preset` 档位展开  →  用户 overrides（配置抽屉保存）
+
+    本入口只负责叠加自己的运行模式键（`trigger_step=False` 批量、
+    `kl_data_check=False` 关闭数据校验）；买卖点参数一律来自用户配置，
+    不在此处硬编码，否则会绕过配置抽屉、使本入口与落库链路口径不一致。
     """
-    return CChanConfig(
-        conf={"trigger_step": False, "kl_data_check": False},
-    )
+    from .chan_config_store import build_conf
+
+    return CChanConfig(build_conf({"trigger_step": False, "kl_data_check": False}))
 
 
 def _compute_chan(symbol: str, kl_type: KL_TYPE, data_src: str) -> CChan:

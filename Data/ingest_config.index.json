@@ -1,0 +1,24 @@
+{
+  "_comment": "大盘指数灌数配置。指数只有日线及以上数据（BaoStock 指数无分钟线），故 kl_types 仅 K_DAY。autype 用 QFQ 与全库保持一致：指数无复权概念，BaoStock 对 adjustflag 不改变数值，下游 chan_service 默认即 AUTYPE.QFQ，无需特判。",
+  "db_path": "Data/kl_store.duckdb",
+  "begin": null,
+  "end": null,
+  "full": false,
+  "chunk_days": null,
+  "check_gaps": false,
+  "skip_fresh": true,
+  "request_interval_seconds": 0.5,
+  "defaults": {
+    "autype": "QFQ"
+  },
+  "stocks": [
+    {"code": "sh.000001", "kl_types": ["K_DAY"], "autypes": ["QFQ"]},
+    {"code": "sz.399001", "kl_types": ["K_DAY"], "autypes": ["QFQ"]},
+    {"code": "sz.399006", "kl_types": ["K_DAY"], "autypes": ["QFQ"]},
+    {"code": "sh.000300", "kl_types": ["K_DAY"], "autypes": ["QFQ"]},
+    {"code": "sh.000016", "kl_types": ["K_DAY"], "autypes": ["QFQ"]},
+    {"code": "sh.000905", "kl_types": ["K_DAY"], "autypes": ["QFQ"]},
+    {"code": "sh.000852", "kl_types": ["K_DAY"], "autypes": ["QFQ"]},
+    {"code": "sh.000010", "kl_types": ["K_DAY"], "autypes": ["QFQ"]}
+  ]
+}

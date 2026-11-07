@@ -130,12 +130,16 @@ def _make_chan_config() -> CChanConfig:
     单独抽出以便上层计算买卖点配置指纹——指纹必须来自**同一个**配置对象，
     否则指纹校验与实际计算可能用到不同口径。
 
-    此处不得显式覆盖任何 bsp 参数（divergence_rate / min_zs_cnt /
-    bsp1_* / bsp2s_* / bsp3* 等）。一旦覆盖，就会静默压过内核的
-    `bsp_preset` 档位，使本入口的输出与标准口径脱节。
-    需要切换口径时，只改 `bsp_preset`。
+    口径来源（design D1 三层优先级，由 `chan_config_store.build_conf()` 统一落地）：
+        内核默认  →  `bsp_preset` 档位展开  →  用户 overrides（配置抽屉保存）
+
+    本入口只负责叠加自己的运行模式键（`trigger_step=True` 步进模式，
+    全量与增量续算同一机制、`kl_data_check=False`）；买卖点与结构参数一律
+    来自用户配置。配置变更会导致指纹变化 → `recompute_stock` 自动转全量重算。
     """
-    return CChanConfig({"trigger_step": True, "kl_data_check": False})
+    from .chan_config_store import build_conf
+
+    return CChanConfig(build_conf({"trigger_step": True, "kl_data_check": False}))
 
 
 def _make_chan(code: str, kl_type, autype: str) -> CChan:
@@ -493,11 +497,16 @@ def catch_up(
     day: str | None = None,
     limit: int = 0,
     force: bool = False,
+    progress_cb: Optional[Any] = None,
 ) -> dict:
     """水位补算：对 src > cur 的键逐只补算（D2，幂等可重入）。
 
     force=True 跳过水位门，范围内全部键整套重写（重算路径不变：有快照仍续算/异常
     回退全量；写入恒为 DELETE→INSERT 当前全集，因此即使数据无变化也收敛回全集）。
+
+    progress_cb（chan-config-panel D8）：可选进度回调 `cb(total, done, failed)`，
+    每处理完一个键调用一次。缺省 None 时行为与改造前完全一致 —— 现有调用方
+    （调度、CLI、bsp router）无需改动。
     """
     if not PG_DSN:
         raise RuntimeError("PG_DSN 未配置，补算引擎需要 PostgreSQL")
@@ -505,6 +514,7 @@ def catch_up(
     keys = list_stale_keys(codes=codes, periods=periods, day=day, limit=limit, force=force)
 
     done, failed = [], []
+    total = len(keys)
     for code, period, autype_db in keys:
         autype = autype_db if autype_db in AUTYPE.__members__ else DEFAULT_AUTYPE
         try:
@@ -514,6 +524,12 @@ def catch_up(
         except Exception as e:
             log.exception("catch_up 失败: %s %s", code, period)
             failed.append({"code": code, "kl_type": period, "error": str(e)})
+        if progress_cb is not None:
+            try:
+                progress_cb(total, len(done), len(failed))
+            except Exception:
+                # 进度上报失败不得影响同步本身
+                log.exception("进度回调失败: %s %s", code, period)
 
     return {
         "scanned": len(keys),

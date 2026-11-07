@@ -695,3 +695,129 @@ export interface LlmTestResult {
   ok: boolean
   detail: string
 }
+
+// ---------------------------------------------------------------------------
+// 缠论参数配置（chan-config-panel）
+// ---------------------------------------------------------------------------
+/** 参数控件类型 */
+export type ChanParamControl = 'bool' | 'integer' | 'number' | 'select' | 'multi' | 'preset'
+
+/** 参数分组 id */
+export type ChanParamGroup = 'bsp_judgement' | 'ladder_annotation' | 'structure'
+
+/** 单个参数元数据（后端 `build_schema()` 的输出项） */
+export interface ChanParamSchema {
+  key: string
+  label: string
+  group: ChanParamGroup
+  /** 组内子分类（如「一买判据」「T2 阶梯」），用于二级标题 */
+  subtype: string
+  control: ChanParamControl
+  choices: Array<string | number> | null
+  choice_labels: Record<string, string> | null
+  min: number | null
+  max: number | null
+  step: number | null
+  /** 是否允许填 inf（仅 `divergence_rate`） */
+  allow_inf: boolean
+  /** 受限取值的固定说明（行下方常驻显示） */
+  caveat: string
+  /** 条件项：仅在 `visible_when` 满足时显示 */
+  conditional: boolean
+  visible_when: Record<string, unknown> | null
+  /** 这是什么（白话） */
+  plain: string
+  /** 调大调小会发生什么（白话） */
+  effect: string
+  /** 影响哪些买卖点或结构（白话） */
+  scope: string
+  /** 内核默认值（已跟随当前档位） */
+  default: unknown
+  /** 枚举取值的逐项附加说明（目前只有 `macd_algo`） */
+  choice_caveats?: Record<string, string>
+}
+
+/** 参数分组元信息 */
+export interface ChanParamGroupMeta {
+  id: ChanParamGroup
+  title: string
+  hint: string
+  collapsed_by_default: boolean
+  count: number
+}
+
+/** `GET /api/chan-config/schema` 响应 */
+export interface ChanConfigSchema {
+  groups: ChanParamGroupMeta[]
+  params: ChanParamSchema[]
+  presets: string[]
+  counts: { total: number; unconditional: number; conditional: number }
+  /**
+   * 内核出厂默认（`CChanConfig()` 空构造反射），**不随用户配置漂移**。
+   *
+   * 与 `params[].default` 的区别：后者是「当前生效口径下该项的值」，用户改过
+   * 配置后它会跟着变。判断「某项是否被用户显式覆盖过」必须用不漂移的基线，
+   * 否则已保存的覆盖项会在下一次保存时被静默丢弃。
+   *
+   * 等价于 `preset_baselines.standard`（standard 的预设展开为空）。
+   * 注意：判断覆盖基线要优先用 `preset_baselines[当前档位]`，见该字段说明。
+   */
+  kernel_defaults: Record<string, unknown>
+  /**
+   * 各档位**预设展开后**的默认值，如 `{ standard: {...}, legacy: {...} }`。
+   *
+   * 这是「恢复默认」与 overrides 比较的正确基线：legacy 档会把
+   * `min_zs_cnt` / `bsp1_trend` / `macd_algo` 等十余项展开成不同取值，
+   * 拿 `kernel_defaults` 当基线会把这些预设项误判成用户覆盖写进 overrides，
+   * 从此不再跟随档位切换。缺失该档位时退回 `kernel_defaults`。
+   */
+  preset_baselines: Record<string, Record<string, unknown>>
+}
+
+/** `GET /api/chan-config` 响应 */
+export interface ChanConfigState {
+  /** 全部参数的生效值（键为参数 key） */
+  effective: Record<string, unknown>
+  /** 用户显式改过的项（生效语义的来源） */
+  overrides: Record<string, unknown>
+  preset: string
+  version: number | null
+  initialized: boolean
+}
+
+/** `PUT /api/chan-config` 请求体 */
+export interface ChanConfigSaveInput {
+  overrides: Record<string, unknown>
+  preset: string
+  full_snapshot?: Record<string, unknown>
+}
+
+/** `PUT /api/chan-config` 响应 */
+export interface ChanConfigSaveResult {
+  ok: boolean
+  version: number
+  overrides: Record<string, unknown>
+  preset: string
+}
+
+/** 批量同步任务状态 */
+export interface ChanSyncJob {
+  job_id: number
+  status: 'running' | 'interrupted' | 'done' | 'failed'
+  total: number
+  done: number
+  failed: number
+  summary: Record<string, unknown> | null
+  started_at: string | null
+  finished_at: string | null
+  config_version: number | null
+  current_version: number | null
+}
+
+/** `GET /api/chan-config/sync/status` 响应 */
+export interface ChanSyncStatus {
+  running: boolean
+  job: ChanSyncJob | null
+  /** 任务启动后配置又变了 → 结果不代表当前口径 */
+  stale: boolean
+}

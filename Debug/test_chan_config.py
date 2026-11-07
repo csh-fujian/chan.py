@@ -45,7 +45,9 @@ check("divergence_rate = 0.9", b.divergence_rate == 0.9, b.divergence_rate)
 check("min_zs_cnt = 2", b.min_zs_cnt == 2, b.min_zs_cnt)
 check("bsp3b_mode = standard", b.bsp3b_mode == "standard", b.bsp3b_mode)
 check("bsp1_force_scope = swing", b.bsp1_force_scope == "swing", b.bsp1_force_scope)
-check("macd_algo = PEAK", b.macd_algo is MACD_ALGO.PEAK, b.macd_algo)
+# chan-bsp1-extreme 3.1：默认力度算法由 PEAK 改为 FULL_AREA（legacy 档锁定 PEAK）
+check("macd_algo = FULL_AREA", b.macd_algo is MACD_ALGO.FULL_AREA, b.macd_algo)
+check("bs1_peak_strict = True", b.bs1_peak_strict is True, b.bs1_peak_strict)
 check("target_types 全 6 类",
       [t.value for t in b.target_types] == ["1", "1p", "2", "2s", "3a", "3b"],
       [t.value for t in b.target_types])
@@ -62,6 +64,10 @@ check("bsp1_trend = False", lg.bsp1_trend is False, lg.bsp1_trend)
 check("bsp3b_mode = legacy", lg.bsp3b_mode == "legacy", lg.bsp3b_mode)
 check("bsp2s_rate_mode = disp", lg.bsp2s_rate_mode == "disp", lg.bsp2s_rate_mode)
 check("bsp1_zs_extend_to_seg_end = True", lg.bsp1_zs_extend_to_seg_end is True)
+# chan-bsp1-extreme：档位等价的必要条件，两项都必须在 legacy 显式回退
+check("macd_algo = PEAK（legacy 锁定）", lg.macd_algo is MACD_ALGO.PEAK, lg.macd_algo)
+check("bs1_peak_strict = False（legacy 回退）",
+      lg.bs1_peak_strict is False, lg.bs1_peak_strict)
 
 
 # ---------------------------------------------------------------------------

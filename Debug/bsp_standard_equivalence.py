@@ -100,14 +100,83 @@ BASELINE_LEGACY = {'1': 258, '1p': 69, '2': 318, '2s': 317, '3a': 61, '3b': 50}
 BASELINE_SEG_LEGACY = {'1': 37, '1p': 8, '2': 35, '2s': 15, '3a': 2, '3b': 6}
 
 # 本变更期望值（41 只日线，2019-01-01 起、QFQ）
-BASELINE_STANDARD_BI = {'1': 14, '1p': 53, '2': 12, '2s': 4, '3a': 1, '3b': 1}
-# 3b 由 1 变 0 不是缺陷：它锚定的 sh.600016 bi=31 在走势段口径下不再是成立一买，
-# 属锚点依赖的正确传播（design D10）。2 / 2s / 3a 才是真正的「完全不变」。
-BASELINE_STANDARD_SWING = {'1': 13, '1p': 52, '2': 12, '2s': 4, '3a': 1, '3b': 0}
-# 走势段口径下相对单笔口径消失的 bsp1 点（逐笔对账用）
+#
+# 这四条常量同时叠加了三件事，读数时请对照 `文档/一买一卖差异点说明.md`：
+#   1. 极值严格优（chan-bsp1-extreme 1.1/1.2）——拦下 sh.600006 bi77、
+#      sh.600026 bi25、sz.000007 bi55 三个「相等极值」降级候选
+#   2. 力度算法 peak → full_area（3.1）——T1 由 13/14 增至 17/19
+#   3. 走势段口径（bsp1_force_scope="swing"）——相对单笔口径的增删见
+#      `EXPECTED_SWING_REMOVED` 与下方 default 口径的逐点差说明
+#
+# 仅第 1 项自身的效果见 `Debug/_probe*` 记录的「50/49」中间态；本文件断言的是
+# 三项叠加后的终值，与 `文档/一买一卖差异点说明.md` §三 实测表、`Document/README.md`
+# 的默认参数说明必须逐项一致。
+BASELINE_STANDARD_BI = {'1': 19, '1p': 47, '2': 17, '2s': 7, '3a': 2, '3b': 3}
+# swing 相对 bi：1 19→17、2 17→16、3b 3→1。3b 的 3→1 不是缺陷——两处 3b 消失
+# 所锚定的一买（sh.600016 bi31、sh.600025 bi61）在走势段口径下不再是成立一买，
+# 属锚点依赖的正确传播（design D10）。2 的 17→16 同理：sh.600025 bi63 的二买
+# 锚定的一买在 swing 口径下消失。
+#
+# 注意：这里**不再断言**「2 / 2s / 3a 完全不变」。那是 chan-standard-bsp1-change
+# 在 peak 力度口径下的结论，力度算法切到 full_area 后，成立一买集合改变，
+# 二买/三买作为锚点依赖的下游类型必然随之变动——这是正确传播，不是回归。
+BASELINE_STANDARD_SWING = {'1': 17, '1p': 47, '2': 16, '2s': 7, '3a': 2, '3b': 1}
+# 走势段口径下相对单笔口径**消失**的 bsp1 点（逐笔对账用）。
+#
+# **这两条常量必须与第 7 节的 `ANCHOR_ERA_PIN` 同源**：第 7 节把
+# `macd_algo` / `bs1_peak_strict` / `bsp1_new_extreme` 都 pin 回锚点时代取值，
+# 比对基准 JSON 也是 peak 时代快照，所以增删集只能是 peak 时代的 2 个点。
+# 曾经这里填的是 full_area 时代的 6 点格局（sh.600010 bi8、sh.600016 bi28、
+# sh.600025 bi60/61/63），导致第 7 节误报「消失集不符预期」——那是常量与
+# pin 口径脱节，不是开关接线故障。
+#
+# full_area（默认档）下的实际格局是：消失 6 个 = {('sh.600010', 8),
+# ('sh.600016', 31), ('sh.600016', 28), ('sh.600025', 60), ('sh.600025', 61),
+# ('sh.600025', 63)}、新增 1 个 = {('sh.600010', 65)}。该格局由第 5 节的
+# `BASELINE_STANDARD_BI/SWING` 数量基线覆盖，本节不重复断言（基准 JSON 不是
+# full_area 口径，拿它比会同时测三个变量）。
 EXPECTED_SWING_REMOVED = {('sh.600016', 31), ('sz.000011', 44)}
+# 走势段口径下相对单笔口径**新增**的 bsp1 点（peak 时代为空）
+EXPECTED_SWING_ADDED = set()
+# 第 7 节锚点 `Debug/bsp1_force_scope_baseline.json` 是 **peak 时代**的快照：
+# 它由 chan-standard-bsp1-change 的 tasks 9.0 生成，早于 chan-bsp1-strict-extreme
+# 的极值严格优（1.1/1.2）与力度默认切换（3.1）。第 7 节的语义是「只验证
+# `bsp1_force_scope` 一个变量」——把另外两个变量也放进来，比对必然全飘，
+# 而那既不说明开关接线有问题，也测不出窗口逻辑对不对。
+#
+# 因此第 7 节把这两个变量显式 pin 回锚点时代取值。实测证明这个 pin 是精确的：
+# 在此口径下 `bi` 档与锚点 JSON **0 增 0 删 0 漂移**，`swing` 档恰为预期的
+# 2 个消失点。若将来有人再改这三项的默认值，第 7 节不受影响（它测的是开关本身），
+# 而第 5/6/6b 节的数值基线会立刻报错——职责分离。
+ANCHOR_ERA_PIN = {"macd_algo": "peak", "bs1_peak_strict": False,
+                  "bsp1_new_extreme": False}
+# 第 7 节在 `ANCHOR_ERA_PIN` 下的数量基线（= peak 时代实测，与锚点 JSON 同源）。
+#
+# `1p` 是 53/52 而不是 50/49：后者是「极值严格优（`bs1_peak_strict=True`）之后」
+# 的中间态。本节把 `bs1_peak_strict` pin 成 False（宽松），那 3 个「相等极值」的
+# 降级候选重新放行，1p 回到锚点 JSON 的 53/52。三个点是
+# `sh.600006 bi77` / `sh.600026 bi25` / `sz.000007 bi55`——正是 design D0 里
+# 严格优拦下的同一批（用 `Debug/_probe_anchor_1p.py` 翻 `bs1_peak_strict` 可复现）。
+# T1 在两口径下都是 14/13：这三点的趋势项本就不通过，只会以降级形态出现。
+BASELINE_ANCHOR_BI = {'1': 14, '1p': 53, '2': 12, '2s': 4, '3a': 1, '3b': 1}
+BASELINE_ANCHOR_SWING = {'1': 13, '1p': 52, '2': 12, '2s': 4, '3a': 1, '3b': 0}
+
+
+def _assert_counts(label, got, exp):
+    """逐类核对六类数量，返回是否一致（第 7 节的锚点口径断言用）。"""
+    bad = {k: got.get(k, 0) - v for k, v in exp.items() if got.get(k, 0) != v}
+    if bad:
+        print(f'    ✗ {label} 与基线不一致：{bad}')
+        print(f'      期望 {fmt(exp)}')
+        print(f'      实测 {fmt(got)}')
+        return False
+    print(f'    ✓ {label} 与基线一致 {fmt(got)}')
+    return True
 # 降级漏斗（笔级别、单笔口径）：候选 → trend → 面积背驰 → bs1_peak → 补全检后
-BASELINE_DOWNGRADE_FUNNEL = (573, 314, 168, 142, 53)
+# 末档 = 标准档降级点数（T1P 47）。第 3 档 165 与 peak 时代的 168 差 3：full_area
+# 让三个原本「面积不背驰」的候选变成背驰。首档 365 是本脚本口径（进入 treat_bsp1
+# 的次数），与 JSON 候选口径不同，见断言处的说明。实测回写。
+BASELINE_DOWNGRADE_FUNNEL = (365, 314, 165, 139, 47)
 
 
 def load_codes(limit=None):
@@ -405,13 +474,17 @@ def check_downgrade_funnel(codes, full=True):
     funnel = collections.Counter()
     orig = bspointlist_mod.CBSPointList.treat_bsp1
 
-    def probe(self, seg, BSP_CONF, is_target_bsp):
-        # 只统计笔级别（线段级另算，口径不同）
+    def probe(self, seg, BSP_CONF, is_target_bsp, full_ele_list=None):
+        # `full_ele_list` 是 chan-bsp1-extreme 为 `bsp1_new_extreme_mode="level"`
+        # 新增的形参；必须跟随 `treat_bsp1` 的签名，否则 monkey-patch 会因
+        # 关键字不匹配抛 TypeError，而外层的 `except Exception: continue`
+        # 会把它静默吞成「漏斗全 0」——那看起来像数据问题，实则是签名失配。
         if seg.start_bi.__class__.__name__ != 'CBi':
-            return orig(self, seg, BSP_CONF, is_target_bsp)
+            return orig(self, seg, BSP_CONF, is_target_bsp,
+                        full_ele_list=full_ele_list)
         funnel['1_候选'] += 1
         last_zs = seg.zs_lst[-1]
-        bp, _ = last_zs.out_bi_is_peak(seg.end_bi.idx)
+        bp, _ = last_zs.out_bi_is_peak(seg.end_bi.idx, strict=BSP_CONF.bs1_peak_strict)
         peak_ok = (not BSP_CONF.bs1_peak) or bp
         is_diver, _ = last_zs.is_divergence(BSP_CONF, out_bi=seg.end_bi)
         _, reason, _ = check_bsp1_standard(seg.end_bi, seg.bi_list, seg.zs_lst,
@@ -430,7 +503,7 @@ def check_downgrade_funnel(codes, full=True):
                                                     rc, seg.is_down())
                 if rest_ok:
                     funnel['5_补全检'] += 1
-        return orig(self, seg, BSP_CONF, is_target_bsp)
+        return orig(self, seg, BSP_CONF, is_target_bsp, full_ele_list=full_ele_list)
 
     bspointlist_mod.CBSPointList.treat_bsp1 = probe
     try:
@@ -568,6 +641,11 @@ def check_force_scope_compat(full=True):
       9.3a  开关已存在但 ZS.py 未改 → `"bi"` 档必须逐笔等于基线（0 增 0 删 0 漂移）
       9.4   签名改造后默认行为不变 → 同一比对仍须全绿
       9.7   走势段口径相对基线的增删集与翻转点清单
+
+    **本节只测 `bsp1_force_scope` 一个变量**：锚点 JSON 是 peak 时代快照，因此
+    另外两个后来改变默认行为的变量（`macd_algo` / 极值严格性）由 `ANCHOR_ERA_PIN`
+    显式 pin 回锚点取值。不 pin 的话本节会同时测三个变量，比对全飘，
+    既不能证明开关接线正确，也测不出窗口逻辑——详见 `ANCHOR_ERA_PIN` 的注释。
     """
     section("7. 力度口径对照（tasks 9.3a / 9.4 / 9.7 / 9.8）")
     payload, err = load_baseline()
@@ -577,24 +655,28 @@ def check_force_scope_compat(full=True):
         return False
 
     print(f"  基线水位 {payload['watermark']}，逐笔点 {len(payload['points'])}")
-    ok_bi, _ = compare_against_baseline(payload, {"bsp1_force_scope": "bi"}, 'bsp1_force_scope="bi"（应 == 基线）')
+    print(f"  锚点时代 pin：{ANCHOR_ERA_PIN}")
+    ok_bi, _ = compare_against_baseline(
+        payload, {"bsp1_force_scope": "bi", **ANCHOR_ERA_PIN},
+        'bsp1_force_scope="bi"（应 == 基线）')
     if ok_bi:
         print('    ✓ "bi" 档逐笔等于基线——开关本身不改变任何输出')
     else:
         print('    ✗ "bi" 档与基线不一致——故障在开关接线或签名改造，与窗口逻辑无关')
 
     # swing 档相对基线**预期**有变化（这是改造的目的），所以它的 ok_sw 不能
-    # 直接作为失败判据——真正的判据是下面的逐笔对账（消失集恰为预期）
+    # 直接作为失败判据——真正的判据是下面的逐笔对账（增删集恰为预期）
     compare_against_baseline(
-        payload, {"bsp1_force_scope": "swing"}, 'bsp1_force_scope="swing"（默认档）')
+        payload, {"bsp1_force_scope": "swing", **ANCHOR_ERA_PIN},
+        'bsp1_force_scope="swing"（默认档）')
     ok_sw = True
 
-    # ---- 逐笔对账：消失集必须恰为 EXPECTED_SWING_REMOVED ----
+    # ---- 逐笔对账：增删集必须恰为 EXPECTED_SWING_ADDED / _REMOVED ----
     base = {(p["code"], p["bi"]): p for p in payload["points"]}
     cur = {}
     for code in payload["codes"]:
         kl = build_pinned(code, payload["watermark"], bsp_preset="standard",
-                          bsp1_force_scope="swing")
+                          bsp1_force_scope="swing", **ANCHOR_ERA_PIN)
         for p in dump_points(kl):
             cur[(code, p["bi"])] = p
     added = set(cur) - set(base)
@@ -603,8 +685,11 @@ def check_force_scope_compat(full=True):
     print("  逐笔对账（swing 相对 bi 口径）：")
     if not added:
         print("    ✓ 新增集为空")
+    elif added == EXPECTED_SWING_ADDED:
+        print(f"    ✓ 新增集恰为预期的 {len(added)} 个点：{sorted(added)}")
     else:
-        print(f"    ✗ 新增 {len(added)} 个点（预期 0）：{sorted(added)}")
+        print(f"    ✗ 新增集不符预期：{sorted(added)}")
+        print(f"      预期：{sorted(EXPECTED_SWING_ADDED)}")
         ok_sw = False
     if removed == EXPECTED_SWING_REMOVED:
         print(f"    ✓ 消失集恰为预期的 {len(removed)} 个点")
@@ -618,15 +703,26 @@ def check_force_scope_compat(full=True):
         ok_sw = False
 
     # ---- 数量对照 ----
+    # 数量断言同样 pin 回锚点口径：本节测的是 `bsp1_force_scope` 一个变量，
+    # 用 `BASELINE_STANDARD_BI/SWING` 那组（full_area 时代）常量会串味。
     print()
-    print("  六类数量对照（两档位）：")
+    print("  六类数量对照（两档位，锚点口径）：")
     codes_all = load_codes()
-    cnt_bi = count_types(codes_all, bsp_preset="standard", bsp1_force_scope="bi")
-    cnt_sw = count_types(codes_all, bsp_preset="standard", bsp1_force_scope="swing")
+    cnt_bi = count_types(codes_all, bsp_preset="standard", bsp1_force_scope="bi",
+                         **ANCHOR_ERA_PIN)
+    cnt_sw = count_types(codes_all, bsp_preset="standard", bsp1_force_scope="swing",
+                         **ANCHOR_ERA_PIN)
     print(f'    "bi"   : {fmt(cnt_bi)}')
     print(f'    "swing": {fmt(cnt_sw)}')
 
-    # 2 / 2s / 3a 必须完全不变；3b 允许因锚点传播而变（design D10）
+    # ---- 锚点口径下的数量基线（peak 时代，与第 5/6 节无关）----
+    ok_sw &= _assert_counts('"bi" 档（锚点口径）', cnt_bi, BASELINE_ANCHOR_BI)
+    ok_sw &= _assert_counts('"swing" 档（锚点口径）', cnt_sw, BASELINE_ANCHOR_SWING)
+
+    # 2 / 2s / 3a 在**锚点口径下**必须完全不变；3b 允许因锚点传播而变（design D10）。
+    # 注意：这条「三类不变」是 peak 力度的性质。切到 full_area 后成立一买集合改变，
+    # 二买/三买作为锚点依赖的下游类型必然随之变动——那不是回归，见第 5 节的
+    # BASELINE_STANDARD_SWING 注释。正因如此，本节的断言必须 pin 锚点口径。
     for k in ('2', '2s', '3a'):
         if cnt_bi.get(k, 0) != cnt_sw.get(k, 0):
             print(f'    ✗ 类型 {k} 在两档间不同 {cnt_bi.get(k,0)} vs {cnt_sw.get(k,0)}'
@@ -645,10 +741,12 @@ def check_force_scope_compat(full=True):
         print('      验证：这些 3b 的 relate_bsp1 必须落在消失集中')
         unexplained = []
         for code in codes_all:
-            kl_bi = build(code, bsp_preset="standard", bsp1_force_scope="bi")
+            kl_bi = build(code, bsp_preset="standard", bsp1_force_scope="bi",
+                          **ANCHOR_ERA_PIN)
             have = {b.bi.idx for b in kl_bi.bs_point_lst.bsp_iter()
                     if BSP_TYPE.T3B in b.type}
-            kl_sw = build(code, bsp_preset="standard", bsp1_force_scope="swing")
+            kl_sw = build(code, bsp_preset="standard", bsp1_force_scope="swing",
+                          **ANCHOR_ERA_PIN)
             still = {b.bi.idx for b in kl_sw.bs_point_lst.bsp_iter()
                      if BSP_TYPE.T3B in b.type}
             for lost in have - still:
@@ -665,23 +763,10 @@ def check_force_scope_compat(full=True):
     else:
         print(f'    · 3b 增加 {d3b:+d}——需要说明来源')
 
-    if full:
-        print()
-        print('  数值基线对照：')
-        for label, got, exp in (
-            ('"bi" 档', cnt_bi, BASELINE_STANDARD_BI),
-            ('"swing" 档', cnt_sw, BASELINE_STANDARD_SWING),
-        ):
-            bad = {k: got.get(k, 0) - v for k, v in exp.items() if got.get(k, 0) != v}
-            if bad:
-                print(f'    ✗ {label} 与基线不一致：{bad}')
-                print(f'      期望 {fmt(exp)}')
-                print(f'      实测 {fmt(got)}（若数据水位已推进，请更新基线常量）')
-                ok_sw = False
-            else:
-                print(f'    ✓ {label} 与基线完全一致 {fmt(got)}')
-    else:
-        print("  （--quick 模式：跳过数值基线核对）")
+    # 数量基线已在上面用 `_assert_counts` 按锚点口径断言过，此处不再重复。
+    # 这里只剩一个 `--quick` 模式的说明位，避免读者以为「没见到基线对照」是漏了。
+    if not full:
+        print("  （--quick 模式：上面的数量基线核对仍以全量口径执行）")
     return ok_bi and ok_sw
 
 
@@ -849,7 +934,7 @@ def check_pz_force_scope(codes, full=True):
     单笔口径升级为「反向笔组分隔的走势段」口径（design D4）。本节验证：
 
       1. **口径确实生效**：swing 与 bi 两档下，无中枢路径候选点的
-         `divergence_rate` 存在差异（若完全相同，说明 swing 分支没被走到）
+         `divergence_rate` 存在差异
       2. **候选集合不变**：两档下的候选点（code + 日期）集合相同——
          力度口径只改背驰率取值，不改前置门槛（同段/同向/创新低）
       3. **legacy 等价**：`legacy` 档展开为 `bsp1_force_scope="bi"`，
@@ -857,6 +942,18 @@ def check_pz_force_scope(codes, full=True):
 
     第 3 条是 legacy 档的可回退性保证：若不一致说明 swing 实现泄漏进了
     `bi` 分支。
+
+    **第 1 条在 `macd_algo="full_area"` 下必然退化为「两档相同」**（`chan-bsp1-extreme`
+    把默认力度算法从 `peak` 切到 `full_area` 之后暴露）：笔的方向严格交替，
+    `_cal_pz_force_windows` 里「向前收集连续同向笔」在笔级别恒只能收到 1 笔，
+    走势段窗口结构上就是单笔。`FULL_AREA` 的窗口版与单笔版走同一段
+    `[begin_idx, end_idx]`，取值必然相同；`PEAK` 之所以有差异，是因为
+    `CBi.Cal_MACD_peak()` **不传** begin/end idx（用整条 `klc_lst`），边界那根
+    合并 K 线里属于邻笔的 klu 会漏进来——那是边界过滤不一致，不是窗口聚合生效。
+
+    因此第 1 条改成「按力度算法分别断言」：`peak` 下要求存在差异，
+    `full_area` 下要求**差异为 0 且窗口笔数与 bi 档一致**——把退化本身变成
+    可回归的事实，而不是让断言永远飘红。
     """
     section("10. T1P 力度口径走势段化对照（chan-bsp-ladder-change task 2.2）")
 
@@ -896,8 +993,20 @@ def check_pz_force_scope(codes, full=True):
     diff = [k for k in common
             if (sw[k] is None) != (bi[k] is None)
             or (sw[k] is not None and abs(sw[k] - bi[k]) > 1e-9)]
+    algo_name = str(getattr(CChanConfig({}).bs_point_conf.b_conf.macd_algo,
+                            "name", "")).lower()
     if not common:
         print("  [warn] 无共同候选点——无法对比背驰率（不算失败）")
+    elif algo_name == "full_area":
+        # 见 docstring：笔方向严格交替，反向笔组窗口在笔级别恒为单笔，
+        # FULL_AREA 的窗口版与单笔版取同一 klc 区间 → 两档必然相同。
+        if diff:
+            print(f"  ✗ full_area 下两档背驰率不应有差异，实测 {len(diff)}/{len(common)} 个不同"
+                  "——窗口退化假设失效，需重查 `_cal_pz_force_windows`")
+            ok = False
+        else:
+            print(f"  ✓ full_area：两档背驰率完全相同（{len(common)} 个候选）"
+                  "——反向笔组窗口在笔级别恒为单笔，退化符合预期")
     elif not diff:
         print("  ✗ 两档背驰率完全相同——swing 分支可能未生效（检查 "
               "`_cal_pz_force_windows` 是否被调用）")
@@ -979,10 +1088,11 @@ def check_progress_feature(codes, full=True):
     print("  成立性对照（standard 档，逐类计数）：")
     cnt = count_types(codes, bsp_preset="standard")
     print(f"    {fmt(cnt)}")
-    expect = {'1': 14, '1p': 53, '2': 12, '2s': 4, '3a': 1, '3b': 1}
+    # 基准值即 standard 默认档（swing 口径）的终值，与第 5 节同一组常量同源。
+    expect = BASELINE_STANDARD_SWING
     diff = {k: cnt.get(k, 0) - v for k, v in expect.items() if cnt.get(k, 0) != v}
     if full and diff:
-        print(f"  [warn] 与 chan-standard-bsp1-change 记载的基线不一致 {diff}——"
+        print(f"  [warn] 与第 5 节 standard 档终值不一致 {diff}——"
               f"若本次数据池/水位不同属正常，若同池则应排查")
     else:
         print("  ✓ 与既有基线一致" if not diff else "  （quick 模式不做基线断言）")

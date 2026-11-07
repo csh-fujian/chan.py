@@ -100,6 +100,12 @@
         <el-icon><TrendCharts /></el-icon> 均线
       </button>
 
+      <!-- 缠论参数配置 — chan-config-panel 5.8 -->
+      <button class="btn btn--ghost btn--sm topbar-action" @click="chanConfigVisible = true">
+        <el-icon><Setting /></el-icon> 缠论参数
+        <span v-if="!canManageChanConfig" class="topbar-action__hint">只读</span>
+      </button>
+
       <span class="topbar__spacer" />
 
       <!-- 快捷入口：加入自选 / AI 问答 -->
@@ -156,6 +162,15 @@
 
     <!-- 均线配置弹窗 — kline-chart-change 1.4 -->
     <MaConfigDialog v-model="maDialogVisible" />
+
+    <!-- 缠论参数配置抽屉 — chan-config-panel 5.3 / 5.8 -->
+    <ChanConfigDrawer
+      v-model="chanConfigVisible"
+      :code="code"
+      :period="period"
+      :can-manage="canManageChanConfig"
+      @saved="onChanConfigSaved"
+    />
   </div>
 </template>
 
@@ -171,24 +186,111 @@
  */
 defineOptions({ name: 'KLineView' })
 
-import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
-import { useRoute } from 'vue-router'
-import { Search, Star, ChatDotRound, Fold, Expand, ArrowDown, TrendCharts } from '@element-plus/icons-vue'
-import { ElMessage, type AutocompleteInstance } from 'element-plus'
+import { ref, computed, onMounted, onBeforeUnmount, onDeactivated, watch } from 'vue'
+import { useRoute, onBeforeRouteLeave } from 'vue-router'
+import { Search, Star, ChatDotRound, Fold, Expand, ArrowDown, TrendCharts, Setting } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox, type AutocompleteInstance } from 'element-plus'
 import KLineChart from '@/components/charts/KLineChart.vue'
 import StockPanel from '@/components/kline/StockPanel.vue'
 import StockMetaPanel from '@/components/kline/StockMetaPanel.vue'
 import QaPanel from '@/components/kline/QaPanel.vue'
 import MaConfigDialog from '@/components/kline/MaConfigDialog.vue'
+import ChanConfigDrawer from '@/components/kline/ChanConfigDrawer.vue'
 import { getKLine } from '@/api/modules/kline'
 import { searchStocks } from '@/api/modules/stock'
+import { useAuthStore } from '@/stores/auth'
+import { useChanConfigStore } from '@/stores/chanConfig'
 import type { ChanResult } from '@/api/types'
 
 const route = useRoute()
+const auth = useAuthStore()
 const SearchIcon = Search
 
-const codeInput = ref('sz.000001')
-const code = ref('sz.000001')
+/**
+ * 缠论参数抽屉（chan-config-panel 5.8）。
+ *
+ * 可见性只受 `menu:kline` 控制（能进本页就能看），编辑/保存/同步受 `manage`
+ * 控制 —— 观察者可以打开抽屉看「当前的规则长什么样」，但控件全部只读。
+ */
+const chanConfigVisible = ref(false)
+const canManageChanConfig = computed(() => auth.hasPerm('manage'))
+const chanConfigStore = useChanConfigStore()
+
+/**
+ * 抽屉里是否有未保存的改动（5.5 离开保护）。
+ *
+ * 判据是 store 的 `dirtyCount`，但**只在抽屉打开时**算 —— 抽屉关着时草稿
+ * 已被丢弃，不该再拦人。
+ */
+const chanDraftDirty = computed(
+  () => chanConfigVisible.value && chanConfigStore.dirtyCount > 0,
+)
+
+/** 二次确认「有未保存的缠论参数改动」；返回 true 表示可以离开 */
+async function confirmLeaveWithDraft(): Promise<boolean> {
+  try {
+    await ElMessageBox.confirm(
+      `缠论参数有 ${chanConfigStore.dirtyCount} 项修改尚未保存，离开将丢弃这些修改。`,
+      '未保存的修改',
+      { type: 'warning', confirmButtonText: '丢弃并离开', cancelButtonText: '留在此页' },
+    )
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 路由离开守卫（5.5）：有草稿时拦一次。
+ * 注意本页被 KeepAlive 缓存（design D10），页面内切 Tab/换股不触发路由守卫，
+ * 所以顶栏换股/换周期另由 `notifyContextChanged` 兜住（只提示、不拦截 —— 参数
+ * 是全局的，草稿对新的标的同样适用）。
+ */
+onBeforeRouteLeave(async () => {
+  if (!chanDraftDirty.value) return true
+  const ok = await confirmLeaveWithDraft()
+  if (ok) {
+    chanConfigStore.discardDraft()
+    chanConfigVisible.value = false
+  }
+  return ok
+})
+
+/**
+ * 组件被 KeepAlive 失活（切到别的路由页）时，同样不能把草稿悄无声息带走 ——
+ * `onBeforeRouteLeave` 已覆盖路由场景，这里只补「缓存失活」这一路的兜底：
+ * 若有草稿，直接丢弃草稿并关抽屉（用户已在上一步确认过离开）。
+ */
+onDeactivated(() => {
+  if (chanConfigVisible.value) {
+    chanConfigStore.discardDraft()
+    chanConfigVisible.value = false
+  }
+})
+
+/**
+ * 换股票/换周期前的守卫（5.5）。
+ *
+ * 保存语义是「保存后重算**当前**股票」，草稿本身不带股票上下文，但用户改参数时
+ * 心里想的是正在看的这只票。换股后草稿仍适用于新票（参数是全局的），因此这里
+ * 不拦、只提示 —— 拦下来反而会让人以为参数忽然不属于自己了。
+ */
+function notifyContextChanged(): void {
+  if (chanDraftDirty.value) {
+    ElMessage.info('已切换标的，缠论参数草稿仍然保留，保存后会对新标的重算')
+  }
+}
+
+/** 保存参数后：按新参数重拉当前股票（后端读的是已保存的全局配置） */
+function onChanConfigSaved(): void {
+  load()
+}
+
+/** 默认标的：上证指数（大盘优先，进页面先看走势） */
+const DEFAULT_CODE = 'sh.000001'
+
+const codeInput = ref(DEFAULT_CODE)
+const code = ref(DEFAULT_CODE)
 const period = ref('1d')
 const loading = ref(false)
 const result = ref<ChanResult | null>(null)
@@ -324,6 +426,7 @@ function handleSearch(): void {
     return
   }
   code.value = c
+  notifyContextChanged()
   load()
 }
 
@@ -405,6 +508,7 @@ function onSelectSuggestion(item: StockSuggestion): void {
   }
   codeInput.value = item.code
   code.value = item.code
+  notifyContextChanged()
   load()
 }
 
@@ -475,6 +579,7 @@ watch(
       // 仅代码变化才触发重载；与当前一致时保持缓存数据原样
       if (c !== code.value) {
         code.value = c
+        notifyContextChanged()
         load()
       }
     }
@@ -487,7 +592,10 @@ watch(
 )
 
 // 周期切换触发重载
-watch(period, () => load())
+watch(period, () => {
+  notifyContextChanged()
+  load()
+})
 
 // 输入内容变化 → 重置 ↑↓ 浏览标志（D5）
 watch(codeInput, () => {
@@ -667,6 +775,14 @@ onBeforeUnmount(() => {
 /* 顶栏快捷入口 */
 .topbar-action {
   gap: 5px;
+}
+.topbar-action__hint {
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: var(--text-disabled);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-base);
 }
 .topbar-action :deep(.el-icon) {
   width: 14px;

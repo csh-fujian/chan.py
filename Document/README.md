@@ -526,9 +526,14 @@ else:  # 绘制动画
     - max_bs2_rate：2类买卖点那一笔回撤最大比例，默认为 0.9999
         - 注：如果是 1.0，那么相当于允许回测到1类买卖点的位置
     - bs1_peak：1类买卖点位置是否必须是整个中枢最低点，默认为 True
+    - bs1_peak_strict：极值判定的严格性，默认为 True（严格优——相等极值不算「更极端」，
+      因此双底/双顶不能被当作中枢外的新极值放行）；`bsp_preset="legacy"` 下为 False
+      （改造前是宽松比较，回退档必须逐笔等价）
     - macd_algo：MACD指标算法（可自定义）
-        - peak：红绿柱最高点（绝对值），默认
-        - full_area：整根笔对应的MACD的面积
+        - full_area：整根笔对应的MACD的面积，默认（整段柱子累加，对「急跌赶底」钝感的
+          单根峰值口径是替代关系：跌幅大、时间短的离开段单根柱子天然更深，
+          即使整段动能已衰竭也会被 `peak` 误判为不背驰）
+        - peak：红绿柱最高点（绝对值）
         - area：整根笔对应的MACD的面积（只考虑相应红绿柱）
         - slope：笔斜率
         - amp：笔的涨跌幅
@@ -605,7 +610,10 @@ else:  # 绘制动画
           `bsp1_trend_mode` 取 `strict`（默认，两中枢完全不重叠）或 `overlap`（依次移动但允许重叠）
         - `bsp1_new_extreme`：离开段须创趋势新低/新高。
           `bsp1_new_extreme_mode` 取 `trend_start`（默认，从第一个趋势中枢的进入段起算）、
-          `prev_zs_in`（只与最后中枢的进入段比）、`all`（与全部历史同向要素比）
+          `prev_zs_in`（只与最后中枢的进入段比）、`all`（与全部历史同向要素比）、
+          `level`（与本级别此前**全部**同向笔比，跨线段边界；用于「本级别新低」口径。
+          线段级别无全量笔列表时自动退回 `all`，并在 info 的
+          `new_extreme_mode_effective` 标明实际口径，不静默降级）
         - `bsp1_dif_div`：离开段的 DIF（黄白线）极值相对进入段不创新低/新高
         - `bsp1_zero_axis`：进入最后中枢的段与离开段之间，DIF 须回抽过零轴
         - `bsp1_zs_extend_to_seg_end`（默认 False）：是否仍要求中枢延伸到线段末笔。
@@ -709,7 +717,7 @@ else:  # 绘制动画
     - stock_distinct_price_thred: `stock_no_active_day` 根K线内股价多样性低于多少则定义为不活跃，默认为 25
 
 #### 精确设置配置
-`divergence_rate`,`min_zs_cnt`,`bsp1_only_multibi_zs`,`max_bs2_rate`,`macd_algo`,`bs1_peak`,`strategy_para`，`bs_type`，`bsp2_follow_1`，`bsp3_follow_1`，`bsp2s_follow_2`，`strict_bsp3`，`score_thred`，`bsp3_peak`，以及改造新增的
+`divergence_rate`,`min_zs_cnt`,`bsp1_only_multibi_zs`,`max_bs2_rate`,`macd_algo`,`bs1_peak`,`bs1_peak_strict`,`strategy_para`，`bs_type`，`bsp2_follow_1`，`bsp3_follow_1`，`bsp2s_follow_2`，`strict_bsp3`，`score_thred`，`bsp3_peak`，以及改造新增的
 `bsp1_trend`、`bsp1_new_extreme`、`bsp1_dif_div`、`bsp1_zero_axis`、
 `bsp1_zs_extend_to_seg_end`、`bsp2_retrace_zs`、`bsp2s_require_zs`、
 `bsp3_peak_on_breakout`、`bsp1_downgrade_to_pz`、`bsp1_force_scope`、
@@ -741,7 +749,8 @@ config = CChanConfig({
     "min_zs_cnt": 2,
     "max_bs2_rate": 0.618,
     "bs1_peak": True,
-    "macd_algo": "peak",
+    "bs1_peak_strict": True,
+    "macd_algo": "full_area",
     "bs_type": '1,2,3a,3b,2s,1p',
     "cbsp_strategy": CCustomStrategy,
     "only_judge_last": False,

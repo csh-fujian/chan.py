@@ -477,7 +477,10 @@ class CBSPointList(Generic[LINE_TYPE, LINE_LIST_TYPE]):
         ) and seg.end_bi.idx - seg.zs_lst[-1].get_bi_in().idx > 2
         if has_struct_zs and (zs_extend_ok or not BSP_CONF.bsp1_zs_extend_to_seg_end):
             # 标准第一类买卖点：有中枢 + 背驰
-            self.treat_bsp1(seg, BSP_CONF, is_target_bsp)
+            # 全量笔列表只在 `bsp1_new_extreme_mode="level"` 时被使用（跨线段取值），
+            # 其余口径下 `check_new_extreme` 直接忽略它
+            full_ele_list = getattr(bi_list, "bi_list", None)
+            self.treat_bsp1(seg, BSP_CONF, is_target_bsp, full_ele_list=full_ele_list)
         else:
             # 盘整背驰：无中枢但最后一笔与前前笔背驰
             self.treat_pz_bsp1(seg, BSP_CONF, bi_list, is_target_bsp)
@@ -520,9 +523,15 @@ class CBSPointList(Generic[LINE_TYPE, LINE_LIST_TYPE]):
         c_window = seg.bi_list[c_lo:c_hi + 1] if c_hi >= c_lo else None
         return b_window, c_window, "swing"
 
-    def treat_bsp1(self, seg: CSeg[LINE_TYPE], BSP_CONF: CPointConfig, is_target_bsp: bool):
+    def treat_bsp1(self, seg: CSeg[LINE_TYPE], BSP_CONF: CPointConfig, is_target_bsp: bool,
+                   full_ele_list=None):
         """
         处理标准第一类买卖点（中枢背驰）
+
+        参数:
+            full_ele_list: 该级别全量要素列表（`bi_list.bi_list` / 线段级别传 None）。
+                仅 `bsp1_new_extreme_mode="level"` 时用于跨线段取值；其余口径忽略，
+                因此不传不会改变任何现有行为。
 
         判定顺序：
         1. 离开笔是否是极值（如果 bs1_peak=True）
@@ -543,7 +552,7 @@ class CBSPointList(Generic[LINE_TYPE, LINE_LIST_TYPE]):
         # 力度口径（chan-standard-bsp1-change D7 / §4.4）：
         # "swing"（默认）按走势段取值，"bi" 沿用改造前的单笔口径
         b_window, c_window, scope_effective = self._cal_force_windows(seg, last_zs, BSP_CONF)
-        break_peak, _ = last_zs.out_bi_is_peak(seg.end_bi.idx)
+        break_peak, _ = last_zs.out_bi_is_peak(seg.end_bi.idx, strict=BSP_CONF.bs1_peak_strict)
         # ② 突破中枢：`is_divergence` 内部会短路判定，这里单独取一次结果，
         # 供进度轴（chan-bsp-ladder-change D1）定位首个失败项。
         break_ok = last_zs.end_bi_break(seg.end_bi)
@@ -558,7 +567,8 @@ class CBSPointList(Generic[LINE_TYPE, LINE_LIST_TYPE]):
         if not divergence_ok:
             is_target_bsp = False
         standard_ok, standard_reason, standard_info = check_bsp1_standard(
-            seg.end_bi, seg.bi_list, seg.zs_lst, BSP_CONF, is_buy)
+            seg.end_bi, seg.bi_list, seg.zs_lst, BSP_CONF, is_buy,
+            full_ele_list=full_ele_list)
         if not standard_ok:
             is_target_bsp = False
 

@@ -231,3 +231,13 @@ def require_menu_system(user: dict = Depends(get_current_user)) -> dict:
     if user.get("is_admin") or "menu:system" in (user.get("perms") or []):
         return user
     raise HTTPException(status_code=403, detail="无系统管理页面权限")
+
+
+def require_menu_kline(user: dict = Depends(get_current_user)) -> dict:
+    """依赖：K 线相关读接口守卫 — 需 menu:kline 权限（无权限 → 403；is_admin 全放行）。
+
+    缠论参数配置的读接口用它：能看到 K 线页就能看到「当前参数」，改参数才需要 manage。
+    """
+    if user.get("is_admin") or "menu:kline" in (user.get("perms") or []):
+        return user
+    raise HTTPException(status_code=403, detail="无 K 线分析页面权限")

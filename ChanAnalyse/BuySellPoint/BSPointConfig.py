@@ -68,6 +68,11 @@ class CPointConfig:
     - max_bs2_rate: 第二类买卖点的最大回撤率
     - macd_algo: 背驰判断的 MACD 算法
     - bs1_peak: 第一类买卖点是否要求极值
+    - bs1_peak_strict: 极值判据的严格性（`chan-bsp1-extreme`）。True（standard 档默认）
+      = 严格优，中枢内笔的低点 `<=` 离开笔低点即视为未突破（相等极值不放行）；
+      False（legacy 档）= 改造前的宽松口径，相等极值放行。
+      **这个开关是 `legacy` 档逐笔等价的必要条件**：`bs1_peak` 在 legacy 档仍是开启的，
+      若无本开关，极值严格化会连带改变 legacy 基线（实测 258→255）。
     - target_types: 目标买卖点类型列表
     - bsp2_follow_1: 第二类买卖点是否必须跟随第一类
     - bsp3_follow_1: 第三类买卖点是否必须跟随第一类
@@ -81,7 +86,8 @@ class CPointConfig:
     - bsp1_dif_div: 第一类买卖点是否要求 DIF（黄白线）背驰
     - bsp1_zero_axis: 第一类买卖点是否要求 b/c 段之间 DIF 回抽过零轴
     - bsp1_trend_mode: 趋势判定口径（strict/overlap）
-    - bsp1_new_extreme_mode: 新低比较起点口径（trend_start/prev_zs_in/all）
+    - bsp1_new_extreme_mode: 新低比较起点口径（trend_start/prev_zs_in/all/level）。
+      `level` = 该要素之前的全量同向要素（跨线段，不受线段边界限制）
     - bsp1_zs_extend_to_seg_end: 是否仍要求中枢延伸到线段末笔（历史 4.8 条件）
     - bsp2_retrace_zs: 二买回调是否要求与中枢区间关联
     - bsp2s_require_zs: 类二是否要求末端价格落在中枢区间内
@@ -153,6 +159,7 @@ class CPointConfig:
                  bsp1_force_scope="swing",
                  bsp1_qjt=False,
                  bsp1_qjt_depth=1,
+                 bs1_peak_strict=True,
                  bsp2_confirm_window=2,
                  bsp2_time_axis_strong=0.5,
                  bsp2_time_axis_weak=1.0,
@@ -170,6 +177,9 @@ class CPointConfig:
         assert self.max_bs2_rate <= 1
         self.SetMacdAlgo(macd_algo)
         self.bs1_peak = bs1_peak
+        # 极值严格性（chan-bsp1-extreme）：与 `CZS.out_bi_is_peak` 的 strict 参数同源。
+        # legacy 档必须关闭它才能保持逐笔等价（`bs1_peak` 在 legacy 未关闭）。
+        self.bs1_peak_strict = bs1_peak_strict
         self.tmp_target_types = bs_type
         self.target_types: List[BSP_TYPE] = []
         self.bsp2_follow_1 = bsp2_follow_1
@@ -189,7 +199,8 @@ class CPointConfig:
         self.bsp1_trend_mode = self._check_choice(
             "bsp1_trend_mode", bsp1_trend_mode, ("strict", "overlap"))
         self.bsp1_new_extreme_mode = self._check_choice(
-            "bsp1_new_extreme_mode", bsp1_new_extreme_mode, ("trend_start", "prev_zs_in", "all"))
+            "bsp1_new_extreme_mode", bsp1_new_extreme_mode,
+            ("trend_start", "prev_zs_in", "all", "level"))
         self.bsp1_zs_extend_to_seg_end = bsp1_zs_extend_to_seg_end
 
         # ---- 第二类 / 类二标准判据开关 ----
