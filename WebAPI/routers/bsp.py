@@ -65,6 +65,27 @@ def _to_ms(bsp_date_iso: str, time_key: str) -> int:
             return 0
 
 
+def _record_id(it: dict) -> str:
+    """稳定的记录标识（bsp-page-level-filter-and-batch-monitor D4）。
+
+    bsp_index 无自增主键，原 `(page-1)*page_size+idx+1` 行号占位会随查询条件
+    与页码重复，导致前端 `row-key` + reserve-selection 在切换筛选后把「已选」
+    落到另一批记录上（批量提交会写错股票）。故改为由记录自身业务字段拼成的
+    复合键，字段集与表的 UNIQUE 约束同构，保证唯一且可跨查询复现。
+    """
+    return "|".join(
+        [
+            it["code"],
+            it["kl_type"],
+            it["autype"],
+            it["bsp_date"],
+            it["bsp_type"],
+            "B" if it["is_buy"] else "S",
+            it["time_key"],
+        ]
+    )
+
+
 @router.get("")
 async def bsp_list(
     page: int = Query(1),
@@ -76,6 +97,7 @@ async def bsp_list(
     date_from: str = Query(""),
     date_to: str = Query(""),
     sure: str = Query(""),
+    ladder: str = Query(""),
 ):
     """买卖点列表（分页 + 筛选；date_from/date_to 为 YYYY-MM-DD 日期范围，
     双端齐备按闭区间 [date_from, date_to] 匹配，只传一端单边过滤，双空不过滤）。
@@ -84,8 +106,13 @@ async def bsp_list(
     preview（只看未确认）；缺省不过滤；非法取值返回 400（三态字符串与
     direction 同风格，缺省语义显式无歧义）。
 
+    ladder（bsp-page-level-filter-and-batch-monitor D1）：确认阶梯级别过滤，
+    取值 L1/L2/L3/L4；缺省不过滤（无「未定级」桶——存量行按 is_sure 兜底后
+    必为 L4 或 L2）。过滤下推同一 WHERE，与列表「级别」列回显同口径。
+
     响应契约 PageRes<BspRecord>：{list, total, page, page_size}，每行携带
-    is_sure（记录确认状态，spec「记录携带确认状态」）。
+    is_sure（记录确认状态，spec「记录携带确认状态」）；id 为由记录自身字段
+    拼成的稳定复合键（spec「记录标识稳定」），非行号占位。
     """
     _check_date_param(date_from, "date_from")
     _check_date_param(date_to, "date_to")
@@ -124,6 +151,7 @@ async def bsp_list(
         page=page,
         page_size=page_size,
         is_sure=is_sure,
+        ladder=ladder if ladder else "",
     )
 
     items = result["items"]
@@ -135,10 +163,10 @@ async def bsp_list(
     price_map = fetch_current_prices([(i["code"], i["kl_type"]) for i in items])
 
     records = []
-    for idx, it in enumerate(items):
+    for it in items:
         current_price, change_pct = price_map.get((it["code"], it["kl_type"]), (0.0, 0.0))
         records.append({
-            "id": (page - 1) * page_size + idx + 1,  # 行号占位（表无 id 列）
+            "id": _record_id(it),  # 稳定复合键（D4，替代行号占位）
             "code": it["code"],
             "name": it["name"],
             "industries": industries_map.get(it["code"], []),

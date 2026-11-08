@@ -23,12 +23,16 @@ export const bspHandlers = [
     const dateTo = url.searchParams.get('date_to') || ''
     // 确认状态过滤（bsp-sure-annotation D3/D4）：confirmed 只回 true、preview 只回 false、缺省不过滤
     const sure = url.searchParams.get('sure') || ''
+    // 级别过滤（bsp-page-level-filter-and-batch-monitor D1）：L1/L2/L3/L4，空串 = 不过滤。
+    // mock 记录恒有 ladder（无存量 NULL 行），故直接等值匹配即可，与后端兜底映射口径等价
+    const ladder = url.searchParams.get('ladder') || ''
 
     let list = bspRecords
     if (keyword) list = list.filter((r) => r.code.includes(keyword) || r.name.includes(keyword))
     if (bspType) list = list.filter((r) => r.bsp_type === bspType)
     if (direction) list = list.filter((r) => r.direction === direction)
     if (klType) list = list.filter((r) => r.kl_type === klType)
+    if (ladder) list = list.filter((r) => r.ladder === ladder)
     if (sure === 'confirmed') list = list.filter((r) => r.is_sure === true)
     else if (sure === 'preview') list = list.filter((r) => r.is_sure === false)
     if (dateFrom || dateTo) {

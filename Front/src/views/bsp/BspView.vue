@@ -103,6 +103,12 @@
             <el-option label="全部类型" value="" />
             <el-option v-for="t in ALL_BSP_LABELS" :key="t" :label="t" :value="t" />
           </el-select>
+          <!-- 级别条件（bsp-page-level-filter-and-batch-monitor D2/D3）：确认阶梯级别单选，
+               选项按判定顺序 L4 > L3 > L1 > L2；无「未定级」——存量行按 is_sure 兜底后必为 L4 或 L2 -->
+          <el-select v-model="query.ladder" placeholder="级别" style="width: 130px" @change="onQueryChange">
+            <el-option label="全部级别" value="" />
+            <el-option v-for="l in ladderOptions" :key="l.value" :label="l.label" :value="l.value" />
+          </el-select>
           <el-select v-model="query.direction" placeholder="方向" style="width: 100px" @change="onQueryChange">
             <el-option label="全部方向" value="" />
             <el-option label="买" value="buy" />
@@ -138,6 +144,7 @@
             <el-tab-pane label="结果列表" name="list">
               <div class="tbl-wrap" v-loading="loading">
                 <el-table
+                  ref="bspTableRef"
                   :data="records"
                   empty-text="暂无买卖点记录"
                   @selection-change="onSelectionChange"
@@ -387,6 +394,92 @@
         <el-button type="primary" :loading="addingMonitor" @click="confirmAddMonitor">确认加入</el-button>
       </template>
     </el-dialog>
+
+    <!-- 批量加入监控弹窗（bsp-page-level-filter-and-batch-monitor D7）：
+         分组（本次提交的唯一统一参数，含下拉尾部行内新建）+ 只读目标清单。
+         与行级弹窗分叉而非复用：行级有可编辑买点时间与价格联动，批量是只读清单，
+         字段与状态差异较大，按 mode 合并反而更难读（design D7）。
+         清单含方向列，让「不拦截卖点行」这一决定可自查 -->
+    <el-dialog
+      v-model="batchMonitorVisible"
+      :title="batchMonitorTitle"
+      width="760px"
+      append-to-body
+    >
+      <div class="add-dialog-body" v-loading="batchSubmitting">
+        <!-- 分组选择：复用行级弹窗的设施（getMonitorGroups / createMonitorGroup + 行内新建） -->
+        <div class="form-row">
+          <label>分组</label>
+          <el-select
+            v-model="monitorGroupId"
+            placeholder="未分组"
+            style="width: 100%"
+            @visible-change="onGroupSelectVisible"
+          >
+            <el-option label="未分组" :value="null" />
+            <el-option v-for="g in monitorGroups" :key="g.id" :label="g.name" :value="g.id" />
+            <template #footer>
+              <div v-if="!groupCreating" class="group-add-entry" @click="groupCreating = true">
+                <el-icon><Plus /></el-icon>
+                <span>新增分组</span>
+              </div>
+              <div v-else class="group-add-form">
+                <el-input
+                  v-model="newGroupName"
+                  size="small"
+                  placeholder="输入分组名"
+                  maxlength="20"
+                  @keyup.enter="onCreateGroup"
+                />
+                <el-button size="small" :loading="groupSaving" @click="onCreateGroup">确定</el-button>
+              </div>
+            </template>
+          </el-select>
+        </div>
+        <p class="dialog-hint">{{ batchDedupeHint }}</p>
+        <!-- 只读目标清单：无任何可编辑控件，仅用于提交前核对 -->
+        <el-table :data="batchTargets" size="small" max-height="320" empty-text="无可提交记录">
+          <el-table-column label="编码" width="106">
+            <template #default="{ row }"><span class="mono">{{ row.code }}</span></template>
+          </el-table-column>
+          <el-table-column label="名称" width="92" prop="name" />
+          <el-table-column label="周期" width="72">
+            <template #default="{ row }">{{ klLabel(row.kl_type) }}</template>
+          </el-table-column>
+          <el-table-column label="买卖点时间" min-width="164">
+            <template #default="{ row }">
+              <span class="mono">{{ toDateTimeStr(row.bsp_date) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="买卖点价格" width="102" align="right">
+            <template #default="{ row }">
+              <span class="num">{{ formatPrice(row.bsp_price) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="方向" width="72">
+            <template #default="{ row }">
+              <span class="badge" :class="row.direction === 'buy' ? 'badge--rise' : 'badge--fall'">
+                {{ row.direction === 'buy' ? '买点' : '卖点' }}
+              </span>
+            </template>
+          </el-table-column>
+        </el-table>
+        <p class="dialog-hint">
+          每条以其自身周期与买卖点时间创建监控，入场价取该时间点的收盘价（取不到时回退买卖点价格并计入失败）。
+        </p>
+      </div>
+      <template #footer>
+        <el-button :disabled="batchSubmitting" @click="batchMonitorVisible = false">取消</el-button>
+        <el-button
+          type="primary"
+          :loading="batchSubmitting"
+          :disabled="batchSubmitting || !batchTargets.length"
+          @click="confirmBatchMonitor"
+        >
+          确认加入
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -430,6 +523,17 @@ const klOptions = [
 function klLabel(v: string) {
   return klOptions.find((k) => k.value === v)?.label || v
 }
+
+// ---- 级别筛选下拉（bsp-page-level-filter-and-batch-monitor D2/D3）----
+// 选项按确认阶梯的判定顺序 L4 > L3 > L1 > L2（与表格级别列语义排序一致，非数值序）；
+// 文案用短标签以适配 130px 下拉宽度（对齐「买卖点类型」），全称与仓位指引仍在级别列 tooltip。
+// 无「未定级」选项：存量行经 is_sure 兜底映射后必为 L4 或 L2，不存在未定级桶（design D2）。
+const ladderOptions = [
+  { value: 'L4', label: 'L4 确认买卖点' },
+  { value: 'L3', label: 'L3 背驰预警' },
+  { value: 'L1', label: 'L1 区间套' },
+  { value: 'L2', label: 'L2 虚笔候选' },
+]
 
 // ---- 级别列（bsp-ladder-change 4.2）：徽章色 + hover 说明文案 ----
 /** 徽章样式：L4 实色 badge--rise / L3 warning / L1 info / L2（及缺省）弱化 default */
@@ -482,6 +586,8 @@ const query = reactive<BspQuery>({
   date_to: '',
   // 确认状态（bsp-sure-annotation D4）：'' = 全部（不传参数），confirmed/preview 透传后端 sure 过滤
   sure: '',
+  // 级别条件（bsp-page-level-filter-and-batch-monitor D1）：'' = 全部级别（不传参数）
+  ladder: '',
 })
 
 // 日期范围控件本地状态（daterange 绑定 [start, end]，空为 null）
@@ -624,6 +730,8 @@ function onReset() {
   query.kl_type = ''
   // 确认状态恢复默认：全部（不传参数）
   query.sure = ''
+  // 级别恢复默认：全部级别（不传参数）
+  query.ladder = ''
   // 日期范围恢复默认：最近三个交易日（spec「默认日期范围为最近三个交易日」）
   dateRange.value = recentThreeWorkdays()
   syncDateRangeToQuery()
@@ -713,10 +821,127 @@ async function confirmBatchWatchlist() {
   }
 }
 
-// ---- 加入监控 ----
+// ---- 批量加入监控（bsp-page-level-filter-and-batch-monitor 任务组 4）----
+// 按行参数提交（D5）：每条以自身 kl_type / bsp_date / 该时间点收盘价创建监控，
+// 分组是唯一统一参数；按 (code, kl_type) 去重（D6）；串行提交、部分失败不中断、
+// 成功后清空选择集（D8）。
+const bspTableRef = ref<TableInstance | null>(null)
+const batchMonitorVisible = ref(false)
+const batchSubmitting = ref(false)
+/** 去重后的待提交清单（弹窗只读清单的数据源） */
+const batchTargets = ref<BspRecord[]>([])
+/** 去重前的选中条数（用于「去重前 X → 去重后 Y」提示） */
+const batchRawCount = ref(0)
+
+/** 级别强度序（D6 次级裁决）：与判定顺序一致 L4 > L3 > L1 > L2；缺失/未定级最低 */
+const LADDER_STRENGTH: Record<string, number> = { L4: 3, L3: 2, L1: 1, L2: 0 }
+
+/**
+ * 同 (code, kl_type) 两条记录谁更该保留（D6）：
+ * 先比买卖点时间（新者胜），打平比级别强度，仍打平返回 false 保留先遇者
+ * （bsp_date 由 time_key 转出，时间为 ms 级，故打平即 time_key 打平，取首即可）
+ */
+function preferTarget(a: BspRecord, b: BspRecord): boolean {
+  if (a.bsp_date !== b.bsp_date) return a.bsp_date > b.bsp_date
+  const sa = LADDER_STRENGTH[a.ladder ?? ''] ?? -1
+  const sb = LADDER_STRENGTH[b.ladder ?? ''] ?? -1
+  return sa > sb
+}
+
+/** 按（股票编码, 周期）去重（D6）：同一组合只保留一条 */
+function dedupeTargets(rows: BspRecord[]): BspRecord[] {
+  const best = new Map<string, BspRecord>()
+  for (const r of rows) {
+    const key = `${r.code}|${r.kl_type}`
+    const cur = best.get(key)
+    if (!cur || preferTarget(r, cur)) best.set(key, r)
+  }
+  return Array.from(best.values())
+}
+
+const batchMonitorTitle = computed(() => `批量加入监控（${batchTargets.value.length} 条）`)
+
+/** 提交前告知去重前后数量（spec「同股同周期去重保留最新」） */
+const batchDedupeHint = computed(() => {
+  const before = batchRawCount.value
+  const after = batchTargets.value.length
+  if (before === after) {
+    return `已选 ${before} 条，按（编码, 周期）去重后 ${after} 条 —— 无重复，全部提交。`
+  }
+  return `已选 ${before} 条，按（编码, 周期）去重后 ${after} 条（去重 ${before - after} 条，同一股票同一周期保留买卖点时间最新的一条）。`
+})
+
+/** 打开批量弹窗：选中集 → 去重清单；分组重置为「未分组」 */
 function onBatchMonitor() {
   if (!hasSelected.value) return
-  ElMessage.success(`已将 ${selectedCount.value} 条记录加入监控（演示）`)
+  batchRawCount.value = selected.value.length
+  batchTargets.value = dedupeTargets(selected.value)
+  // 分组为本次提交的统一参数，每次打开都重置（与行级弹窗共用同一状态，两者不会同时打开）
+  monitorGroupId.value = null
+  groupCreating.value = false
+  newGroupName.value = ''
+  batchMonitorVisible.value = true
+}
+
+/**
+ * 确认批量提交（D8）：逐条串行，单条失败不中断后续。
+ * 每条按其自身周期与买卖点时间取价（D5），取价失败回退该行买卖点价格并计入失败。
+ * 成功 = 建监控成功且取价成功；失败口径分为「取价失败（已回退价格）」「创建失败」。
+ */
+async function confirmBatchMonitor() {
+  if (!batchTargets.value.length || batchSubmitting.value) return
+  batchSubmitting.value = true
+  let ok = 0
+  let priceFallback = 0
+  let createFail = 0
+  try {
+    for (const row of batchTargets.value) {
+      const time = toDateTimeStr(row.bsp_date)
+      // 取价：该股票在该行周期上不晚于买卖点时间的最近一根收盘价
+      let entry = row.bsp_price
+      let fellBack = false
+      try {
+        const r = await getPriceAt(row.code, row.kl_type, time)
+        entry = r.price
+      } catch {
+        fellBack = true
+      }
+      try {
+        await createMonitor({
+          code: row.code,
+          kl_type: row.kl_type,
+          entry_price: entry,
+          monitor_start_time: time,
+          // 分组为统一参数；未分组（null）不传，后端写 NULL
+          group_id: monitorGroupId.value ?? undefined,
+          // 不传 source_type：沿用缺省来源 'chan'（与行级按钮一致）
+        })
+        if (fellBack) priceFallback++
+        else ok++
+      } catch {
+        // 单条创建失败不中断后续（失败提示由 axios 拦截器逐条给出）
+        createFail++
+      }
+    }
+    const total = batchTargets.value.length
+    const failed = priceFallback + createFail
+    if (failed === 0) {
+      ElMessage.success(`已加入监控 ${ok} 条`)
+    } else {
+      const reasons = [
+        priceFallback ? `取价失败回退买卖点价格 ${priceFallback} 条` : '',
+        createFail ? `创建失败 ${createFail} 条` : '',
+      ]
+        .filter(Boolean)
+        .join('、')
+      ElMessage.warning(`批量加入监控完成：成功 ${ok} 条，失败 ${failed} 条（${reasons}，共 ${total} 条）`)
+    }
+    batchMonitorVisible.value = false
+    // 提交成功后清空选择集（D8）；clearSelection 会触发 selection-change，已选计数随之归零
+    bspTableRef.value?.clearSelection()
+  } finally {
+    batchSubmitting.value = false
+  }
 }
 
 // ---- 行级加入监控（design D8 修订 + D12 价格联动，任务 4.5/4.9）----
