@@ -274,6 +274,7 @@ def query_bsp(
     page: int = 1,
     page_size: int = 20,
     is_sure: Optional[bool] = None,
+    ladder: str = "",
 ) -> dict:
     """条件查询买卖点，返回 {items, total, page, page_size}。
 
@@ -317,6 +318,13 @@ def query_bsp(
     if is_sure is not None:
         conditions.append("b.is_sure = %s")
         params.append(is_sure)
+    if ladder:
+        # 存量行 ladder 为 NULL → 按 is_sure 兜底映射后匹配（同 ladder_of_legacy）：
+        # L4 与 L2 能命中存量行，L1/L3 不命中（存量数据无该信息，值域只有 L4/L2）
+        conditions.append(
+            "COALESCE(b.ladder, CASE WHEN b.is_sure THEN 'L4' ELSE 'L2' END) = %s"
+        )
+        params.append(ladder)
     if keyword:
         kw = f"%{keyword}%"
         conditions.append("(b.code ILIKE %s OR s.name ILIKE %s OR s.name_py ILIKE %s)")

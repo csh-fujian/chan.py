@@ -149,7 +149,11 @@ export interface ChanResult {
 // 买卖点记录
 // ---------------------------------------------------------------------------
 export interface BspRecord {
-  id: number
+  /** 稳定记录标识（bsp-page-level-filter-and-batch-monitor D4）：由记录自身业务字段
+   *  拼成的复合键（`code|kl_type|autype|bsp_date|bsp_type|B|S|time_key`），与 bsp_index
+   *  的 UNIQUE 约束同构。此前是 `(page-1)*page_size+idx+1` 行号占位，会在切换查询条件后
+   *  让表格 `row-key` 命中另一批记录，故批量提交依赖其稳定性。 */
+  id: string
   code: string
   name: string
   industries: string[]

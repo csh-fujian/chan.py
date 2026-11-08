@@ -15,6 +15,9 @@ export interface BspQuery {
   date_to?: string | null
   /** 确认状态过滤（bsp-sure-annotation D3，后端同风格三态字符串）：'confirmed' 只看已确认、'preview' 只看未确认、空=不过滤 */
   sure?: string
+  /** 确认阶梯级别过滤（bsp-page-level-filter-and-batch-monitor D1）：'L1'/'L2'/'L3'/'L4'，空=不过滤。
+   *  无「未定级」取值——存量行按 is_sure 兜底后必为 L4 或 L2。 */
+  ladder?: string
 }
 
 /** 买卖点列表（服务端分页） */

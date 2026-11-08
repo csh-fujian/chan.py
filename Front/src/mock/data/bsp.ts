@@ -43,8 +43,14 @@ export const bspRecords: BspRecord[] = Array.from({ length: 60 }, (_, i) => {
   const isSure = i < 54
   // 已确认行分布在近 30 天；未确认行贴近当前（0~1 天，尾部预览形态）
   const daysAgo = isSure ? Math.floor(r * 30) : Math.floor(r * 2)
+  const bspDate = Date.now() - daysAgo * 86400000
+  const klType = klTypes[i % klTypes.length]
+  // id 稳定复合键（bsp-page-level-filter-and-batch-monitor D4）：真实接口由记录自身
+  // 业务字段拼成（含 autype/time_key），此处按同一形状用 mock 可得字段拼，避免用
+  // 行号占位在切换筛选后串行。mock 无 autype/time_key，故以其索引位串 i 兜底区分。
+  const id = `${stock.code}|${klType}|QFQ|${bspDate}|${bspType}|${direction === 'buy' ? 'B' : 'S'}|${i}`
   return {
-    id: i + 1,
+    id,
     code: stock.code,
     name: stock.name,
     industries: stock.industries,
@@ -52,8 +58,8 @@ export const bspRecords: BspRecord[] = Array.from({ length: 60 }, (_, i) => {
     direction: direction as 'buy' | 'sell',
     bsp_price: +(basePrice * (0.9 + r * 0.2)).toFixed(2),
     current_price: stock.price,
-    bsp_date: Date.now() - daysAgo * 86400000,
-    kl_type: klTypes[i % klTypes.length],
+    bsp_date: bspDate,
+    kl_type: klType,
     change_pct: +((r - 0.5) * 10).toFixed(2),
     is_sure: isSure,
     // 已确认 → L4；未确认的一买家族 → 三轴组合轮转；非一买类型 → null（未定级）
