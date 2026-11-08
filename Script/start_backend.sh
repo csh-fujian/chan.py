@@ -3,7 +3,7 @@
 # 启动 chan.py 后端 FastAPI 服务
 #
 # 用法:
-#   ./start_backend.sh                       # 默认 0.0.0.0:8000
+#   ./start_backend.sh                       # 默认 0.0.0.0:8001（8000 被本机 douyin 服务占用）
 #   PORT=9000 ./start_backend.sh             # 指定端口
 #   PG_DSN="host=... dbname=... user=... password=..." ./start_backend.sh  # 覆盖默认连接
 #   ./start_backend.sh --reload              # 开发热重载（透传 uvicorn 参数）
@@ -34,7 +34,7 @@ fi
 export PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
 
 HOST="${HOST:-0.0.0.0}"
-PORT="${PORT:-8000}"
+PORT="${PORT:-8001}"
 
 # PostgreSQL 连接（默认本地 chan 库；可用 PG_DSN 环境变量覆盖）
 PG_DSN="${PG_DSN:-host=127.0.0.1 port=5432 dbname=chan user=postgres password=postgres}"

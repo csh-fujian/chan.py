@@ -5,7 +5,7 @@ REM ============================================================================
 REM start_backend.bat -- Start chan.py FastAPI backend (Windows)
 REM
 REM Usage:
-REM   start_backend.bat                       REM default 0.0.0.0:8000
+REM   start_backend.bat                       REM default 0.0.0.0:8001
 REM   set PORT=9000 & start_backend.bat       REM custom port
 REM   set PG_DSN=host=... dbname=... user=... password=... & start_backend.bat
 REM   start_backend.bat --reload              REM dev hot-reload (uvicorn args)
@@ -35,7 +35,7 @@ REM Ensure repo root is on the import path (ChanAnalyse.* / WebAPI.*)
 set "PYTHONPATH=%SCRIPT_DIR%;%PYTHONPATH%"
 
 if "%HOST%"=="" set "HOST=0.0.0.0"
-if "%PORT%"=="" set "PORT=8000"
+if "%PORT%"=="" set "PORT=8001"
 
 REM PostgreSQL connection (override with PG_DSN env var)
 if "%PG_DSN%"=="" set "PG_DSN=host=127.0.0.1 port=5432 dbname=chan user=postgres password=postgres"

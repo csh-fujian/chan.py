@@ -50,7 +50,10 @@ run_cmd() {
     local logfile="$1"; shift
     echo "→ 执行: $*"
     # 只报状态，绝不回显连接串（含密码）
-    case "${PG_DSN,,}" in
+    # 兼容 macOS 自带 bash 3.2：不支持 ${var,,}，改用 tr 转小写
+    local pg_dsn_lc
+    pg_dsn_lc="$(printf '%s' "$PG_DSN" | tr '[:upper:]' '[:lower:]')"
+    case "$pg_dsn_lc" in
         none|off|0) echo "→ PG_DSN: 已关闭（不写 PG）" ;;
         *)          echo "→ PG_DSN: 已配置" ;;
     esac
