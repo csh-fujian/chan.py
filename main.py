@@ -45,7 +45,7 @@ if __name__ == "__main__":
         "trigger_step": False,          # 是否步进模式（False=一次性加载）
         "skip_step": 0,                 # 跳过前N步
         # 买卖点判定走内核默认档位（标准缠论口径），不在此处覆盖
-        # divergence_rate / min_zs_cnt / bs1_peak / macd_algo / bs1_peak_strict。
+        # divergence_rate / min_zs_cnt / bs1_peak / macd_algo；
         # 如需复现改造前的旧口径，改用 "bsp_preset": "legacy"。
         # （曾在此硬写 "macd_algo": "peak"，与上面的约定矛盾，且会让演示输出
         #  偏离内核默认的 full_area，已移除）

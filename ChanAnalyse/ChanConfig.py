@@ -63,9 +63,9 @@ _BSP_PRESETS = {
         # 力度算法：legacy 逐笔等价的必要条件（chan-bsp1-extreme）。默认档已改为
         # full_area，不显式写回 "peak" 就会偏离 258/69/318/317/61/50 基线。
         "macd_algo": "peak",
-        # 极值严格性：legacy 下 bs1_peak 仍开启，必须显式回退为宽松口径，
-        # 否则「相等极值不放行」（chan-bsp1-extreme）会改变 legacy 一买基线
-        # （实测 258→255）。这是档位等价的必要条件，不是防御性写法。
+        # 极值严格性：legacy 用宽松口径。standard 档自 chan-bsp1-loose-extreme
+        # 起同为 False（严格优不再是产品口径），此处保留显式写入，防止将来
+        # 有人把 standard 改回严格时 legacy 跟着漂移。
         "bs1_peak_strict": False,
         # 区间套特征：默认已 False，显式写入防止将来单独调 legacy 判据开关时
         # 被特征字段污染等价性基线
@@ -241,8 +241,10 @@ class CChanConfig:
             # 也会被判为不背驰。41 只日线横评见 design.md D1。
             "macd_algo": "full_area",
             "bs1_peak": True,
-            # 极值严格性（chan-bsp1-extreme）：standard 档默认严格优
-            "bs1_peak_strict": True,
+            # 极值严格性（chan-bsp1-loose-extreme）：standard 档已改为宽松口径，
+            # 相等极值也算创新高/新低。严格优不再作为用户可配置项，
+            # 仅保留 kernel 级能力供历史基线脚本显式 pin。
+            "bs1_peak_strict": False,
             "bs_type": "1,1p,2,2s,3a,3b",
             "bsp2_follow_1": True,
             "bsp3_follow_1": True,
@@ -317,6 +319,10 @@ class CChanConfig:
         for k, v in conf.items():
             if isinstance(v, str):
                 v = f'"{v}"'  # 字符串值需要加引号，以便 exec 时作为字符串字面量
+            elif isinstance(v, (list, tuple)):
+                # 列表值（`macd_algo` 多选、`bs_type`）必须用 repr 落成字面量，
+                # 否则 exec 会把 `['a','b']` 当成裸名字而 NameError
+                v = repr(list(v))
             v = _parse_inf(v)  # 处理特殊值（如 "inf" → float("inf")）
             if k.endswith("-buy"):
                 prop = k.replace("-buy", "")

@@ -125,8 +125,8 @@ check('C1 切到 legacy 后 draft 等于 legacy 基线', schema.params.every(
 ov = store.computeOverrides()
 check('C2 切档位后 overrides 为空', Object.keys(ov).length === 0, JSON.stringify(ov))
 
-// D. 改一项
-store.setDraftValue('min_zs_cnt', 3)
+// D. 改一项（min_zs_cnt 上限 2，legacy 基线为 1，用 2 区分）
+store.setDraftValue('min_zs_cnt', 2)
 const only = store.computeOverrides()
 check('D1 改一项后 overrides 只含该项',
   JSON.stringify(Object.keys(only)) === '["min_zs_cnt"]', JSON.stringify(only))
@@ -156,6 +156,20 @@ store.setDraftValue('bsp1_zero_axis', !legacy.bsp1_zero_axis)
 ov = store.computeOverrides()
 check('G1 legacy 档只提交用户真正改过的那一项',
   JSON.stringify(Object.keys(ov)) === '["bsp1_zero_axis"]', JSON.stringify(ov))
+
+// H. macd_algo 多选：数组型草稿值的脏判定与 overrides 往返
+seed({ ...kb }, {})
+check('H1 macd_algo 基线是数组', Array.isArray((store.draft as any).macd_algo),
+  JSON.stringify((store.draft as any).macd_algo))
+store.setDraftValue('macd_algo', ['full_area', 'diff_peak'])
+check('H2 多选顺序影响判定（与基线不同即为脏）', store.dirtyCount === 1,
+  'dirty=' + store.dirtyCount)
+ov = store.computeOverrides()
+check('H3 overrides 里 macd_algo 保持数组',
+  JSON.stringify(ov.macd_algo) === '["full_area","diff_peak"]', JSON.stringify(ov))
+// 勾回基线的单项形态后应恢复干净
+store.setDraftValue('macd_algo', ['full_area'])
+check('H4 勾回基线值后不再算脏', store.dirtyCount === 0, 'dirty=' + store.dirtyCount)
 
 console.log(fails === 0 ? '__PASS__' : '__FAIL__' + fails)
 process.exit(fails === 0 ? 0 : 1)

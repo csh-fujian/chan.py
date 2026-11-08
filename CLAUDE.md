@@ -166,12 +166,12 @@ CChan (ChanAnalyse/Chan.py)  ← 门面，接收 stock code + CChanConfig
 
 ## 缠论参数配置（`chan-config-panel`）
 
-缠论参数已全部开放为业务配置，由 K 线页顶栏「缠论参数」按钮打开的抽屉维护（58 项：判据 33 / 标注 8 / 结构 15）。
+缠论参数已全部开放为业务配置，由 K 线页顶栏「缠论参数」按钮打开的抽屉维护（57 项：54 常驻 + 3 条件项；分组 判据 31 / 标注 8 / 结构 15）。
 
 | 模块 | 职责 |
 |------|------|
 | `WebAPI/chan_config_store.py` | `chan_config` + `chan_config_sync_job` 惰性 DDL、读写（`load()` 带版本缓存）、派生键（`apply_derived()`）、档位回填（`load_preset()`/`_preset_injected()`）、构造期校验（`validate_config()`/`validate_preset()`）、点号键桥接（`to_kernel()`/`to_flat()`） |
-| `WebAPI/chan_config_schema.py` | 58 项参数元数据（分组 / 控件 / 白话解释 / 默认值反射） |
+| `WebAPI/chan_config_schema.py` | 57 项参数元数据（分组 / 控件 / 白话解释 / 默认值反射） |
 | `WebAPI/routers/chan_config.py` | `GET/PUT /api/chan-config`、`GET /schema`、`POST /recompute`、`POST /sync`、`GET /sync/status` |
 | `Front/src/components/kline/ChanConfigDrawer.vue` | 抽屉主体（草稿态 + 保存并重算 + 批量同步轮询） |
 | `Front/src/stores/chanConfig.ts` | `saved`/`schema`/`draft` 三态 + `dirtyCount` |

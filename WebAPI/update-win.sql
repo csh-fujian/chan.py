@@ -183,3 +183,16 @@ UPDATE stock SET board = '指数'
  WHERE code IN ('sh.000001','sh.000010','sh.000016','sh.000300',
                 'sh.000852','sh.000905','sz.399001','sz.399006')
    AND board <> '指数';
+
+-- 2026-11-08 chan-bsp1-loose-extreme：下线 `bs1_peak_strict`（Windows 机器上执行）
+-- 背景：极值判据改为固定的宽松口径（相等极值也算创新高/新低），该开关已从
+--       配置面板删除、也从 config_fingerprint.FINGERPRINT_KEYS 移除。
+--       旧库里残留的 `true` 会经 load() 送进 CChanConfig 把口径收紧回去，
+--       而指纹不再覆盖它 —— 属于「面板看不到却在生效」的静默故障。
+-- 代码侧兜底：chan_config_store._RETIRED_KEYS / _drop_retired() 在读取、
+--       校验、保存三个出口一律清除，因此本 SQL 只是把存量行也擦干净。
+-- 幂等：两处 jsonb 各减一个键，键不存在时语句为空操作。
+UPDATE chan_config SET overrides = overrides - 'bs1_peak_strict'
+ WHERE overrides ? 'bs1_peak_strict';
+UPDATE chan_config SET config = config - 'bs1_peak_strict'
+ WHERE config ? 'bs1_peak_strict';

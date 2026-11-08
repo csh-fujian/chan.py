@@ -65,7 +65,8 @@ print("\n[1] 两个入口同源（tasks 2.1）")
 # 保存一份「非默认」配置，验证两个入口都吃到了它
 _DISTINGUISHING = {
     "divergence_rate": 0.75,
-    "min_zs_cnt": 3,
+    # 上限 2（standard 档默认 2），故用 1 与默认值区分
+    "min_zs_cnt": 1,
     "bi_fx_check": "huge_check" if False else "totally",   # 结构参数也验证
     "zs_combine": False,
 }
@@ -96,7 +97,7 @@ if _pg_ok:
         # 用户配置确实生效（不是两边都用默认）
         check("用户 divergence_rate=0.75 已生效",
               _read(c_api, "divergence_rate") == 0.75, str(_read(c_api, "divergence_rate")))
-        check("用户 min_zs_cnt=3 已生效", _read(c_engine, "min_zs_cnt") == 3)
+        check("用户 min_zs_cnt=1 已生效", _read(c_engine, "min_zs_cnt") == 1)
         check("用户 bi_fx_check=totally 已生效",
               _read(c_api, "bi_fx_check") == "totally", str(_read(c_api, "bi_fx_check")))
         check("用户 zs_combine=False 已生效", _read(c_engine, "zs_combine") is False)

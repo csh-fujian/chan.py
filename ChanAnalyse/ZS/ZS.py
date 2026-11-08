@@ -118,6 +118,32 @@ def is_span_supported(macd_algo) -> bool:
     return algo_name not in BI_ONLY_MACD_ALGOS
 
 
+def cfg_algos(config) -> List:
+    """取出配置对象上的指标列表。
+
+    `macd_algos` 是内核统一形态；对只暴露单值 `macd_algo` 的历史桩件与
+    旧配置对象退回单元素列表，使调用方无需分支。
+    """
+    algos = getattr(config, "macd_algos", None)
+    if algos:
+        return list(algos)
+    single = getattr(config, "macd_algo", None)
+    if single is None:
+        return []
+    return list(single) if isinstance(single, (list, tuple)) else [single]
+
+
+def any_span_supported(macd_algos) -> bool:
+    """多指标口径下：是否**至少有一项**支持区间取值。
+
+    多选时不能要求「全部支持」才走走势段口径 —— 那会让用户只勾一个量能类
+    指标就把整段口径退回单笔，连带改变其余指标的取值粒度。正确做法是
+    走走势段口径，由 `_span_metric` 对不支持区间的那几项**各自**退回单笔。
+    """
+    algos = macd_algos if isinstance(macd_algos, (list, tuple)) else [macd_algos]
+    return any(is_span_supported(a) for a in algos)
+
+
 class CZS(Generic[LINE_TYPE]):
     """
     中枢 - 由至少三笔（或三段）的重叠区间构成
@@ -396,10 +422,15 @@ class CZS(Generic[LINE_TYPE]):
 
         缠论知识 - 中枢背驰：
         中枢背驰 = 离开中枢的笔力度 < 进入中枢的笔力度
-        力度通过 MACD 指标衡量（由 config.macd_algo 决定）。
+        力度通过技术指标衡量（由 config.macd_algos 决定，可多选）。
 
-        背驰率 = 离开笔 MACD 指标 / 进入笔 MACD 指标
+        背驰率 = 离开笔指标 / 进入笔指标
         背驰率 < divergence_rate 时，认为发生背驰。
+
+        **多指标（AND）**：`config.macd_algos` 可以有多项，此时**每一项都必须
+        满足** `离开 <= divergence_rate * 进入` 才算背驰；任一指标不满足即判为
+        不背驰。返回的背驰率取各指标中的**最大值**（最不容易背驰的那一项），
+        因为它是实际卡住判定的那一个。
 
         `divergence_rate > 100` 表示**显式关闭背驰判据**（历史实现称「保送」）：
         此时本函数不构成任何过滤，但调用方仍必须独立执行结构判据
@@ -417,27 +448,40 @@ class CZS(Generic[LINE_TYPE]):
         """
         if not self.end_bi_break(out_bi):  # 最后一笔必须突破中枢
             return False, None
-        in_metric = _span_metric(
-            b_window, config.macd_algo, is_reverse=False,
-            fallback=lambda: self.get_bi_in().cal_macd_metric(config.macd_algo, is_reverse=False),
-        )
-        if c_window is not None:
-            out_metric = _span_metric(c_window, config.macd_algo, is_reverse=True)
-        elif out_bi is None:
-            out_metric = self.get_bi_out().cal_macd_metric(config.macd_algo, is_reverse=True)
-        else:
-            out_metric = out_bi.cal_macd_metric(config.macd_algo, is_reverse=True)
 
-        if config.divergence_rate > 100:
-            # 显式关闭背驰判据：不阻塞，但也不宣称「背驰成立」。
-            # 口径锁定（chan-standard-bsp1-change task 2.2a）：>100 魔数与
-            # BSPointList.treat_bsp1 降级路由的 diver_proven 判定
-            # （divergence_rate <= 100 才承认背驰实证）共用同一口径——
-            # 本分支返回的 True 是空真（放行闸门），降级路由不得把它当证据。
-            # 禁止任一侧单独改阈值。
-            return True, out_metric/in_metric
-        else:
-            return out_metric <= config.divergence_rate*in_metric, out_metric/in_metric
+        # 多指标：`macd_algos` 是内核统一形态；对只暴露 `macd_algo` 的历史桩件
+        # 由 `cfg_algos()` 退回单元素列表
+        algos = cfg_algos(config)
+        rates: List[float] = []
+        all_diverged = True
+        for algo in algos:
+            in_metric = _span_metric(
+                b_window, algo, is_reverse=False,
+                fallback=lambda a=algo: self.get_bi_in().cal_macd_metric(a, is_reverse=False),
+            )
+            if c_window is not None:
+                out_metric = _span_metric(c_window, algo, is_reverse=True)
+            elif out_bi is None:
+                out_metric = self.get_bi_out().cal_macd_metric(algo, is_reverse=True)
+            else:
+                out_metric = out_bi.cal_macd_metric(algo, is_reverse=True)
+
+            rate_i = out_metric / in_metric
+            rates.append(rate_i)
+            if config.divergence_rate > 100:
+                # 显式关闭背驰判据：不阻塞，但也不宣称「背驰成立」。
+                # 口径锁定（chan-standard-bsp1-change task 2.2a）：>100 魔数与
+                # BSPointList.treat_bsp1 降级路由的 diver_proven 判定
+                # （divergence_rate <= 100 才承认背驰实证）共用同一口径——
+                # 本分支返回的 True 是空真（放行闸门），降级路由不得把它当证据。
+                # 禁止任一侧单独改阈值。
+                continue
+            if not out_metric <= config.divergence_rate * in_metric:
+                all_diverged = False
+
+        # 背驰率取最保守的一项（实际卡住判定的那个指标）
+        rate = max(rates) if rates else None
+        return all_diverged, rate
 
     def init_from_zs(self, zs: 'CZS'):
         """
@@ -485,16 +529,17 @@ class CZS(Generic[LINE_TYPE]):
         return (end_bi.is_down() and end_bi._low() < self.low) or \
             (end_bi.is_up() and end_bi._high() > self.high)
 
-    def out_bi_is_peak(self, end_bi_idx: int, strict: bool = True):
+    def out_bi_is_peak(self, end_bi_idx: int, strict: bool = False):
         """
         判断离开笔是否是中枢之后的最极值笔
 
         参数:
             end_bi_idx: 线段的结束笔索引
-            strict: 极值严格性（`chan-bsp1-extreme`）。True = 严格优，
-                相等极值不放行；False = 改造前的宽松口径。
-                取值来自配置项 `bs1_peak_strict`——**必须由调用方传入，
-                不要在内部硬编码**，否则 legacy 档无法保持逐笔等价。
+            strict: 极值严格性。默认 False（宽松）——相等极值算「创新极值」。
+                True 是历史严格优口径（`chan-bsp1-extreme` 时代），
+                现已不作为用户可配置项，只保留供历史对照脚本显式传参。
+                取值仍由调用方传入（`BSP_CONF.bs1_peak_strict`），
+                **不要在内部硬编码**。
 
         返回:
             (是否是最极值, 与最近一笔的差距比例)
@@ -503,15 +548,15 @@ class CZS(Generic[LINE_TYPE]):
         在中枢内部的笔中，找离结束笔最近的一笔，
         判断离开笔是否比中枢内的笔都更极端。
 
-        **严格优（`chan-bsp1-extreme`：极值判定为严格优）**：相等极值不算「更极端」。
+        **宽松优（`chan-bsp1-loose-extreme`）**：相等极值**算作**「更极端」。
         本判据与 `BSPJudgement.check_new_extreme` 是同一契约的两侧实现——
         前者比较「中枢内部笔」，后者比较「趋势范围内同向要素」，两者的
         严格性必须一致，否则 `bs1_peak` 与 `bsp1_new_extreme` 会互相打架：
         一个放行双底、另一个拦下，最终结论取决于检查顺序。
 
-        例外：`strict=False` 是 legacy 档的**受控回退**，此时本判据与
-        `check_new_extreme` 的严格性确实不一致——但 legacy 档下
-        `bsp1_new_extreme=False`（整条判据不参与判定），不一致不会产生冲突。
+        例外：`strict=True` 是严格优的**历史回退**，此时本判据与
+        `check_new_extreme` 的严格性确实不一致——仅供历史基线对照脚本使用，
+        不作为产品口径。
         """
         assert len(self.bi_lst) > 0
         if self.bi_out is None:

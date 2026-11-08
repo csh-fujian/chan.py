@@ -525,11 +525,12 @@ else:  # 绘制动画
     - bsp1_only_multibi_zs: `min_zs_cnt` 计算的中枢至少 3 笔（少于 3 笔是因为开启了 `one_bi_zs` 参数），默认为 True；
     - max_bs2_rate：2类买卖点那一笔回撤最大比例，默认为 0.9999
         - 注：如果是 1.0，那么相当于允许回测到1类买卖点的位置
-    - bs1_peak：1类买卖点位置是否必须是整个中枢最低点，默认为 True
-    - bs1_peak_strict：极值判定的严格性，默认为 True（严格优——相等极值不算「更极端」，
-      因此双底/双顶不能被当作中枢外的新极值放行）；`bsp_preset="legacy"` 下为 False
-      （改造前是宽松比较，回退档必须逐笔等价）
-    - macd_algo：MACD指标算法（可自定义）
+    - bs1_peak：1类买卖点位置是否必须是整个中枢最低点，默认为 True。此处的「创新极值」
+      是**宽松口径**：价格等于前面的低点也算创出新低（双底/双顶不会被拦下），
+      已无独立开关可切换（原 `bs1_peak_strict` 已删除）
+    - macd_algo：背驰判断的技术指标（可自定义、可多选）。多选时要求**全部指标
+      同时满足**背驰，任一项不满足即判为不背驰；配置字典里写列表，如
+      `["full_area", "diff_peak"]`
         - full_area：整根笔对应的MACD的面积，默认（整段柱子累加，对「急跌赶底」钝感的
           单根峰值口径是替代关系：跌幅大、时间短的离开段单根柱子天然更深，
           即使整段动能已衰竭也会被 `peak` 误判为不背驰）
@@ -571,7 +572,8 @@ else:  # 绘制动画
     - "bsp2s_follow_2": 类2买卖点是否必须跟在2类买卖点后面（2类买卖点可能由于不满足 `max_bs2_rate` 最大回测比例条件没生成），默认为 False
         - 注：改造后语义与上面这句描述一致（此前实现放在「二买未成立」分支里，语义相反）。
           在默认 `max_bs2_rate=0.9999` 下二买几乎全部成立，该开关必然观察不到差异；
-          把阈值收紧到 0.8 左右才能看到效果（实测 41 只日线：0.8 时 7→5，0.618 时 5→5）
+          把阈值收紧到 0.8 左右才能看到效果（实测 49 只日线：0.8 时 2s 15→13，
+          0.618 时 13→12，0.5 时 12→10）
     - "max_bsp2s_lv": 类2买卖点最大层级（距离2类买卖点的笔的距离/2），默认为None，不做限制
     - **T3 四轴阶梯参数**（`chan-standard-bsp3-change`）：`3a`/`3b` 候选点携带
       四轴证据（佐证 S → 确认 C → 分型 K → 时间 T，**无进度轴**——三买判据链
@@ -647,7 +649,7 @@ else:  # 绘制动画
           命中资格只用次级别 `bsp1_sure_list`（已确认），不用 `bsp1_list` 候选
           （降级 T1P 同样无资格）。
           **这是特征不是判据**：注入在 `cal()` 收尾、判定链路已结束，不改变任何
-          买卖点的成立性与输出数量。41 只日线开关前后六类数量逐类一致
+          买卖点的成立性与输出数量。49 只日线开关前后六类数量逐类一致
         - `bsp1_qjt_depth`（默认 1）：链式确认层数。1 = 只看直接次级；
           >1 要求命中的子级点自身也能在它的 c 段内找到下一层同向已确认一买，
           下层容器缺失时不惩罚。层数越多，步进快照间的特征翻转风险越大
@@ -717,7 +719,7 @@ else:  # 绘制动画
     - stock_distinct_price_thred: `stock_no_active_day` 根K线内股价多样性低于多少则定义为不活跃，默认为 25
 
 #### 精确设置配置
-`divergence_rate`,`min_zs_cnt`,`bsp1_only_multibi_zs`,`max_bs2_rate`,`macd_algo`,`bs1_peak`,`bs1_peak_strict`,`strategy_para`，`bs_type`，`bsp2_follow_1`，`bsp3_follow_1`，`bsp2s_follow_2`，`strict_bsp3`，`score_thred`，`bsp3_peak`，以及改造新增的
+`divergence_rate`,`min_zs_cnt`,`bsp1_only_multibi_zs`,`max_bs2_rate`,`macd_algo`,`bs1_peak`,`strategy_para`，`bs_type`，`bsp2_follow_1`，`bsp3_follow_1`，`bsp2s_follow_2`，`strict_bsp3`，`score_thred`，`bsp3_peak`，以及改造新增的
 `bsp1_trend`、`bsp1_new_extreme`、`bsp1_dif_div`、`bsp1_zero_axis`、
 `bsp1_zs_extend_to_seg_end`、`bsp2_retrace_zs`、`bsp2s_require_zs`、
 `bsp3_peak_on_breakout`、`bsp1_downgrade_to_pz`、`bsp1_force_scope`、
@@ -749,7 +751,6 @@ config = CChanConfig({
     "min_zs_cnt": 2,
     "max_bs2_rate": 0.618,
     "bs1_peak": True,
-    "bs1_peak_strict": True,
     "macd_algo": "full_area",
     "bs_type": '1,2,3a,3b,2s,1p',
     "cbsp_strategy": CCustomStrategy,

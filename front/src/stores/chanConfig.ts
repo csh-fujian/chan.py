@@ -55,7 +55,7 @@ export const useChanConfigStore = defineStore('chanConfig', () => {
    * 草稿相对已保存值的变更项数。
    *
    * 比较范围是 `saved.effective` 与 `draft` 的键并集。`effective` 由后端按
-   * schema 参数反射构造（58 个参数键，不含派生键与分侧后缀键），与 `draft`
+   * schema 参数反射构造（当前 57 个参数键，不含派生键与分侧后缀键），与 `draft`
    * 同构，可直接逐键深比较；并集只是防御「草稿里多出键」的情况。
    */
   const dirtyCount = computed(() => {

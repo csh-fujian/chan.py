@@ -20,7 +20,7 @@ from ChanAnalyse.Common.CEnum import BSP_TYPE
 from ChanAnalyse.Common.func_util import has_overlap
 from ChanAnalyse.Seg.Seg import CSeg
 from ChanAnalyse.Seg.SegListComm import CSegListComm
-from ChanAnalyse.ZS.ZS import CZS, _span_metric, is_span_supported
+from ChanAnalyse.ZS.ZS import CZS, _span_metric, any_span_supported, cfg_algos
 
 from .BS_Point import CBS_Point
 from .BSPointConfig import CBSPointConfig, CPointConfig
@@ -505,8 +505,8 @@ class CBSPointList(Generic[LINE_TYPE, LINE_LIST_TYPE]):
         """
         if BSP_CONF.bsp1_force_scope == "bi":
             return None, None, "bi"
-        if not is_span_supported(BSP_CONF.macd_algo):
-            # 成交量/换手率类算法没有区间版本，退回单笔口径
+        if not any_span_supported(cfg_algos(BSP_CONF)):
+            # 全部选中的指标都是成交量/换手率类，没有区间版本，退回单笔口径
             return None, None, "bi_fallback"
 
         base = seg.start_bi.idx
@@ -671,18 +671,8 @@ class CBSPointList(Generic[LINE_TYPE, LINE_LIST_TYPE]):
         # **反向笔组**：线段内同向笔被反向笔天然分成若干组，末组（含 last_bi）
         # 是 c 段，倒数第二组是 b 段。仅一组时（线段内无反向笔）退回单笔。
         b_window, c_window, scope_effective = self._cal_pz_force_windows(seg, last_bi, BSP_CONF)
-        if b_window is None and c_window is None:
-            # 单笔口径（"bi" 档或算法不支持区间）：保持改造前行为
-            in_metric = pre_bi.cal_macd_metric(BSP_CONF.macd_algo, is_reverse=False)
-            out_metric = last_bi.cal_macd_metric(BSP_CONF.macd_algo, is_reverse=True)
-        else:
-            in_metric = _span_metric(b_window, BSP_CONF.macd_algo, is_reverse=False,
-                                     fallback=lambda: pre_bi.cal_macd_metric(
-                                         BSP_CONF.macd_algo, is_reverse=False))
-            out_metric = _span_metric(c_window, BSP_CONF.macd_algo, is_reverse=True,
-                                      fallback=lambda: last_bi.cal_macd_metric(
-                                          BSP_CONF.macd_algo, is_reverse=True))
-        is_diver, divergence_rate = out_metric <= BSP_CONF.divergence_rate*in_metric, out_metric/(in_metric+1e-7)
+        is_diver, divergence_rate = self._pz_divergence(
+            pre_bi, last_bi, b_window, c_window, BSP_CONF)
         if not is_diver:
             is_target_bsp = False
         feature_dict = {
@@ -693,6 +683,37 @@ class CBSPointList(Generic[LINE_TYPE, LINE_LIST_TYPE]):
         if scope_effective == "bi_fallback":
             feature_dict['bsp1_force_scope_effective'] = "bi_fallback"
         self.add_bs(bs_type=BSP_TYPE.T1P, bi=last_bi, relate_bsp1=None, is_target_bsp=is_target_bsp, feature_dict=feature_dict)
+
+    def _pz_divergence(self, pre_bi: LINE_TYPE, last_bi: LINE_TYPE,
+                       b_window, c_window, BSP_CONF: CPointConfig):
+        """盘整背驰路径的力度比较（支持多指标 AND）。
+
+        与 `CZS.is_divergence` 同构，但比较的是**两根同向笔**而不是中枢的
+        进入/离开笔。多指标时要求**每一项都满足**，返回的背驰率取各指标中
+        的最大值（最不容易背驰的那一项）。
+
+        `pre_bi` / `last_bi` 是两个取值窗口的兜底单笔：窗口为 None（`"bi"` 档，
+        或全部指标都是量能类）时直接按它们算。
+        """
+        rates = []
+        all_diverged = True
+        # 兼容只暴露 `macd_algo` 的历史桩件/配置对象
+        for algo in cfg_algos(BSP_CONF):
+            if b_window is None and c_window is None:
+                # 单笔口径（"bi" 档或算法不支持区间）：保持改造前行为
+                in_metric = pre_bi.cal_macd_metric(algo, is_reverse=False)
+                out_metric = last_bi.cal_macd_metric(algo, is_reverse=True)
+            else:
+                in_metric = _span_metric(
+                    b_window, algo, is_reverse=False,
+                    fallback=lambda a=algo: pre_bi.cal_macd_metric(a, is_reverse=False))
+                out_metric = _span_metric(
+                    c_window, algo, is_reverse=True,
+                    fallback=lambda a=algo: last_bi.cal_macd_metric(a, is_reverse=True))
+            rates.append(out_metric / (in_metric + 1e-7))
+            if not out_metric <= BSP_CONF.divergence_rate * in_metric:
+                all_diverged = False
+        return all_diverged, (max(rates) if rates else None)
 
     def _cal_pz_force_windows(self, seg: CSeg, last_bi: LINE_TYPE, BSP_CONF: CPointConfig):
         """盘整背驰路径的 b/c 力度窗口（chan-bsp-ladder-change D4）。
@@ -713,8 +734,8 @@ class CBSPointList(Generic[LINE_TYPE, LINE_LIST_TYPE]):
         """
         if BSP_CONF.bsp1_force_scope == "bi":
             return None, None, "bi"
-        if not is_span_supported(BSP_CONF.macd_algo):
-            # 成交量/换手率类算法没有区间版本，退回单笔口径
+        if not any_span_supported(cfg_algos(BSP_CONF)):
+            # 全部选中的指标都是成交量/换手率类，没有区间版本，退回单笔口径
             return None, None, "bi_fallback"
 
         bi_lst = list(seg.bi_list)

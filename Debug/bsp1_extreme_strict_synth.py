@@ -1,14 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-一买极值判据的严格性验证（chan-bsp1-strict-extreme tasks 1.1 / 1.2 / 2.2）
+一买极值判据的比较口径验证（原 chan-bsp1-strict-extreme，现 chan-bsp1-loose-extreme）
 
 为什么用桩件而非真实 K 线：**相等极值是不确定事件**。真实行情里「c 段低点与
-某前低精确相等」出现频率极低且不可控，用真实数据验证严格优只会得到「没命中
+某前低精确相等」出现频率极低且不可控，用真实数据验证只会得到「没命中
 = 通过」的空断言。本脚本直接在判定层构造要素序列，精确控制每一个低点。
 
+**口径已从「严格优」反转为「宽松」**：`standard` 档的 `bs1_peak_strict` 现在
+是 `False`，相等极值算创新高/新低（双底、双顶放行）。历史严格优仍可通过
+`sout_bi_is_peak(..., strict=True)` 显式复现，脚本保留该分支作对照。
+
 覆盖：
-    1.1  `check_new_extreme` 相等极值不放行（买/卖镜像）
-    1.2  `CZS.out_bi_is_peak` 与 1.1 同一严格性口径
+    1.1  `check_new_extreme` 相等极值**放行**（买/卖镜像），更高/未创新低仍拦下
+    1.2  `CZS.out_bi_is_peak` 默认宽松、`strict=True` 时严格优
     2.2  `mode="level"` 跨线段取值，`worse_cnt` 大于 `all`
 
 运行（项目根目录）：
@@ -98,11 +102,11 @@ def zs_pair():
 
 
 # =============================================================================
-# 1.1 相等极值不放行
+# 1.1 相等极值放行（宽松口径，chan-bsp1-loose-extreme）
 # =============================================================================
 
 def test_new_extreme_equal():
-    print("\n[1.1] check_new_extreme 严格优")
+    print("\n[1.1] check_new_extreme 宽松口径（相等极值也算创新极值）")
     z1, z2 = zs_pair()
     zs_lst = [z1, z2]
 
@@ -112,14 +116,14 @@ def test_new_extreme_equal():
         StubEle(11, 10.0601, 11.0075, is_down=False),
     ]
 
-    # 情形 A：c 段低点 == 前低 10.0601 → 不通过
+    # 情形 A：c 段低点 == 前低 10.0601 → 放行（宽松口径的核心语义）
     ele_equal = StubEle(12, 10.0601, 11.0000, is_down=True)
     ok, info = check_new_extreme(ele_equal, prior + [ele_equal], zs_lst,
                                  is_buy=True, mode="trend_start")
-    check("买点：c 段低点精确等于前低 → ok=False",
-          ok is False, f"实际 ok={ok}, info={info}")
-    check("买点：相等点计入 worse_cnt（>=1）",
-          info['worse_cnt'] >= 1, f"worse_cnt={info['worse_cnt']}")
+    check("买点：c 段低点精确等于前低 → ok=True（双底放行）",
+          ok is True, f"实际 ok={ok}, info={info}")
+    check("买点：相等点不计入 worse_cnt",
+          info['worse_cnt'] == 0, f"worse_cnt={info['worse_cnt']}")
 
     # 情形 B：c 段低点严格更低 → 通过
     ele_lower = StubEle(12, 9.7747, 11.0000, is_down=True)
@@ -130,7 +134,14 @@ def test_new_extreme_equal():
     check("买点：严格更低时 worse_cnt==0",
           info2['worse_cnt'] == 0, f"worse_cnt={info2['worse_cnt']}")
 
-    # 情形 C：卖点镜像，c 段高点 == 前高 → 不通过
+    # 情形 C：c 段低点**更高**（未创新低）→ 仍被拦下，宽松不等于不判
+    ele_higher = StubEle(12, 10.2000, 11.0000, is_down=True)
+    ok_hi, info_hi = check_new_extreme(ele_higher, prior + [ele_higher], zs_lst,
+                                       is_buy=True, mode="trend_start")
+    check("买点：c 段低点高于前低 → ok=False（未创新低仍拦下）",
+          ok_hi is False, f"实际 ok={ok_hi}, info={info_hi}")
+
+    # 情形 D：卖点镜像，c 段高点 == 前高 → 放行
     prior_up = [
         StubEle(10, 10.0000, 11.0075, is_down=False),
         StubEle(11, 9.8000, 10.5000, is_down=True),
@@ -138,10 +149,10 @@ def test_new_extreme_equal():
     ele_up_equal = StubEle(12, 10.2000, 11.0075, is_down=False)
     ok3, info3 = check_new_extreme(ele_up_equal, prior_up + [ele_up_equal], zs_lst,
                                    is_buy=False, mode="trend_start")
-    check("卖点：c 段高点精确等于前高 → ok=False",
-          ok3 is False, f"实际 ok={ok3}, info={info3}")
+    check("卖点：c 段高点精确等于前高 → ok=True（双顶放行）",
+          ok3 is True, f"实际 ok={ok3}, info={info3}")
 
-    # 情形 D：卖点 c 段高点严格更高 → 通过
+    # 情形 E：卖点 c 段高点严格更高 → 通过
     ele_up_higher = StubEle(12, 10.2000, 11.5000, is_down=False)
     ok4, _ = check_new_extreme(ele_up_higher, prior_up + [ele_up_higher], zs_lst,
                                is_buy=False, mode="trend_start")
@@ -153,7 +164,7 @@ def test_new_extreme_equal():
 # =============================================================================
 
 def test_out_bi_is_peak_equal():
-    print("\n[1.2] CZS.out_bi_is_peak 严格优")
+    print("\n[1.2] CZS.out_bi_is_peak 宽松口径（默认相等也算创新极值）")
 
     zs = CZS(lst=None, is_sure=True)
     # 手工装配：中枢内 bi10 低点 10.0601，离开笔 bi12 低点与之相等
@@ -170,12 +181,13 @@ def test_out_bi_is_peak_equal():
     zs._CZS__end_bi = bi10
 
     ok, _ = zs.out_bi_is_peak(12)
-    check("离开笔低点 == 中枢内笔低点 → is_peak=False", ok is False, f"实际 {ok}")
+    check("离开笔低点 == 中枢内笔低点 → 默认 is_peak=True（宽松）",
+          ok is True, f"实际 {ok}")
 
-    # 同一用例在 legacy 回退口径（bs1_peak_strict=False）下必须放行
-    ok_legacy, _ = zs.out_bi_is_peak(12, strict=False)
-    check("同上，strict=False（legacy 档）→ is_peak=True",
-          ok_legacy is True, f"实际 {ok_legacy}")
+    # 历史严格优口径仍可通过显式 strict=True 复现（仅供基线对照）
+    ok_strict, _ = zs.out_bi_is_peak(12, strict=True)
+    check("同上，strict=True（历史严格优）→ is_peak=False",
+          ok_strict is False, f"实际 {ok_strict}")
 
     # 离开笔严格更低 → 通过
     bi_out_lower = StubEle(12, 9.7747, 11.0000, is_down=True)
@@ -183,17 +195,24 @@ def test_out_bi_is_peak_equal():
     ok2, _ = zs.out_bi_is_peak(12)
     check("离开笔低点严格更低 → is_peak=True", ok2 is True, f"实际 {ok2}")
 
+    # 离开笔更高（未创新低）→ 宽松口径下仍应拦下
+    bi_out_higher = StubEle(12, 10.2000, 11.0000, is_down=True)
+    zs._CZS__bi_out = bi_out_higher
+    ok_hi, _ = zs.out_bi_is_peak(12)
+    check("离开笔低点高于中枢内笔低点 → is_peak=False", ok_hi is False, f"实际 {ok_hi}")
+
     # 卖点镜像
     bi_up_peak = StubEle(10, 10.0000, 11.0075, is_down=False)
     bi_out_up_equal = StubEle(12, 10.2000, 11.0075, is_down=False)
     zs._CZS__bi_lst = [bi_up_peak]
     zs._CZS__bi_out = bi_out_up_equal
     ok3, _ = zs.out_bi_is_peak(12)
-    check("卖点：离开笔高点 == 中枢内笔高点 → is_peak=False", ok3 is False, f"实际 {ok3}")
+    check("卖点：离开笔高点 == 中枢内笔高点 → 默认 is_peak=True", ok3 is True,
+          f"实际 {ok3}")
 
-    ok3_legacy, _ = zs.out_bi_is_peak(12, strict=False)
-    check("卖点：同上，strict=False → is_peak=True",
-          ok3_legacy is True, f"实际 {ok3_legacy}")
+    ok3_strict, _ = zs.out_bi_is_peak(12, strict=True)
+    check("卖点：同上，strict=True → is_peak=False",
+          ok3_strict is False, f"实际 {ok3_strict}")
 
     bi_out_up_higher = StubEle(12, 10.2000, 11.5000, is_down=False)
     zs._CZS__bi_out = bi_out_up_higher

@@ -32,7 +32,7 @@
 
             <section class="cfg-tip__sect">
               <div class="cfg-tip__sect-head">
-                <span class="cfg-tip__sect-key">调大 / 调小</span>
+                <span class="cfg-tip__sect-key">{{ effectHeading }}</span>
               </div>
               <p class="cfg-tip__text">{{ param.effect }}</p>
             </section>
@@ -209,6 +209,29 @@ const emit = defineEmits<{
 }>()
 
 const readonly = computed(() => props.readonly === true)
+
+/**
+ * 解释卡片里第二段的标题 —— 跟随控件类型，而不是一律写「调大 / 调小」。
+ *
+ * 开关类没有「调大」这回事，多选类也没有「调大」，统一标题会让说明与控件对不上。
+ * 数值类说「调整数值」，下拉单选 / 多选各自说「单选」「多选」，开关说「开关」。
+ */
+const effectHeading = computed(() => {
+  switch (props.param.control) {
+    case 'number':
+    case 'integer':
+      return '调整数值'
+    case 'select':
+    case 'preset':
+      return '单选'
+    case 'multi':
+      return '多选'
+    case 'bool':
+      return '开关'
+    default:
+      return '调整数值'
+  }
+})
 
 /** 布尔值（`modelValue` 可能是 undefined，但布尔控件不应出现未定义） */
 const boolValue = computed(() => props.modelValue === true)

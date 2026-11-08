@@ -727,7 +727,7 @@ export interface ChanParamSchema {
   visible_when: Record<string, unknown> | null
   /** 这是什么（白话） */
   plain: string
-  /** 调大调小会发生什么（白话） */
+  /** 改动会发生什么（白话）。说明卡标题按控件类型生成，不写死「调大调小」 */
   effect: string
   /** 影响哪些买卖点或结构（白话） */
   scope: string

@@ -16,6 +16,24 @@ from ChanAnalyse.Common.CEnum import BSP_TYPE, MACD_ALGO
 from ChanAnalyse.Common.ChanException import CChanException, ErrCode
 from ChanAnalyse.Common.func_util import _parse_inf
 
+# 技术指标名 → 枚举。模块级常量：`SetMacdAlgo` 需要按名逐个解析（多选），
+# 且报错消息里的合法取值清单也取自它，避免两处各写一份白名单。
+_MACD_ALGO_MAP = {
+    "area": MACD_ALGO.AREA,
+    "peak": MACD_ALGO.PEAK,
+    "full_area": MACD_ALGO.FULL_AREA,
+    "diff": MACD_ALGO.DIFF,
+    "slope": MACD_ALGO.SLOPE,
+    "amp": MACD_ALGO.AMP,
+    "amount": MACD_ALGO.AMOUNT,
+    "volumn": MACD_ALGO.VOLUMN,
+    "amount_avg": MACD_ALGO.AMOUNT_AVG,
+    "volumn_avg": MACD_ALGO.VOLUMN_AVG,
+    "turnrate_avg": MACD_ALGO.TURNRATE_AVG,
+    "rsi": MACD_ALGO.RSI,
+    "diff_peak": MACD_ALGO.DIFF_PEAK,
+}
+
 
 class CBSPointConfig:
     """
@@ -66,13 +84,18 @@ class CPointConfig:
     - min_zs_cnt: 最小中枢数量（用于第一类买卖点）
     - bsp1_only_multibi_zs: 是否只考虑多笔中枢
     - max_bs2_rate: 第二类买卖点的最大回撤率
-    - macd_algo: 背驰判断的 MACD 算法
+    - macd_algo: 背驰判断的技术指标，支持多选（列表）。多选时要求**全部指标
+      同时满足**背驰（AND），任一指标不背驰即判为不背驰。
+      对外读取用同名的 `macd_algo` 属性（单选时返回单个枚举，多选时返回列表），
+      内部一律用 `macd_algos`（列表）做判定。
     - bs1_peak: 第一类买卖点是否要求极值
-    - bs1_peak_strict: 极值判据的严格性（`chan-bsp1-extreme`）。True（standard 档默认）
-      = 严格优，中枢内笔的低点 `<=` 离开笔低点即视为未突破（相等极值不放行）；
-      False（legacy 档）= 改造前的宽松口径，相等极值放行。
-      **这个开关是 `legacy` 档逐笔等价的必要条件**：`bs1_peak` 在 legacy 档仍是开启的，
-      若无本开关，极值严格化会连带改变 legacy 基线（实测 258→255）。
+    - bs1_peak_strict: 极值判据的严格性（**已从产品配置下线**，
+      `chan-bsp1-loose-extreme`）。True = 严格优（中枢内笔的低点 `<=` 离开笔
+      低点即视为未突破，相等极值不放行）；False（standard/legacy 均为默认值）
+      = 宽松口径，相等极值放行。
+      配置项已删除（面板 / 指纹 / WebAPI 存储出口都不再包含它），
+      WebAPI 侧由 `chan_config_store._RETIRED_KEYS` 清除存量脏值；
+      内核保留该关键字参数仅供历史基线对照脚本显式 pin。
     - target_types: 目标买卖点类型列表
     - bsp2_follow_1: 第二类买卖点是否必须跟随第一类
     - bsp3_follow_1: 第三类买卖点是否必须跟随第一类
@@ -159,7 +182,7 @@ class CPointConfig:
                  bsp1_force_scope="swing",
                  bsp1_qjt=False,
                  bsp1_qjt_depth=1,
-                 bs1_peak_strict=True,
+                 bs1_peak_strict=False,
                  bsp2_confirm_window=2,
                  bsp2_time_axis_strong=0.5,
                  bsp2_time_axis_weak=1.0,
@@ -303,23 +326,31 @@ class CPointConfig:
         self.target_types = [_d[_type] for _type in self.tmp_target_types]
 
     def SetMacdAlgo(self, macd_algo):
-        """设置 MACD 算法（字符串 → 枚举）"""
-        _d = {
-            "area": MACD_ALGO.AREA,
-            "peak": MACD_ALGO.PEAK,
-            "full_area": MACD_ALGO.FULL_AREA,
-            "diff": MACD_ALGO.DIFF,
-            "slope": MACD_ALGO.SLOPE,
-            "amp": MACD_ALGO.AMP,
-            "amount": MACD_ALGO.AMOUNT,
-            "volumn": MACD_ALGO.VOLUMN,
-            "amount_avg": MACD_ALGO.AMOUNT_AVG,
-            "volumn_avg": MACD_ALGO.VOLUMN_AVG,
-            "turnrate_avg": MACD_ALGO.TURNRATE_AVG,
-            "rsi": MACD_ALGO.RSI,
-            "diff_peak": MACD_ALGO.DIFF_PEAK,
-        }
-        self.macd_algo = _d[macd_algo]
+        """设置背驰技术指标（字符串 → 枚举，支持多选）。
+
+        参数可以是单个算法名，也可以是算法名列表。多选时**要求全部指标同时满足
+        背驰**（AND 语义），由 `macd_algos` 承载；`macd_algo` 保留单值时返回枚举、
+        多值时返回枚举列表，以兼容指纹与元数据的既有读取方式。
+
+        单值形态下 `macd_algo` 仍是枚举而非列表 —— 元数据默认值反射与指纹分段
+        都按这个形态取值，改成「恒为列表」会让所有既有基线（含 legacy 快照）
+        全部失配。
+        """
+        raw = macd_algo if isinstance(macd_algo, (list, tuple)) else [macd_algo]
+        if not raw:
+            raise CChanException(
+                "macd_algo 至少需要选择一个技术指标", ErrCode.PARA_ERROR)
+        resolved: List[MACD_ALGO] = []
+        for name in raw:
+            if name not in _MACD_ALGO_MAP:
+                raise CChanException(
+                    f"macd_algo={name!r} 非法，可选值：{', '.join(_MACD_ALGO_MAP)}",
+                    ErrCode.PARA_ERROR)
+            algo = _MACD_ALGO_MAP[name]
+            if algo not in resolved:      # 去重但保留用户选择顺序
+                resolved.append(algo)
+        self.macd_algos = resolved
+        self.macd_algo = resolved[0] if len(resolved) == 1 else list(resolved)
 
     def set(self, k, v):
         """动态设置属性（用于运行时配置，后缀覆盖 -buy/-sell/-seg… 走此路径）。
@@ -333,5 +364,10 @@ class CPointConfig:
         v = _parse_inf(v)
         if k == "macd_algo":
             self.SetMacdAlgo(v)
+        elif k in ("macd_algos",):
+            # 派生属性，禁止直接写 —— 它改不了 `macd_algo` 的对外形态，
+            # 会让指纹与元数据看到旧值。统一走 SetMacdAlgo。
+            raise CChanException(
+                "macd_algos 是派生属性，请设置 macd_algo", ErrCode.PARA_ERROR)
         else:
             setattr(self, k, v)

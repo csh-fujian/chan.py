@@ -37,7 +37,6 @@ FINGERPRINT_KEYS: Iterable[str] = (
     "max_bs2_rate",
     "macd_algo",
     "bs1_peak",
-    "bs1_peak_strict",
     "bs_type",
     "bsp2_follow_1",
     "bsp3_follow_1",
@@ -181,8 +180,11 @@ def collect_config(conf) -> Dict[str, Any]:
 
     # 指标段：RSI 只在作为力度算法时影响结果（其它情况下 `cal_rsi` 与输出无关，
     # 纳入会让「为了别处看图而开 RSI」这种无害改动触发全量重算）
-    algo = bsp.get("macd_algo")
-    if isinstance(algo, str) and algo.endswith(".RSI"):
+    # `macd_algo` 可多选（`macd_algo` 属性此时是枚举列表，_normalize 后是名字串
+    # 列表），逐项判断是否有 RSI。
+    algos = bsp.get("macd_algo")
+    algo_names = algos if isinstance(algos, list) else [algos]
+    if any(isinstance(a, str) and a.endswith(".RSI") for a in algo_names):
         out["indicator"] = _pick(conf, ("cal_rsi", "rsi_cycle"))
 
     return out

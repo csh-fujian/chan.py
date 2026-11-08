@@ -9,7 +9,7 @@
     :before-close="handleBeforeClose"
     append-to-body
   >
-    <!-- 自定义头部：标题 + 档位总开关（档位是「整套规则」的开关，不该埋在 58 项里） -->
+    <!-- 自定义头部：标题 + 档位总开关（档位是「整套规则」的开关，不该埋在 57 项里） -->
     <template #header>
       <div class="cfg-head">
         <div class="cfg-head__main">
@@ -281,7 +281,7 @@
  *   第二段 `/api/chan-config/recompute` 后台刷新 PG 索引（7~26 秒）
  *
  * 版面（2026-11 重设计）：
- *   58 项参数平铺在单列折叠面板里是不可读的 —— 用户找不到「二买回调上限」在哪，
+ *   57 项参数平铺在单列折叠面板里是不可读的 —— 用户找不到「二买回调上限」在哪，
  *   也不知道自己改过的项埋在哪。现改为**两栏**：
  *     · 左栏常驻分类导航（01/02/03 + 组内子分类锚点 + 搜索 + 只看已修改）
  *     · 右栏分区网格（组标题层级化、子分类二级标题、参数卡片两列）
@@ -380,12 +380,21 @@ const curPreset = computed(() =>
 )
 
 /**
- * 条件项可见性（如 `cal_rsi` 仅在 `macd_algo === 'rsi'` 时出现）。
+ * 条件项可见性（如 `cal_rsi` 仅在 `macd_algo` 选中 rsi 时出现、
+ * `bsp3_follow_1_mode` 仅在 `bsp3_follow_1` 开启时出现）。
  * 判定依据是**草稿**当前值 —— 用户在抽屉里选 RSI，即刻看到相关项。
+ *
+ * 多选控件（`macd_algo` 的草稿值是数组）：命中其中任意一项即满足，
+ * 不能直接 `String(数组) === 值` —— 那样 `["rsi"]` 永远不等于 `"rsi"`，
+ * RSI 的两个条件项会永久隐藏。
  */
 function isVisible(p: ChanParamSchema): boolean {
   if (!p.conditional || !p.visible_when) return true
-  return Object.entries(p.visible_when).every(([k, v]) => String(store.draft[k]) === String(v))
+  return Object.entries(p.visible_when).every(([k, v]) => {
+    const cur = store.draft[k]
+    if (Array.isArray(cur)) return cur.map(String).includes(String(v))
+    return String(cur) === String(v)
+  })
 }
 
 const filteredGroups = computed<GroupView[]>(() => {

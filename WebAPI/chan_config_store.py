@@ -42,6 +42,9 @@ _cached_preset: Optional[str] = None
 # 「None 是合法取值」的配置项缓存（见 `_nullable_keys()`）
 _NULLABLE_CACHE: Optional[frozenset] = None
 
+# 数值型参数的取值范围缓存（见 `_range_specs()`）
+_RANGE_CACHE: Optional[dict] = None
+
 _TABLE = "chan_config"
 _SYNC_TABLE = "chan_config_sync_job"
 
@@ -66,6 +69,24 @@ _DOTTED_KEYS = {
     "macd.slow": ("macd", "slow"),
     "macd.signal": ("macd", "signal"),
 }
+
+# 已下线、但内核对同名 key 仍然接受的参数。
+#
+# 内核把 `bs1_peak_strict` 保留为「历史基线对照」的内部开关（默认 False），
+# 产品口径两档一致为宽松。它已从配置面板删除、也从 `FINGERPRINT_KEYS` 移除，
+# 但内核仍认这个 key —— 旧库里残留的 `true` 会被 `load()` 原样送进 `CChanConfig`，
+# 结果是「面板上看不到、却在生效地把极值判据收紧回去」，而且指纹不再覆盖它，
+# 快照续算会复用按另一口径算出的前缀。
+#
+# 因此读取出口与校验入口都必须把它清掉：存量脏值不会生效，也不会重新落库。
+_RETIRED_KEYS = ("bs1_peak_strict",)
+
+
+def _drop_retired(config: dict) -> dict:
+    """移除已下线的配置键（`_RETIRED_KEYS`），返回新 dict。"""
+    if not any(k in config for k in _RETIRED_KEYS):
+        return config
+    return {k: v for k, v in config.items() if k not in _RETIRED_KEYS}
 
 
 def to_kernel(config: dict) -> dict:
@@ -225,6 +246,15 @@ def decode_config(config: dict) -> dict:
 # 派生键（design D6）
 # ----------------------------------------------------------------------
 
+def _algo_list(algo) -> list:
+    """`macd_algo` 归一成列表（单选字符串 / 多选列表都接受）。"""
+    if algo is None:
+        return []
+    if isinstance(algo, (list, tuple)):
+        return [a for a in algo if a is not None]
+    return [algo]
+
+
 def apply_derived(config: dict) -> dict:
     """按用户选定的 `macd_algo` 补充派生键，返回新 dict（不改入参）。
 
@@ -233,13 +263,16 @@ def apply_derived(config: dict) -> dict:
     - `rsi`：力度算法读 `klu.rsi`，该字段仅 `cal_rsi=True` 时由指标模型写入，
       因此强制开启（用户显式关闭也不生效 —— 否则计算必然 AttributeError）
 
+    **`macd_algo` 支持多选**：上面两条按「所选项的并集」判定 —— 只要选了任一
+    量能类就补 `macd_algo-seg`，只要选了 `rsi` 就开 `cal_rsi`。
+
     派生只发生在读取出口，用户存储中的 `macd_algo` 原值永不被改写。
     """
     out = dict(config)
-    algo = out.get("macd_algo")
-    if algo in VOLUME_MACD_ALGOS:
+    algos = _algo_list(out.get("macd_algo"))
+    if any(a in VOLUME_MACD_ALGOS for a in algos):
         out.setdefault("macd_algo-seg", SEG_FALLBACK_MACD_ALGO)
-    elif algo == "rsi":
+    if "rsi" in algos:
         out["cal_rsi"] = True
     return out
 
@@ -248,16 +281,17 @@ def _strip_derived(config: dict) -> dict:
     """落库前清理派生键与失效键。
 
     规则：
-    - `macd_algo-seg` 只在 `macd_algo` 为量能类时有意义（其余算法线段级别有原生实现，
+    - `macd_algo-seg` 只在 `macd_algo` 含量能类时有意义（其余算法线段级别有原生实现，
       残留的 `-seg` 覆盖会静默改变线段级别口径）。量能类下用户显式配置的值**保留** ——
       它是专家可选项，`apply_derived()` 用 `setdefault` 不会覆盖。
     - `rsi` 场景下 `cal_rsi` 由派生强制开启，不落库 —— 否则「用户没配」与「用户配了」
       无法区分，切回其它算法后残留的 `cal_rsi=True` 会污染指纹。
     """
     out = dict(config)
-    if out.get("macd_algo") not in VOLUME_MACD_ALGOS:
+    algos = _algo_list(out.get("macd_algo"))
+    if not any(a in VOLUME_MACD_ALGOS for a in algos):
         out.pop("macd_algo-seg", None)
-    if out.get("macd_algo") == "rsi":
+    if "rsi" in algos:
         out.pop("cal_rsi", None)
     return out
 
@@ -302,7 +336,7 @@ def load() -> dict:
             _cached_config = _decode_value(raw or {})
             _cached_preset = preset
             _cached_version = version
-        return apply_derived(dict(_cached_config or {}))
+        return apply_derived(_drop_retired(dict(_cached_config or {})))
     except psycopg2.Error as e:
         log.warning("配置读取失败，降级为内核默认: %s", e)
         return _fallback_config()
@@ -339,8 +373,8 @@ def load_with_meta() -> dict:
                     "version": None, "initialized": False}
         version, raw_cfg, raw_ovr, preset = row
         return {
-            "config": _decode_value(raw_cfg or {}),
-            "overrides": _decode_value(raw_ovr or {}),
+            "config": _drop_retired(_decode_value(raw_cfg or {})),
+            "overrides": _drop_retired(_decode_value(raw_ovr or {})),
             "preset": preset or "standard",
             "version": version,
             "initialized": True,
@@ -537,6 +571,56 @@ def _nullable_keys() -> frozenset:
     return _NULLABLE_CACHE
 
 
+def _range_specs() -> dict:
+    """元数据里声明了数值范围（`min` / `max`）的参数 → `(min, max)`。
+
+    范围在 `chan_config_schema.PARAMS` 里声明，前端用它限制输入框；但前端只是
+    **UI 约束**，直接打 API 仍能提交越界值。内核对这些项通常不做区间校验
+    （如 `min_zs_cnt` 只要求是整数），所以必须在写入路径补一道，否则非法值
+    会静默落库并进入计算链路。
+
+    只对 `integer` / `number` 控件生效：`min` / `max` 在枚举、多选项上没有
+    数值语义。缺省边界为 `None`（不限制）。结果按 `PARAMS` 模块级缓存 ——
+    元数据是静态表，无需每次重建。
+    """
+    global _RANGE_CACHE
+    if _RANGE_CACHE is None:
+        from .chan_config_schema import PARAMS
+
+        specs = {}
+        for spec in PARAMS:
+            if spec.get("control") not in ("integer", "number"):
+                continue
+            lo, hi = spec.get("min"), spec.get("max")
+            if lo is None and hi is None:
+                continue
+            # 点号键（`macd.fast`）在 overrides 里就是点号形态，无需转换
+            specs[spec["key"]] = (lo, hi)
+        _RANGE_CACHE = specs
+    return _RANGE_CACHE
+
+
+def _check_ranges(decoded: dict) -> None:
+    """按元数据声明的范围校验数值型 overrides，越界抛 `ConfigValidationError`。
+
+    `bool` 是 `int` 的子类，必须先排除，否则 `True` 会被当成 1 通过。
+    """
+    specs = _range_specs()
+    for key, value in decoded.items():
+        spec = specs.get(key)
+        if spec is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        lo, hi = spec
+        if lo is not None and value < lo:
+            raise ConfigValidationError(
+                f"{key} 取值非法：最小 {lo}，收到 {value!r}", param=key)
+        if hi is not None and value > hi:
+            raise ConfigValidationError(
+                f"{key} 取值非法：最大 {hi}，收到 {value!r}", param=key)
+
+
 def validate_config(overrides: dict) -> dict:
     """保存前的构造期校验（design D4），返回将要落库的规范化 overrides。
 
@@ -573,7 +657,11 @@ def validate_config(overrides: dict) -> dict:
             raise ConfigValidationError(
                 f"{key} 取值非法：不能为空（要「不限」请传 \"inf\"）", param=key)
 
-    candidate = apply_derived(decoded)
+    candidate = apply_derived(_drop_retired(decoded))
+    # 元数据声明的数值范围（如 `min_zs_cnt` 上限 2）：前端只限制输入框，
+    # 直接打 API 仍可提交越界值，而内核对这些项不做区间校验。放在构造期校验
+    # 之前，报错能精确定位到参数名（不依赖内核异常消息反查）。
+    _check_ranges(candidate)
     # 入口专属键由计算链路叠加，校验时给出同形态的值（trigger_step 必须为 False，
     # 否则 CChan 构造会变成生成器模式，但这里只构造 CChanConfig，不受影响）
     kernel_conf = to_kernel(candidate)
@@ -613,7 +701,8 @@ def validate_config(overrides: dict) -> dict:
     # 返回**解码后**的值：`"inf"` 已还原为 `float("inf")`。落库时
     # `save()` 内部再 `_encode_value()` 转回 `"inf"` —— 存的是 JSON 可表示形态，
     # 但进程内缓存与计算链路拿到的始终是 `float("inf")`。
-    return _strip_derived(decoded)
+    # 退役键（`_RETIRED_KEYS`）不返回 —— 它们已从产品口径下线，接受但丢弃。
+    return _strip_derived(_drop_retired(decoded))
 
 
 def validate_preset(preset: str) -> str:
@@ -648,7 +737,7 @@ def save(
         preset: 保存时的档位预设名。**它单独落 `preset` 列，不进 overrides** ——
             但计算出口会把它回填进内核配置（`_preset_injected()`），所以它
             真正参与判定，不是诊断标注。非法取值须在入口用 `validate_preset()` 拦住。
-        full_snapshot: 全量快照（58 项保存时的生效值），仅供展示/审计。
+        full_snapshot: 全量快照（57 项保存时的生效值），仅供展示/审计。
             缺省时用 `overrides` 填充（等价于「所有项都是显式值」）。
 
     派生键（`macd_algo-seg` / `cal_rsi`）不落库 —— 它们由 `apply_derived()` 在读取出口生成，
@@ -660,8 +749,9 @@ def save(
     if conn is None:
         raise ConfigStoreUnavailable("配置存储不可用，无法保存")
 
-    stored_ovr = _strip_derived(overrides)
-    stored_cfg = _strip_derived(full_snapshot if full_snapshot is not None else overrides)
+    stored_ovr = _strip_derived(_drop_retired(overrides))
+    stored_cfg = _strip_derived(_drop_retired(
+        full_snapshot if full_snapshot is not None else overrides))
     ovr_payload = json.dumps(_encode_value(stored_ovr), ensure_ascii=False, sort_keys=True)
     cfg_payload = json.dumps(_encode_value(stored_cfg), ensure_ascii=False, sort_keys=True)
 

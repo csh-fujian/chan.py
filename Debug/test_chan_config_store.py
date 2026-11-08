@@ -204,14 +204,14 @@ try:
     store.save(
         overrides={"divergence_rate": 0.5},
         preset="standard",
-        full_snapshot={"divergence_rate": 0.5, "min_zs_cnt": 3},
+        full_snapshot={"divergence_rate": 0.5, "min_zs_cnt": 2},
         updated_by="test",
     )
     meta = store.load_with_meta()
     check("load() 只返回 overrides（不含未覆盖项）",
           set(store.load()) == {"divergence_rate"}, str(store.load()))
     check("config 保留全量快照",
-          meta["config"].get("min_zs_cnt") == 3, str(meta["config"]))
+          meta["config"].get("min_zs_cnt") == 2, str(meta["config"]))
     check("overrides 与入参一致",
           meta["overrides"].get("divergence_rate") == 0.5, str(meta["overrides"]))
     check("preset 落库", meta["preset"] == "standard", meta["preset"])
@@ -251,11 +251,11 @@ try:
     eff = CChanConfig(store.to_kernel(store.effective_config())).bs_point_conf.b_conf
     check("effective_config 同样注入档位", eff.min_zs_cnt == 1, str(eff.min_zs_cnt))
 
-    # 显式覆盖优先于档位
-    store.save({"min_zs_cnt": 3}, "legacy", updated_by="test")
+    # 显式覆盖优先于档位（上限 2，故用 2 与档位默认 1 区分）
+    store.save({"min_zs_cnt": 2}, "legacy", updated_by="test")
     store.invalidate_cache()
     b2 = CChanConfig(dict(store.build_conf())).bs_point_conf.b_conf
-    check("显式 overrides 压过档位（min_zs_cnt=3）", b2.min_zs_cnt == 3, str(b2.min_zs_cnt))
+    check("显式 overrides 压过档位（min_zs_cnt=2）", b2.min_zs_cnt == 2, str(b2.min_zs_cnt))
     check("未被覆盖的档位项仍生效（divergence_rate=inf）",
           b2.divergence_rate == float("inf"), repr(b2.divergence_rate))
 

@@ -26,27 +26,34 @@
 | `WebAPI/incremental_engine.py` | 无（仅 trigger_step / kl_data_check） | 加注释锁定该约束 |
 | `WebAPI/chan_service.py` | 无 | 加注释锁定该约束 |
 
-## 改造前基线（41 只日线，2019-01-01 起、QFQ）
+## 基线（49 只日线，2019-01-01 起、QFQ，水位 2026-11-06）
 
-    legacy 档（divergence_rate=inf, min_zs_cnt=1）
-        笔级别  1:258  1p:69  2:318  2s:317  3a:61  3b:50
-        线段级  1:37   1p:8   2:35   2s:15   3a:2   3b:6
+    legacy 档（divergence_rate=inf, min_zs_cnt=1，宽松极值口径）
+        笔级别  1:323  1p:86  2:392  2s:385  3a:77  3b:62
+        线段级  1:45   1p:8   2:43   2s:15   3a:2   3b:11
 
-    divergence_rate=0.9（其余默认）
-        笔级别  1:134  1p:39  2:166  2s:157  3a:33  3b:33
+> 历史沿革：本脚本最早按 **41 只**标定（`legacy` 笔级别 258/69/318/317/61/50、
+> 线段级 37/8/35/15/2/6），之后 `Data/kl_store.duckdb` 灌到 49 只、水位推进到
+> 2026-11-06，且极值口径由「严格优」放宽为「宽松」（`bs1_peak_strict` 已下线）。
+> 上述两组常量于 2026-11-08 在**同一份 49 只数据**上重新实测标定；
+> 口径切换本身可验证：49 只 legacy 在 `bs1_peak_strict=True` 下为
+> 320/86/389/382/75/62，放宽后 323/86/392/385/77/62（仅 T1 家族与锚点下游微增）。
 
 ## 降级路由与力度口径的期望值（chan-standard-bsp1-change）
 
-    standard + 降级路由 + 单笔口径（bsp1_force_scope="bi"）
-        笔级别  1:14   1p:53  2:12   2s:4   3a:1   3b:1
-    standard + 降级路由 + 走势段口径（bsp1_force_scope="swing"，默认）
-        笔级别  1:13   1p:52  2:12   2s:4   3a:1   3b:1
+    standard + 降级路由 + 单笔口径（bsp1_force_scope="bi"，锚点 pin）
+        笔级别  1:18   1p:70  2:16   2s:6   3a:3   3b:1
+    standard + 降级路由 + 走势段口径（bsp1_force_scope="swing"，默认，锚点 pin）
+        笔级别  1:17   1p:69  2:16   2s:6   3a:3   3b:0
 
-    降级漏斗（笔级别，单笔口径；五档均经 design D1-c 实测复核）
-        bsp1_list 候选 573 → reason=='trend' 314 → 面积背驰 168
-        → bs1_peak 通过 142 → 补全检后 53（= 降级点数）
+    （上两行是 **49 只、水位 2026-11-06、`ANCHOR_ERA_PIN` 下**的读数，即第 7 节的
+      `BASELINE_ANCHOR_BI/SWING`；不打 pin 的当前默认档读数见第 5 节常量。）
 
-    成因分布：41 只日线上 53 个降级点全部为 single_zs，no_trend 桶为 0。
+    降级漏斗（笔级别，单笔口径；49 只、水位 2026-11-06 实测）
+        进入 treat_bsp1 的次数 451 → reason=='trend' 384 → 面积背驰 205
+        → bs1_peak 通过 178 → 补全检后 66（= 降级点数 = T1P 66）
+
+    成因分布：本池 66 个降级点全部为 single_zs，no_trend 桶为 0。
     这是**数据特征**而非缺陷——该池内「有两中枢但未依次下移」且同时通过
     背驰/极值/全检的样本恰好不存在。合成序列验证见
     `Debug/bsp_downgrade_synth.py`（no_trend 分支已单独覆盖）。
@@ -57,14 +64,17 @@
 
 ## 力度口径的锚点依赖传播（design D10）
 
-走势段口径下 `3b` 会由 1 变 0，这不是缺陷：`sh.600016 bi=31` 原本是成立一买，
-整段力度 r=1.746 > 0.9 判不背驰后不再是成立一买；同一线段内 bi=28 的 T3B
-锚定的正是它，于是随之消失。与 `2/2s/3a` 的「完全不变」不同，`3b` 的表述是
+走势段口径下 `3b` 由 3 变 1，这不是缺陷：`sh.600016 bi=31` 原本是成立一买，
+整段力度 r=0.837 → 1.746 > 0.9 判不背驰后不再是成立一买；同一线段内 bi=28 的
+T3B 锚定的正是它，于是随之消失（`sh.600025 bi=61` 那处同理）。
+与 `2/2s/3a` 在锚点口径下的「完全不变」不同，`3b` 的表述是
 「仅在所锚定一买因口径收紧而消失时连带变化」。
 
-走势段口径相对单笔口径消失的 bsp1 点恰为 2 个：
+锚点口径（`ANCHOR_ERA_PIN` + `bi`）下消失的 bsp1 点恰为 2 个：
     sh.600016 bi=31   ratio 0.837 → 1.746（离开段 3 笔，每笔都创新低，整段动能在增强）
     sz.000011 bi=44   ratio 0.026 → 0.913（c 段含 3 笔，单笔只看最后一笔判背驰）
+
+full_area 默认档下的增删集更大（消失 5 / 新增 2），对账见第 5 节常量注释。
 
 线段级别（tasks 9.9）：走势段口径下 T1 保持 1（不变），降级 T1P 由 18 降到 17，
 方向与笔级别一致（整段力度更严）。线段级不出现新增点/异常。
@@ -95,71 +105,79 @@ BSP_TYPES = [BSP_TYPE.T1, BSP_TYPE.T1P, BSP_TYPE.T2, BSP_TYPE.T2S, BSP_TYPE.T3A,
 TYPE_SHORT = {BSP_TYPE.T1: '1', BSP_TYPE.T1P: '1p', BSP_TYPE.T2: '2',
               BSP_TYPE.T2S: '2s', BSP_TYPE.T3A: '3a', BSP_TYPE.T3B: '3b'}
 
-# 改造前基线，用于等价性对照
-BASELINE_LEGACY = {'1': 258, '1p': 69, '2': 318, '2s': 317, '3a': 61, '3b': 50}
-BASELINE_SEG_LEGACY = {'1': 37, '1p': 8, '2': 35, '2s': 15, '3a': 2, '3b': 6}
+# legacy 基线（49 只日线，水位 2026-11-06，宽松极值口径）
+BASELINE_LEGACY = {'1': 323, '1p': 86, '2': 392, '2s': 385, '3a': 77, '3b': 62}
+BASELINE_SEG_LEGACY = {'1': 45, '1p': 8, '2': 43, '2s': 15, '3a': 2, '3b': 11}
 
-# 本变更期望值（41 只日线，2019-01-01 起、QFQ）
+# 当前默认档期望值（**49 只**日线，2019-01-01 起、QFQ，水位 2026-11-06）
 #
 # 这四条常量同时叠加了三件事，读数时请对照 `文档/一买一卖差异点说明.md`：
-#   1. 极值严格优（chan-bsp1-extreme 1.1/1.2）——拦下 sh.600006 bi77、
-#      sh.600026 bi25、sz.000007 bi55 三个「相等极值」降级候选
-#   2. 力度算法 peak → full_area（3.1）——T1 由 13/14 增至 17/19
-#   3. 走势段口径（bsp1_force_scope="swing"）——相对单笔口径的增删见
+#   1. **极值宽松口径**（chan-bsp1-loose-extreme，取代 chan-bsp1-extreme 的
+#      严格优）——standard 档不再拦下「相等极值」，双底/双顶可以放行；
+#      严格优已被删除，不再是任何档位的产品口径
+#   2. 力度算法 peak → full_area（3.1）
+#   3. 走势段口径（`bsp1_force_scope="swing"`）——相对单笔口径的增删见
 #      `EXPECTED_SWING_REMOVED` 与下方 default 口径的逐点差说明
 #
-# 仅第 1 项自身的效果见 `Debug/_probe*` 记录的「50/49」中间态；本文件断言的是
-# 三项叠加后的终值，与 `文档/一买一卖差异点说明.md` §三 实测表、`Document/README.md`
-# 的默认参数说明必须逐项一致。
-BASELINE_STANDARD_BI = {'1': 19, '1p': 47, '2': 17, '2s': 7, '3a': 2, '3b': 3}
-# swing 相对 bi：1 19→17、2 17→16、3b 3→1。3b 的 3→1 不是缺陷——两处 3b 消失
-# 所锚定的一买（sh.600016 bi31、sh.600025 bi61）在走势段口径下不再是成立一买，
-# 属锚点依赖的正确传播（design D10）。2 的 17→16 同理：sh.600025 bi63 的二买
-# 锚定的一买在 swing 口径下消失。
+# 2026-11-08 在 49 只数据上重新实测标定（旧值为 41 只 peak 时代读数）。
+# 与 `文档/一买一卖差异点说明.md` §三 实测表、`Document/README.md` 的默认参数
+# 说明必须逐项一致。第 7 节仍 pin `ANCHOR_ERA_PIN`（含已退役的
+# `bs1_peak_strict`，内核保留该内部开关），以便与锚点 JSON 对账。
+BASELINE_STANDARD_BI = {'1': 24, '1p': 66, '2': 22, '2s': 9, '3a': 6, '3b': 3}
+# swing 相对 bi（49 只 full_area 实测）：1 24→23、1p 66→64、3b 3→1。
+#
+# 逐笔对账：消失 5 个、新增 2 个。消失集中 `sh.600016 bi31` 是 T1（故 1 24→23），
+# 其余 4 个（`sh.000001 bi92`、`sh.600010 bi8`、`sh.600025 bi61`、`sz.399001 bi94`）
+# 是 T1P；新增 2 个也全是 T1P（`sh.000010 bi57`、`sh.600010 bi65`）。于是
+# 1p 净差 66 − 4 + 2 = 64，与上表一致。成因：整段力度聚合后要么不再背驰
+# （sh.600016 bi31，ratio 0.837 → 1.746），要么所在走势段前提不再成立。
+#
+# 3b 的 3→1 不是缺陷——两处 3b 消失所锚定的一买（sh.600016 bi31、sh.600025 bi61）
+# 在走势段口径下不再是成立一买，属锚点依赖的正确传播（design D10）。
 #
 # 注意：这里**不再断言**「2 / 2s / 3a 完全不变」。那是 chan-standard-bsp1-change
 # 在 peak 力度口径下的结论，力度算法切到 full_area 后，成立一买集合改变，
 # 二买/三买作为锚点依赖的下游类型必然随之变动——这是正确传播，不是回归。
-BASELINE_STANDARD_SWING = {'1': 17, '1p': 47, '2': 16, '2s': 7, '3a': 2, '3b': 1}
-# 走势段口径下相对单笔口径**消失**的 bsp1 点（逐笔对账用）。
+BASELINE_STANDARD_SWING = {'1': 23, '1p': 64, '2': 22, '2s': 9, '3a': 6, '3b': 1}
+# 走势段口径下相对单笔口径**消失**的 bsp1 点（第 7 节逐笔对账用）。
 #
 # **这两条常量必须与第 7 节的 `ANCHOR_ERA_PIN` 同源**：第 7 节把
 # `macd_algo` / `bs1_peak_strict` / `bsp1_new_extreme` 都 pin 回锚点时代取值，
-# 比对基准 JSON 也是 peak 时代快照，所以增删集只能是 peak 时代的 2 个点。
-# 曾经这里填的是 full_area 时代的 6 点格局（sh.600010 bi8、sh.600016 bi28、
-# sh.600025 bi60/61/63），导致第 7 节误报「消失集不符预期」——那是常量与
-# pin 口径脱节，不是开关接线故障。
+# 比对基准 JSON 也是同一口径快照，所以增删集只能是这里列的 2 个点。
+# 曾经这里填的是 full_area 时代的 6 点格局，导致第 7 节误报「消失集不符预期」
+# ——那是常量与 pin 口径脱节，不是开关接线故障。
 #
-# full_area（默认档）下的实际格局是：消失 6 个 = {('sh.600010', 8),
-# ('sh.600016', 31), ('sh.600016', 28), ('sh.600025', 60), ('sh.600025', 61),
-# ('sh.600025', 63)}、新增 1 个 = {('sh.600010', 65)}。该格局由第 5 节的
-# `BASELINE_STANDARD_BI/SWING` 数量基线覆盖，本节不重复断言（基准 JSON 不是
-# full_area 口径，拿它比会同时测三个变量）。
+# full_area（默认档）下的实际格局是：消失 5 个 = {('sh.000001', 92),
+# ('sh.600010', 8), ('sh.600016', 31), ('sh.600025', 61), ('sz.399001', 94)}、
+# 新增 2 个 = {('sh.000010', 57), ('sh.600010', 65)}（实测于 49 只、水位 2026-11-06）。
+# 该格局由第 5 节的 `BASELINE_STANDARD_BI/SWING` 数量基线覆盖，本节不重复断言。
 EXPECTED_SWING_REMOVED = {('sh.600016', 31), ('sz.000011', 44)}
-# 走势段口径下相对单笔口径**新增**的 bsp1 点（peak 时代为空）
+# 走势段口径下相对单笔口径**新增**的 bsp1 点（锚点口径下为空）
 EXPECTED_SWING_ADDED = set()
-# 第 7 节锚点 `Debug/bsp1_force_scope_baseline.json` 是 **peak 时代**的快照：
-# 它由 chan-standard-bsp1-change 的 tasks 9.0 生成，早于 chan-bsp1-strict-extreme
-# 的极值严格优（1.1/1.2）与力度默认切换（3.1）。第 7 节的语义是「只验证
-# `bsp1_force_scope` 一个变量」——把另外两个变量也放进来，比对必然全飘，
-# 而那既不说明开关接线有问题，也测不出窗口逻辑对不对。
+# 第 7 节锚点 `Debug/bsp1_force_scope_baseline.json` 的口径快照：
+# 它最初由 chan-standard-bsp1-change 的 tasks 9.0 在 **peak 时代**生成，早于
+# 极值口径的两次变更（chan-bsp1-strict-extreme 的严格优 → chan-bsp1-loose-extreme
+# 的重新放宽）与力度默认切换（3.1）。第 7 节的语义是「只验证 `bsp1_force_scope`
+# 一个变量」——把另外两个变量也放进来，比对必然全飘，而那既不说明开关接线有问题，
+# 也测不出窗口逻辑对不对。
 #
-# 因此第 7 节把这两个变量显式 pin 回锚点时代取值。实测证明这个 pin 是精确的：
-# 在此口径下 `bi` 档与锚点 JSON **0 增 0 删 0 漂移**，`swing` 档恰为预期的
-# 2 个消失点。若将来有人再改这三项的默认值，第 7 节不受影响（它测的是开关本身），
-# 而第 5/6/6b 节的数值基线会立刻报错——职责分离。
+# 因此第 7 节把这两个变量显式 pin 回锚点时代取值，且 `--dump-baseline` 也按同一
+# pin 生成 JSON（见 `cmd_dump_baseline`），否则库水位推进后重建的基线会串入
+# full_area/宽松口径，第 7 节立刻全飘。`bs1_peak_strict` 虽已从产品配置下线
+# （面板/指纹/校验出口都清除），内核仍保留这个同名内部开关（默认 False），
+# 因此 pin 仍然有效、且锚点口径正是宽松——与现状一致。
+# 实测证明这个 pin 是精确的：在此口径下 `bi` 档与锚点 JSON **0 增 0 删 0 漂移**，
+# `swing` 档恰为预期的 2 个消失点。若将来有人再改这三项的默认值，第 7 节不受
+# 影响（它测的是开关本身），而第 5/6/6b 节的数值基线会立刻报错——职责分离。
 ANCHOR_ERA_PIN = {"macd_algo": "peak", "bs1_peak_strict": False,
                   "bsp1_new_extreme": False}
-# 第 7 节在 `ANCHOR_ERA_PIN` 下的数量基线（= peak 时代实测，与锚点 JSON 同源）。
+# 第 7 节在 `ANCHOR_ERA_PIN` 下的数量基线（49 只、水位 2026-11-06 实测）。
 #
-# `1p` 是 53/52 而不是 50/49：后者是「极值严格优（`bs1_peak_strict=True`）之后」
-# 的中间态。本节把 `bs1_peak_strict` pin 成 False（宽松），那 3 个「相等极值」的
-# 降级候选重新放行，1p 回到锚点 JSON 的 53/52。三个点是
-# `sh.600006 bi77` / `sh.600026 bi25` / `sz.000007 bi55`——正是 design D0 里
-# 严格优拦下的同一批（用 `Debug/_probe_anchor_1p.py` 翻 `bs1_peak_strict` 可复现）。
-# T1 在两口径下都是 14/13：这三点的趋势项本就不通过，只会以降级形态出现。
-BASELINE_ANCHOR_BI = {'1': 14, '1p': 53, '2': 12, '2s': 4, '3a': 1, '3b': 1}
-BASELINE_ANCHOR_SWING = {'1': 13, '1p': 52, '2': 12, '2s': 4, '3a': 1, '3b': 0}
+# `1p` 是 70/69：宽松口径下「相等极值」的降级候选全部放行，与锚点 JSON 一致。
+# 改用严格优会掉 3 个 —— 那正是 chan-bsp1-strict-extreme 的中间态，现在已不是
+# 产品口径。T1 的 18/17 不受极值口径影响（这些点的趋势项状态与极值无关）。
+BASELINE_ANCHOR_BI = {'1': 18, '1p': 70, '2': 16, '2s': 6, '3a': 3, '3b': 1}
+BASELINE_ANCHOR_SWING = {'1': 17, '1p': 69, '2': 16, '2s': 6, '3a': 3, '3b': 0}
 
 
 def _assert_counts(label, got, exp):
@@ -173,10 +191,10 @@ def _assert_counts(label, got, exp):
     print(f'    ✓ {label} 与基线一致 {fmt(got)}')
     return True
 # 降级漏斗（笔级别、单笔口径）：候选 → trend → 面积背驰 → bs1_peak → 补全检后
-# 末档 = 标准档降级点数（T1P 47）。第 3 档 165 与 peak 时代的 168 差 3：full_area
-# 让三个原本「面积不背驰」的候选变成背驰。首档 365 是本脚本口径（进入 treat_bsp1
-# 的次数），与 JSON 候选口径不同，见断言处的说明。实测回写。
-BASELINE_DOWNGRADE_FUNNEL = (365, 314, 165, 139, 47)
+# 末档 = 标准档降级点数（T1P 66）。2026-11-08 在 49 只、水位 2026-11-06 上重新
+# 实测标定（旧值 365/314/165/139/47 为 41 只时代读数）。首档 451 是本脚本口径
+# （进入 treat_bsp1 的次数），与 JSON 候选口径不同，见断言处的说明。
+BASELINE_DOWNGRADE_FUNNEL = (451, 384, 205, 178, 66)
 
 
 def load_codes(limit=None):
@@ -563,19 +581,23 @@ def dump_points(kl):
 def cmd_dump_baseline(codes, watermark):
     """tasks 9.0：导出逐笔基线 JSON（幂等）。
 
-    必须以 `bsp_preset="standard"` 生成——此时 `bsp1_force_scope` 尚不存在，
-    传它会因 `ConfigWithCheck` 白名单抛异常。这就是 9.0 必须先于 9.1 的原因。
+    **必须按 `ANCHOR_ERA_PIN` + `bsp1_force_scope="bi"` 生成**，与第 7 节
+    `compare_against_baseline` 的比对口径完全一致：第 7 节测的是
+    `bsp1_force_scope` 一个变量，基线侧必须把 `macd_algo` / 极值口径也钉回
+    锚点取值，否则库水位推进后重建的基线会混入 full_area/宽松口径，比对全飘。
     """
     payload = {
         "watermark": watermark,
         "config": {"begin_time": "2019-01-01", "end_time": watermark,
-                   "autype": "QFQ", "kl_type": "K_DAY", "bsp_preset": "standard"},
+                   "autype": "QFQ", "kl_type": "K_DAY", "bsp_preset": "standard",
+                   "bsp1_force_scope": "bi", **ANCHOR_ERA_PIN},
         "codes": [],
         "points": [],
     }
     for code in codes:
         try:
-            kl = build_pinned(code, watermark, bsp_preset="standard")
+            kl = build_pinned(code, watermark, bsp_preset="standard",
+                              bsp1_force_scope="bi", **ANCHOR_ERA_PIN)
         except Exception as exc:
             print(f"  [warn] {code}: {type(exc).__name__}: {exc}")
             continue

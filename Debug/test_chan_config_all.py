@@ -19,7 +19,7 @@ _ROOT = os.path.dirname(_DEBUG_DIR)
 # (脚本, 说明, 是否破坏性)
 SCRIPTS = [
     ("test_chan_config_store.py", "配置存储读写 / 派生键 / inf 编解码 / None 校验", False),
-    ("test_chan_config_meta.py", "58 项参数元数据 / 三条默认值基线", False),
+    ("test_chan_config_meta.py", "57 项参数元数据 / 三条默认值基线", False),
     ("test_chan_config_pipeline.py", "单一出口 / 指纹分段 / 校验 / PG 降级", False),
     ("test_chan_config_api.py", "6 个端点（直调 router 函数）", False),
     ("test_chan_config_rollback.py", "回滚等价性（硬编码口径 vs build_conf）", False),

@@ -55,16 +55,18 @@ by_key = {p["key"]: p for p in schema["params"]}
 # ---------------------------------------------------------------------------
 print("\n[1] 项数与分组")
 try:
-    # 55 项（design D10 基线）+ 并行变更 chan-bsp1-strict-extreme 引入的
-    # bs1_peak_strict = 56 常驻；另有 cal_rsi / rsi_cycle 两个条件项。
-    check("总项数 = 58（56 常驻 + 2 条件）", schema["counts"]["total"] == 58,
+    # 56 常驻（含 chan-bsp1-strict-extreme 引入的 bs1_peak_strict）；
+    # chan-bsp1-loose-extreme 删除 bs1_peak_strict 一项（-1）；
+    # chan-config-bsp3-follow1-conditional 把 bsp3_follow_1_mode 改为条件项（-1 常驻 +1 条件）。
+    # 故 55 常驻 + 3 条件（cal_rsi / rsi_cycle / bsp3_follow_1_mode）= 58 → 实际 57。
+    check("总项数 = 57（54 常驻 + 3 条件）", schema["counts"]["total"] == 57,
           str(schema["counts"]))
-    check("常驻项 = 56", schema["counts"]["unconditional"] == 56, str(schema["counts"]))
-    check("条件项 = 2", schema["counts"]["conditional"] == 2, str(schema["counts"]))
+    check("常驻项 = 54", schema["counts"]["unconditional"] == 54, str(schema["counts"]))
+    check("条件项 = 3", schema["counts"]["conditional"] == 3, str(schema["counts"]))
     check("PARAMS 无重复 key", len({p["key"] for p in PARAMS}) == len(PARAMS))
 
     group_counts = {g["id"]: g["count"] for g in schema["groups"]}
-    check("买卖点判据组 33 项", group_counts.get(GROUP_BSP) == 33, str(group_counts))
+    check("买卖点判据组 31 项", group_counts.get(GROUP_BSP) == 31, str(group_counts))
     check("证据阶梯组 8 项", group_counts.get(GROUP_LADDER) == 8, str(group_counts))
     check("结构算法组 15 项", group_counts.get(GROUP_STRUCTURE) == 15, str(group_counts))
     check("结构组默认折叠",
@@ -198,7 +200,8 @@ try:
 
     # 关键：默认值必须跟随内核。macd_algo 在 chan-bsp1-strict-extreme 中已从
     # peak 改为 full_area —— 硬编码会在这里失败。
-    actual_default = conf.bs_point_conf.b_conf.macd_algo.name.lower()
+    # 多选改造后元数据返回名称列表，内核侧比对也用列表形态。
+    actual_default = [a.name.lower() for a in conf.bs_point_conf.b_conf.macd_algos]
     check("macd_algo 默认值跟随内核", by_key["macd_algo"]["default"] == actual_default,
           f"元数据={by_key['macd_algo']['default']} 内核={actual_default}")
 
@@ -227,9 +230,21 @@ print("\n[8] 条件项")
 try:
     check("cal_rsi 是条件项", by_key["cal_rsi"]["conditional"] is True)
     check("rsi_cycle 是条件项", by_key["rsi_cycle"]["conditional"] is True)
-    check("条件项在 macd_algo=rsi 时可见",
+    check("条件项在 macd_algo 选中 rsi 时可见",
           by_key["cal_rsi"]["visible_when"] == {"macd_algo": "rsi"},
           str(by_key["cal_rsi"]["visible_when"]))
+    # 多选改造：macd_algo 的草稿值是数组，可见性判定必须按「包含」而非整串比较，
+    # 否则 RSI 两项永久隐藏。元数据侧仍用单值声明，前端负责数组展开。
+    check("macd_algo 是多选控件", by_key["macd_algo"]["control"] == "multi",
+          by_key["macd_algo"]["control"])
+    check("macd_algo 默认值是列表", isinstance(by_key["macd_algo"]["default"], list),
+          str(type(by_key["macd_algo"]["default"])))
+    # 三买查哪种一买 → 改名 + 与「三买必须跟在一买之后」联动
+    mode = by_key["bsp3_follow_1_mode"]
+    check("bsp3_follow_1_mode 已改名「一买类型」", mode["label"] == "一买类型", mode["label"])
+    check("bsp3_follow_1_mode 是条件项", mode["conditional"] is True)
+    check("bsp3_follow_1_mode 仅在 bsp3_follow_1 开启时可见",
+          mode["visible_when"] == {"bsp3_follow_1": True}, str(mode["visible_when"]))
     check("预设清单含 standard/legacy",
           set(schema["presets"]) == {"standard", "legacy"}, str(schema["presets"]))
 except Exception as e:
@@ -250,7 +265,7 @@ try:
     ov_by_key = {p["key"]: p for p in overridden["params"]}
     kd = overridden["kernel_defaults"]
 
-    check("kernel_defaults 覆盖全部 58 项", len(kd) == 58, str(len(kd)))
+    check("kernel_defaults 覆盖全部 57 项", len(kd) == 57, str(len(kd)))
     check("覆盖项被反射进 params[].default（当前口径）",
           ov_by_key["bsp1_zero_axis"]["default"] is False
           and ov_by_key["bi_fx_check"]["default"] == "loss",
@@ -280,17 +295,17 @@ print("\n[10] preset_baselines：档位展开后的基线")
 try:
     pb = schema["preset_baselines"]
     check("覆盖全部档位", set(pb) == {"standard", "legacy"}, str(set(pb)))
-    check("每档覆盖全部 58 项",
-          all(len(v) == 58 for v in pb.values()), str({k: len(v) for k, v in pb.items()}))
+    check("每档覆盖全部 57 项",
+          all(len(v) == 57 for v in pb.values()), str({k: len(v) for k, v in pb.items()}))
     check("standard 基线 = kernel_defaults", pb["standard"] == schema["kernel_defaults"])
 
     # legacy 档的预设展开必须体现在基线上 —— 这正是不能用 kernel_defaults
     # 当覆盖基线的理由：否则这十几项会被误判成用户覆盖写死进 overrides。
     legacy_base = pb["legacy"]
-    check("legacy 基线含预设展开值（min_zs_cnt=1 / bsp1_trend=False / macd_algo=peak）",
+    check("legacy 基线含预设展开值（min_zs_cnt=1 / bsp1_trend=False / macd_algo=[peak]）",
           legacy_base["min_zs_cnt"] == 1
           and legacy_base["bsp1_trend"] is False
-          and legacy_base["macd_algo"] == "peak",
+          and legacy_base["macd_algo"] == ["peak"],
           f"{legacy_base['min_zs_cnt']} / {legacy_base['bsp1_trend']} / "
           f"{legacy_base['macd_algo']}")
     check("legacy 与 standard 基线确有多项不同",

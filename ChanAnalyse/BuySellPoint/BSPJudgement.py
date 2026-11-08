@@ -72,14 +72,13 @@ def check_new_extreme(ele, ele_list, zs_lst, is_buy: bool,
     """
     创趋势新低/新高
 
-    `ele` 是待判定的离开要素（一买所在的那一笔/线段）。要求它的极值严格优于
+    `ele` 是待判定的离开要素（一买所在的那一笔/线段）。要求它的极值不劣于
     「趋势起点之后、到 `ele` 为止」的全部同向要素。
 
-    **严格优（`chan-bsp1-extreme`：极值判定为严格优）**：相等极值也计入 worse，即「回到前低」
-    （双底/平低）不构成创出。`CZS.out_bi_is_peak` 是同一契约的另一侧实现，两处
-    的严格性必须一致——只改一侧会让 `bs1_peak` 与 `bsp1_new_extreme` 互相打架。
-    `out_bi_is_peak` 的 `strict=False` 是 legacy 档的受控回退（见 `bs1_peak_strict`），
-    该档下 `bsp1_new_extreme=False`，本函数根本不参与判定，不会与回退口径冲突。
+    **极值比较为宽松口径（`chan-bsp1-loose-extreme`）**：相等极值**不算** worse，
+    即「回到前低」（双底/平低）也构成创新低/新高。`CZS.out_bi_is_peak` 是同一
+    契约的另一侧实现，两处的比较严格性必须一致——只改一侧会让 `bs1_peak` 与
+    `bsp1_new_extreme` 互相打架。
 
     起点口径（`mode`）：
         trend_start : 第一个趋势中枢的进入要素（默认，覆盖完整趋势）
@@ -120,10 +119,10 @@ def check_new_extreme(ele, ele_list, zs_lst, is_buy: bool,
     same_dir = [e for e in ele_pool
                 if e.idx >= start_idx and e.idx < ele.idx and e.is_down() == is_buy]
     if is_buy:
-        # 严格优：<= 计入 worse，相等极值不通过（见 docstring 的严格优契约）
-        worse = [e.idx for e in same_dir if e._low() <= ele._low()]
+        # 宽松口径：只有严格更低才算「有更低的点」，相等极值放行
+        worse = [e.idx for e in same_dir if e._low() < ele._low()]
     else:
-        worse = [e.idx for e in same_dir if e._high() >= ele._high()]
+        worse = [e.idx for e in same_dir if e._high() > ele._high()]
     return len(worse) == 0, {'ref_start_idx': start_idx, 'worse_cnt': len(worse),
                              'new_extreme_mode_effective': mode_effective}
 
