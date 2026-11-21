@@ -203,6 +203,28 @@ check("仅含退役键时得到空配置", _st.validate_config({"bs1_peak_strict
       _st.validate_config({"bs1_peak_strict": True}))
 check("无退役键时原样返回", _st._drop_retired({"min_zs_cnt": 2}) == {"min_zs_cnt": 2})
 
+# chan-config-retire-zs-extend：`bsp1_zs_extend_to_seg_end` 同批下线 —— 它是
+# T1/T1P 的路由开关而非判据，开启会让 T1 候选绕开四项标准判据走更松的 T1P 通道。
+print("\n[7b] 退役键 `bsp1_zs_extend_to_seg_end` 在存储出口被清除")
+check("读取出口 drop 该退役键",
+      _st._drop_retired({"bsp1_zs_extend_to_seg_end": True, "min_zs_cnt": 2})
+      == {"min_zs_cnt": 2},
+      _st._drop_retired({"bsp1_zs_extend_to_seg_end": True, "min_zs_cnt": 2}))
+check("校验出口同样清掉（存量脏值不生效）",
+      _st.validate_config({"bsp1_zs_extend_to_seg_end": True, "min_zs_cnt": 2})
+      == {"min_zs_cnt": 2},
+      _st.validate_config({"bsp1_zs_extend_to_seg_end": True, "min_zs_cnt": 2}))
+check("仅含该退役键时得到空配置",
+      _st.validate_config({"bsp1_zs_extend_to_seg_end": True}) == {},
+      _st.validate_config({"bsp1_zs_extend_to_seg_end": True}))
+check("两个退役键同时出现都被清除",
+      _st._drop_retired({"bs1_peak_strict": True,
+                         "bsp1_zs_extend_to_seg_end": True,
+                         "min_zs_cnt": 2}) == {"min_zs_cnt": 2})
+check("该键已不在指纹清单",
+      "bsp1_zs_extend_to_seg_end" not in
+      __import__("WebAPI.config_fingerprint", fromlist=["FINGERPRINT_KEYS"]).FINGERPRINT_KEYS)
+
 
 # ---------------------------------------------------------------------------
 # min_zs_cnt 上限 2：元数据声明范围后，写入路径必须真正拦住越界值。

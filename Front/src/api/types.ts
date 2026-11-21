@@ -109,6 +109,8 @@ export interface Bi {
   end: BiPoint
   dir: 'UP' | 'DOWN'
   is_sure: boolean
+  /** 末尾元素背驰判定（chan-recent-divergence-mark）；仅最后一个 bi/seg 携带，undefined = 未提供 */
+  is_divergence?: boolean | null
 }
 
 export interface Seg extends Bi {
@@ -134,6 +136,29 @@ export interface BspPoint {
   /** 确认阶梯（chan-bsp-ladder-change）：`'L4'` 已确认，或三轴组合值如
    *  `'L2|L2-3|L3-2'`（进度轴 | 佐证轴 | 分型轴）；null/缺失 = 未定级 */
   ladder?: string | null
+  /** 用户可读分级（chan-bsp-grading）：强度分 / 强弱 / 操作建议 / 卡在哪一步。
+   *  与 ladder 同源推导，前端直接展示，不重复计算。null/缺失 = 未评估 */
+  grade?: {
+    /** 0~100 强度分；已确认恒为 100 */
+    score: number
+    /** 很强 / 较强 / 一般 / 偏弱 / 很弱 */
+    grade: string
+    /** 操作建议（用户可读的一句话） */
+    advice: string
+    /** 是否已确认 */
+    confirmed: boolean
+    /** 卡在哪一步（未确认时才有；已确认为 null） */
+    blocked_by?: string | null
+    /** 免责声明 */
+    disclaimer?: string
+  } | null
+  /** 介入点候选命中（chan-entry-point-candidate 4.4）：true = 该买卖点同时是
+   *  介入点（独立信号层），图上标签合成「·介」后缀 */
+  entry?: boolean
+  /** 介入认定方法：'qjt' 区间套递归（方法1）/ 'aux' 辅助确认（方法2） */
+  entry_method?: string | null
+  /** 方法1 实际递归层数（诊断用） */
+  entry_level?: number | null
 }
 
 export interface ChanResult {
@@ -169,6 +194,30 @@ export interface BspRecord {
   /** 确认阶梯（chan-bsp-ladder-change）：`'L4'` 已确认，或三轴组合值如
    *  `'L2|L2-3|L3-2'`；null = 未定级（非一买类型本次未接入新阶梯） */
   ladder?: string | null
+  /** 用户可读分级（chan-bsp-grading）：强度分 / 强弱 / 操作建议 / 卡在哪一步。
+   *  与 ladder 同源推导，前端直接展示，不重复计算。null/缺失 = 未评估
+   *  （本变更前落库的存量行没有分数，不做猜测）。 */
+  grade?: {
+    /** 0~100 强度分；已确认恒为 100 */
+    score: number
+    /** 很强 / 较强 / 一般 / 偏弱 / 很弱 */
+    grade: string
+    /** 操作建议（用户可读的一句话） */
+    advice: string
+    /** 是否已确认 */
+    confirmed: boolean
+    /** 卡在哪一步（未确认时才有；已确认为 null） */
+    blocked_by?: string | null
+    /** 免责声明 */
+    disclaimer?: string
+  } | null
+  /** 介入点候选命中（chan-entry-point-candidate）：true = 该买卖点同时是介入点
+   *  （独立信号层，不改成立性/数量），列表标签合成「·介」后缀、伪类型筛选据此过滤 */
+  entry_point?: boolean
+  /** 介入认定方法：'qjt' 区间套递归（方法1）/ 'aux' 辅助确认（方法2）；未命中为 null */
+  entry_method?: string | null
+  /** 方法1 实际递归层数（诊断用）；非 qjt 方法或未命中为 null */
+  entry_level?: number | null
 }
 
 export interface BspAggregate {
@@ -729,6 +778,9 @@ export interface ChanParamSchema {
   /** 条件项：仅在 `visible_when` 满足时显示 */
   conditional: boolean
   visible_when: Record<string, unknown> | null
+  /** 历史参数：内核仍在算，但没有任何消费方（不进入接口/界面）。默认隐藏，
+   *  抽屉底部的「显示历史参数」可临时展开 */
+  legacy: boolean
   /** 这是什么（白话） */
   plain: string
   /** 改动会发生什么（白话）。说明卡标题按控件类型生成，不写死「调大调小」 */
@@ -737,8 +789,17 @@ export interface ChanParamSchema {
   scope: string
   /** 内核默认值（已跟随当前档位） */
   default: unknown
-  /** 枚举取值的逐项附加说明（目前只有 `macd_algo`） */
+  /** 枚举取值的逐项附加说明（`macd_algo` / `bsp1_new_extreme_mode` / `bsp1_trend_mode`）。
+   *  行下方只显示**当前选中项**的说明；问号卡片按 `choices` 顺序列出**全部**选项的规则 */
   choice_caveats?: Record<string, string>
+  /** 枚举取值的「是什么意思」说明（与 `choice_caveats` 的「有什么限制」区分）。
+   *  只出现在问号卡片的「选项规则」清单里，不会落到行下方常驻警告行。 */
+  choice_hints?: Record<string, string>
+  /** 「选项规则」清单的排序维度（如「宽松 → 严格」「严格 → 宽松」）。缺省由前端兜底 */
+  choice_order_hint?: string
+  /** 计算公式（逐行字符串，等宽字体渲染）。仅带公式判据的参数（如 `max_bs2_rate`）填充；
+   *  问号卡片在 plain 之后以「计算公式」区块展示 */
+  formula?: string[]
 }
 
 /** 参数分组元信息 */
@@ -755,7 +816,15 @@ export interface ChanConfigSchema {
   groups: ChanParamGroupMeta[]
   params: ChanParamSchema[]
   presets: string[]
-  counts: { total: number; unconditional: number; conditional: number }
+  counts: {
+    total: number
+    unconditional: number
+    conditional: number
+    /** 默认可见的常驻项（扣掉 legacy），抽屉标题的「N 项」用它 */
+    unconditional_visible: number
+    /** 历史参数个数（默认隐藏） */
+    legacy: number
+  }
   /**
    * 内核出厂默认（`CChanConfig()` 空构造反射），**不随用户配置漂移**。
    *

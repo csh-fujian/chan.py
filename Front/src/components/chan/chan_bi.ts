@@ -8,7 +8,7 @@
 // kline-unsure-dashed：未确认笔（is_sure=false）以同色虚线绘制（dashedValue [4, 3]），
 // 确认笔保持实线——颜色不变，线型单独承载确认语义。无 extendData 时全实线（向后兼容）。
 import { registerOverlay, type OverlayFigure } from 'klinecharts'
-import { getChanPalette } from './palette'
+import { getChanPalette, divergenceColor } from './palette'
 
 /** 笔 overlay 元数据（存于 extendData，与 points 顺序对齐，每条笔占 2 个 point） */
 export interface ChanBiMeta {
@@ -16,6 +16,9 @@ export interface ChanBiMeta {
   startIndex: number
   /** 是否已确认；false = 未确认（虚笔），绘制为同色虚线 */
   isSure: boolean
+  /** 末尾笔背驰判定（chan-recent-divergence-mark）；true 时原线下垫红色阴影线。
+   *  仅最后一个元素携带；undefined/null = 不标注 */
+  isDivergence?: boolean | null
 }
 
 let registered = false
@@ -48,7 +51,29 @@ export function registerChanBi(): void {
         const a = coordinates[i]
         const b = coordinates[i + 1]
         if (a == null || b == null) continue
-        const isSure = metaAt(i / 2)?.isSure ?? true
+        const meta = metaAt(i / 2)
+        const isSure = meta?.isSure ?? true
+        // 背驰标注（chan-recent-divergence-mark design D5）：isDivergence=true 时
+        // 在原始灰线之下垫**两层**红线（外层 5px 淡 / 内层 3.25px 浓），
+        // 两层 alpha 叠出外发光过渡，而非单层半透明色带 —— 后者在暗底上
+        // 与蜡烛涨红难区分（前端视觉走查结论）。虚笔时阴影层用实线：
+        // 虚线语义单独留给「未确认」，两种语义正交。
+        if (meta?.isDivergence === true) {
+          const coords = [{ x: a.x, y: a.y }, { x: b.x, y: b.y }]
+          for (const [size, layer] of [[5, 'outer'], [3.25, 'inner']] as const) {
+            figures.push({
+              type: 'line',
+              attrs: { coordinates: coords },
+              styles: {
+                color: divergenceColor(layer),
+                size,
+                style: 'solid',
+                smooth: false,
+                dashedValue: [2, 2],
+              },
+            })
+          }
+        }
         figures.push({
           type: 'line',
           attrs: { coordinates: [{ x: a.x, y: a.y }, { x: b.x, y: b.y }] },

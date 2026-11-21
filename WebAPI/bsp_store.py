@@ -44,16 +44,33 @@ DIRECTIONAL_LABELS: dict[str, tuple[list[str], bool]] = {
     "PZ-S": (["1p"], False),
 }
 
+# 介入点伪类型（chan-entry-point-candidate D-展示）：不新增 bsp_type 枚举，
+# 翻译为 `entry_point=TRUE`（+ 按家族的 primary_type IN）。bsp_type 列仍是
+# 原始 primary_type（按笔去重 D22 不加行），「类型包含」由伪类型筛选表达。
+ENTRY_PSEUDO_TYPES: dict[str, list[str]] = {
+    "entry": [],        # 全部介入点（不限家族）
+    "entry1": ["1", "1p"],
+    "entry2": ["2", "2s"],
+    "entry3": ["3a", "3b"],
+}
+
 
 def resolve_bsp_type(bsp_type: str) -> tuple[list[str], Optional[bool]]:
     """bsp_type 查询参数 → (原始枚举集合, is_buy 约束)。
 
     方向化标签（2B/3S/3B(后)...）→ 枚举集合 + 方向约束（design D11，修复选标签
     查不到记录的既有 bug）；原始枚举直传（如 '2'）→ 仅类型匹配、无方向约束。
+
+    介入点伪类型（entry/entry1/entry2/entry3，chan-entry-point-candidate）→
+    枚举集合语义不同：entry_point=TRUE 的额外过滤由调用方（query_bsp）追加，
+    本函数返回该伪类型的家族类型集（entry 返回空列表=不限类型）。伪类型不
+    承载方向约束（介入点买卖镜像各按自身 is_buy 落行）。
     """
     if bsp_type in DIRECTIONAL_LABELS:
         types, is_buy = DIRECTIONAL_LABELS[bsp_type]
         return list(types), is_buy
+    if bsp_type in ENTRY_PSEUDO_TYPES:
+        return list(ENTRY_PSEUDO_TYPES[bsp_type]), None
     return [bsp_type], None
 
 
@@ -102,19 +119,45 @@ def _ensure_tables():
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS bsp_index (
-                    code       VARCHAR NOT NULL,
-                    kl_type    VARCHAR NOT NULL,
-                    autype     VARCHAR NOT NULL DEFAULT 'QFQ',
-                    bsp_date   DATE NOT NULL,
-                    bsp_type   VARCHAR NOT NULL,
-                    is_buy     BOOLEAN NOT NULL,
-                    price      DOUBLE PRECISION NOT NULL,
-                    time_key   VARCHAR NOT NULL,
-                    is_sure    BOOLEAN NOT NULL DEFAULT TRUE,
-                    ladder     VARCHAR(32),
+                    code         VARCHAR NOT NULL,
+                    kl_type      VARCHAR NOT NULL,
+                    autype       VARCHAR NOT NULL DEFAULT 'QFQ',
+                    bsp_date     DATE NOT NULL,
+                    bsp_type     VARCHAR NOT NULL,
+                    is_buy       BOOLEAN NOT NULL,
+                    price        DOUBLE PRECISION NOT NULL,
+                    time_key     VARCHAR NOT NULL,
+                    is_sure      BOOLEAN NOT NULL DEFAULT TRUE,
+                    ladder       VARCHAR(32),
+                    entry_point  BOOLEAN NOT NULL DEFAULT FALSE,
+                    entry_method VARCHAR(8),
+                    entry_level  INTEGER,
                     UNIQUE (code, kl_type, autype, bsp_date, bsp_type, is_buy, time_key)
                 )
                 """
+            )
+            # 介入点候选三列（chan-entry-point-candidate）：惰性补列，幂等。
+            # `entry_point` 标记介入点成立（暂存时点语义，随重算可翻转），
+            # `entry_method`（'qjt' 区间套 / 'aux' 辅助确认）、`entry_level`
+            # （方法1 实际递归层数）为诊断信息。老库旧行默认 FALSE/NULL。
+            cur.execute(
+                "ALTER TABLE bsp_index ADD COLUMN IF NOT EXISTS entry_point BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+            cur.execute(
+                "ALTER TABLE bsp_index ADD COLUMN IF NOT EXISTS entry_method VARCHAR(8)"
+            )
+            cur.execute(
+                "ALTER TABLE bsp_index ADD COLUMN IF NOT EXISTS entry_level INTEGER"
+            )
+            # 用户可读分级（chan-bsp-grading）：强度分 0~100 与强弱定性。
+            # 存成整数/短字符串而不是整段 JSON —— `advice` / `blocked_by` 的
+            # 文案随时可能调整，落库会让存量行与新文案并存；分数与定性档位
+            # 是稳定的，文案由读取侧按当前口径现算（`bsp_grade.grade_bsp`）。
+            cur.execute(
+                "ALTER TABLE bsp_index ADD COLUMN IF NOT EXISTS grade_score SMALLINT"
+            )
+            cur.execute(
+                "ALTER TABLE bsp_index ADD COLUMN IF NOT EXISTS grade_qual VARCHAR(8)"
             )
             # 阶梯列宽扩容（chan-bsp-ladder-change D5）：三轴组合值如
             # `L2|L2-3|L3-3`（13 字符）超出旧 VARCHAR(2)。幂等：仅当当前宽度
@@ -275,6 +318,7 @@ def query_bsp(
     page_size: int = 20,
     is_sure: Optional[bool] = None,
     ladder: str = "",
+    entry_only: bool = False,
 ) -> dict:
     """条件查询买卖点，返回 {items, total, page, page_size}。
 
@@ -289,6 +333,12 @@ def query_bsp(
     is_sure（bsp-sure-annotation D3）：确认状态三态过滤——True 只回已确认行、
     False 只回未确认行、None 不过滤；与 keyword 等条件下推同一 WHERE，
     COUNT 与分页共用。响应每行携带 is_sure。
+
+    entry_only（chan-entry-point-candidate 4.3）：介入点伪类型过滤——
+    True 时追加 `entry_point = TRUE`（router 层从 entry/entry1/entry2/entry3
+    伪类型解析；bsp_types 已带家族约束，如 entry1 → ['1','1p']）。
+    响应每行携带 entry_point/entry_method/entry_level（伪类型筛选与
+    列表「类型包含」展示共用）。
 
     **ST 过滤（exclude-st-stocks D6 读侧补齐）**：ST 排除只作用于写入侧（重算
     入口 return None），存量 ST 行仍在 bsp_index 里。读侧必须同样过滤，否则
@@ -325,6 +375,8 @@ def query_bsp(
             "COALESCE(b.ladder, CASE WHEN b.is_sure THEN 'L4' ELSE 'L2' END) = %s"
         )
         params.append(ladder)
+    if entry_only:
+        conditions.append("b.entry_point = TRUE")
     if keyword:
         kw = f"%{keyword}%"
         conditions.append("(b.code ILIKE %s OR s.name ILIKE %s OR s.name_py ILIKE %s)")
@@ -354,7 +406,9 @@ def query_bsp(
                 SELECT b.code, b.kl_type, b.autype, b.bsp_date, b.bsp_type,
                        b.is_buy, b.price, b.time_key,
                        COALESCE(s.name, b.code) AS stock_name,
-                       b.is_sure, b.ladder
+                       b.is_sure, b.ladder,
+                       b.entry_point, b.entry_method, b.entry_level,
+                       b.grade_score, b.grade_qual
                 FROM bsp_index b
                 LEFT JOIN stock s ON b.code = s.code
                 {where_clause}
@@ -369,7 +423,8 @@ def query_bsp(
 
     items = []
     for row in rows:
-        code_val, kt, at, bd, bt, ib, price, tk, stock_name, sure, ladder_raw = row
+        (code_val, kt, at, bd, bt, ib, price, tk, stock_name, sure, ladder_raw,
+         entry_pt, entry_m, entry_lv, grade_score, grade_qual) = row
         items.append({
             "code": code_val,
             "name": stock_name,
@@ -386,6 +441,17 @@ def query_bsp(
             # 旧 `ladder_of_legacy` 兜底已退役——旧 L1/L2/L3 语义反转，
             # 用 is_sure 猜一个值会把「未定级」误报成「虚笔候选」。
             "ladder": ladder_raw,
+            # 介入点候选（chan-entry-point-candidate 4.3）：原样返回三列。
+            # entry_point=False 时 method/level 为 NULL（无半套数据）。
+            "entry_point": entry_pt,
+            "entry_method": entry_m,
+            "entry_level": entry_lv,
+            # 用户可读分级（chan-bsp-grading）：只回分数与定性档位。
+            # 文案（advice / blocked_by）由路由层按当前口径现算 —— 落库只存
+            # 稳定值，避免存量行与新文案并存。两列都 NULL（本变更前的存量行）
+            # 时回 None，前端按「未评估」处理。
+            "grade_score": grade_score,
+            "grade_qual": grade_qual,
         })
 
     return {"items": items, "total": total, "page": page, "page_size": page_size}
@@ -465,7 +531,8 @@ def get_bsp_by_code(code: str, kl_types: Optional[list[str]] = None) -> list[dic
         placeholders = ", ".join(["%s"] * len(kl_types))
         sql = f"""
             SELECT b.code, b.kl_type, b.autype, b.bsp_date, b.bsp_type,
-                   b.is_buy, b.price, b.time_key, b.is_sure, b.ladder
+                   b.is_buy, b.price, b.time_key, b.is_sure, b.ladder,
+                   b.entry_point, b.entry_method, b.entry_level
             FROM bsp_index b
             LEFT JOIN stock s ON b.code = s.code
             WHERE b.code = %s AND b.kl_type IN ({placeholders})
@@ -476,7 +543,8 @@ def get_bsp_by_code(code: str, kl_types: Optional[list[str]] = None) -> list[dic
     else:
         sql = f"""
             SELECT b.code, b.kl_type, b.autype, b.bsp_date, b.bsp_type,
-                   b.is_buy, b.price, b.time_key, b.is_sure, b.ladder
+                   b.is_buy, b.price, b.time_key, b.is_sure, b.ladder,
+                   b.entry_point, b.entry_method, b.entry_level
             FROM bsp_index b
             LEFT JOIN stock s ON b.code = s.code
             WHERE b.code = %s AND {ST_EXCLUDE_SQL}
@@ -504,6 +572,10 @@ def get_bsp_by_code(code: str, kl_types: Optional[list[str]] = None) -> list[dic
             "is_sure": r[8],
             # ladder 原样返回（NULL = 未定级，见上方 query_bsp 的同口径说明）
             "ladder": r[9],
+            # 介入点候选（chan-entry-point-candidate 4.3）：区间套行同样携带
+            "entry_point": r[10],
+            "entry_method": r[11],
+            "entry_level": r[12],
         }
         for r in rows
     ]
@@ -722,17 +794,20 @@ def _delete_bsp_rows(cur, code: str, kl_type: str, autype: str) -> int:
 def _insert_bsp_rows(cur, code: str, kl_type: str, autype: str, bsp_rows) -> int:
     """层 1 幂等：唯一键 + ON CONFLICT DO NOTHING（防并发/集合内重复写）。
 
-    bsp_rows 为 7 元行 (bsp_date, bsp_type, is_buy, price, time_key, is_sure, ladder)
-    （bsp-sure-annotation D1/D5 的 is_sure 与 bsp-ladder-change D1 的 ladder
+    bsp_rows 为 12 元行 (bsp_date, bsp_type, is_buy, price, time_key, is_sure,
+    ladder, entry_point, entry_method, entry_level, grade_score, grade_qual)
+    （is_sure 由 bsp-sure-annotation D1/D5、ladder 由 bsp-ladder-change D1、
+    介入点三列由 chan-entry-point-candidate D6、分级两列由 chan-bsp-grading
     均由 incremental_engine 推导后传入）。
     """
     if not bsp_rows:
         return 0
     cur.executemany(
-        """INSERT INTO bsp_index (code, kl_type, autype, bsp_date, bsp_type, is_buy, price, time_key, is_sure, ladder)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """INSERT INTO bsp_index (code, kl_type, autype, bsp_date, bsp_type, is_buy, price, time_key, is_sure, ladder, entry_point, entry_method, entry_level, grade_score, grade_qual)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
            ON CONFLICT (code, kl_type, autype, bsp_date, bsp_type, is_buy, time_key) DO NOTHING""",
-        [(code, kl_type, autype, bd, bt, ib, pr, tk, su, ld) for (bd, bt, ib, pr, tk, su, ld) in bsp_rows],
+        [(code, kl_type, autype, bd, bt, ib, pr, tk, su, ld, ep, em, el, gs, gq)
+         for (bd, bt, ib, pr, tk, su, ld, ep, em, el, gs, gq) in bsp_rows],
     )
     return cur.rowcount
 

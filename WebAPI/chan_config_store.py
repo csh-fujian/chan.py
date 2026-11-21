@@ -78,8 +78,13 @@ _DOTTED_KEYS = {
 # 结果是「面板上看不到、却在生效地把极值判据收紧回去」，而且指纹不再覆盖它，
 # 快照续算会复用按另一口径算出的前缀。
 #
+# `bsp1_zs_extend_to_seg_end`（「中枢必须延伸到线段末尾」）同理下线
+# （chan-config-retire-zs-extend）：它是 T1/T1P 的路由开关而非判据，开启后
+# T1 候选会绕开四项标准判据走更松的 T1P 通道，买卖点类型还会随线段延伸翻转。
+# standard 档恒为 False，只有 legacy 档展开为 True（由 `bsp_preset` 区分）。
+#
 # 因此读取出口与校验入口都必须把它清掉：存量脏值不会生效，也不会重新落库。
-_RETIRED_KEYS = ("bs1_peak_strict",)
+_RETIRED_KEYS = ("bs1_peak_strict", "bsp1_zs_extend_to_seg_end")
 
 
 def _drop_retired(config: dict) -> dict:
@@ -737,7 +742,7 @@ def save(
         preset: 保存时的档位预设名。**它单独落 `preset` 列，不进 overrides** ——
             但计算出口会把它回填进内核配置（`_preset_injected()`），所以它
             真正参与判定，不是诊断标注。非法取值须在入口用 `validate_preset()` 拦住。
-        full_snapshot: 全量快照（57 项保存时的生效值），仅供展示/审计。
+        full_snapshot: 全量快照（56 项保存时的生效值），仅供展示/审计。
             缺省时用 `overrides` 填充（等价于「所有项都是显式值」）。
 
     派生键（`macd_algo-seg` / `cal_rsi`）不落库 —— 它们由 `apply_derived()` 在读取出口生成，

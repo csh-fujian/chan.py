@@ -47,16 +47,29 @@ def check(name, cond):
 # ---------------------------------------------------------------------------
 # 合成日线（确定性）
 # ---------------------------------------------------------------------------
-def gen_bars(n=500, seed=42):
+def gen_bars(n=600, seed=42):
+    """确定性合成日线：价格直接走正弦（而非对增量积分）。
+
+    旧版 `c = o + sin(i/20)*0.02 + noise` 里价格是增量累加，等价于对正弦积分，
+    周期被放大约 20 倍且噪声同步累积——500 根只出得到笔/段/中枢，**产不出任何
+    买卖点**，于是「产出非平凡」断言里的 `bs > 0` 恒失败（2026-11-09 发现，
+    属既有缺陷，与介入点改动无关）。改为按目标价直接构造：周期 10 根、振幅 0.4
+    → 笔 93 / 段 19 / 中枢 11 / 买卖点 2，四条一致性断言与「非平凡」断言都有
+    实际鉴别力。
+    """
     random.seed(seed)
     bars = []
-    price = 10.0
+    prev = 10.0
+
+    def target(i):
+        return 10.0 + 0.4 * math.sin(i / 10.0 * 2 * math.pi)
+
     for i in range(n):
         d = dt.date(2020, 1, 1) + dt.timedelta(days=i)
-        o = price
-        c = o + math.sin(i / 20.0) * 0.02 + random.uniform(-0.02, 0.02)
-        hi = max(o, c) + random.uniform(0, 0.05)
-        lo = min(o, c) - random.uniform(0, 0.05)
+        o = prev
+        c = target(i) + random.uniform(-0.02, 0.02)
+        hi = max(o, c) + random.uniform(0, 0.02)
+        lo = min(o, c) - random.uniform(0, 0.02)
         bars.append(CKLine_Unit({
             DATA_FIELD.FIELD_TIME: CTime(d.year, d.month, d.day, 0, 0, 0, auto=False),
             DATA_FIELD.FIELD_OPEN: o,
@@ -65,7 +78,7 @@ def gen_bars(n=500, seed=42):
             DATA_FIELD.FIELD_CLOSE: c,
             DATA_FIELD.FIELD_VOLUME: 10000.0,
         }))
-        price = c
+        prev = c
     return bars
 
 

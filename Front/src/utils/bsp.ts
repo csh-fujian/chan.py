@@ -35,7 +35,40 @@ export function bspLabel(type: string, isBuy: boolean): string {
   return isBuy ? m.buy : m.sell
 }
 
+/** 标签 → 原始枚举值反查表（'1B'→'1'、'PZ-S'→'1p'、'L2B'→'2s'） */
+const LABEL_TO_RAW: Record<string, string> = (() => {
+  const m: Record<string, string> = {}
+  for (const [raw, v] of Object.entries(TYPE_MAP)) {
+    m[v.buy] = raw
+    m[v.sell] = raw
+  }
+  return m
+})()
+
+/** 标签反查原始枚举值；未匹配的标签原样返回。mock 侧介入点伪类型筛选用：
+ *  BspRecord.bsp_type 是标签形态，家族集合是原始值形态，须先翻译再比对 */
+export function rawTypeOf(label: string): string {
+  return LABEL_TO_RAW[label] ?? label
+}
+
+/**
+ * 介入点合成标签（chan-entry-point-candidate 5.2）：命中介入的买卖点标签
+ * 追加「·介」后缀（如 `1B·介`）。介入点是买卖点上的独立信号层（不改
+ * 成立性/数量），伪类型筛选与列表/图上展示共用同一合成规则。
+ */
+export function entrySuffixLabel(label: string, entry: boolean): string {
+  return entry ? `${label}·介` : label
+}
+
 /** 所有买卖点类型标签（用于筛选下拉/图表轴） */
 export const ALL_BSP_LABELS = [
   '1B', '2B', '3B(后)', '3B(内)', '1S', '2S', 'L2B', 'L2S', '3S(后)', '3S(内)', 'PZ-B', 'PZ-S',
+]
+
+/** 介入点伪类型筛选项（chan-entry-point-candidate 5.3：value 对应后端伪类型参数） */
+export const ENTRY_PSEUDO_OPTIONS = [
+  { label: '介入点（全部）', value: 'entry' },
+  { label: '一买介入点', value: 'entry1' },
+  { label: '二买介入点', value: 'entry2' },
+  { label: '三买介入点', value: 'entry3' },
 ]

@@ -201,7 +201,17 @@ def put_config(body: ConfigSaveRequest, user: dict = Depends(require_manage)):
     except store.ConfigStoreUnavailable as e:
         raise HTTPException(status_code=503, detail=str(e))
 
-    return {"ok": True, "version": version, "overrides": cleaned, "preset": preset}
+    # 响应体必须走 `encode_config()`：`validate_config()` 返回的是**已解码**的
+    # overrides（`"inf"` 已还原成 `float("inf")`，见其文档 1.）。裸返回会让
+    # starlette 在 `json.dumps` 处抛 `Out of range float values are not JSON
+    # compliant: inf` → 500。典型触发：在前端点 `divergence_rate` 的「不限」
+    # 后保存，前端提交 `{"divergence_rate": "inf"}`，校验通过、落库成功，
+    # 却在构造响应时 500 —— 前端收到失败会误以为没保存，而库里其实已经写进去了。
+    # GET / 与 GET /schema 早已这么处理，此处此前漏了。
+    return store.encode_config({
+        "ok": True, "version": version,
+        "overrides": cleaned, "preset": preset,
+    })
 
 
 # ----------------------------------------------------------------------

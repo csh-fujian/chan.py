@@ -54,41 +54,51 @@ export interface LadderInfo {
   desc: string
 }
 
-/** 进度轴：判据链推进程度（1~4 步 → L1，5~7 步 → L2） */
+/** 进度轴：判据链推进程度（1~4 步 → L1，5~7 步 → L2）
+ *
+ *  `name` 是**用户读到的档位名**，必须是白话结论，不能是内部坐标系术语：
+ *  旧文案「前半链 / 后半链」只说了「在 7 项里的哪一半」，用户既不知道有 7 项，
+ *  也不知道过了后半链算好还是坏。改成「初步成形 / 接近成立」后，用户扫一眼
+ *  就知道证据走到了哪一步。编号 L1/L2 仍显示在徽章上，作为辅助标识。
+ *  `desc` 同步改写成「已经确认了什么、还差什么」。 */
 export const PROGRESS_LEVELS: readonly AxisInfo[] = [
   {
     kind: 'progress',
-    axis: '判据链进度',
-    name: '前半链',
-    desc: '一买判据链 ①~④ 项内推进（趋势/突破/极值/力度背驰）',
+    axis: '判据进度',
+    name: '初步成形',
+    desc: '趋势和突破已经确认，但这一段的力度还没有弱于前一段，买点还不成立',
   },
   {
     kind: 'progress',
-    axis: '判据链进度',
-    name: '后半链',
-    desc: '一买判据链 ⑤~⑦ 项内推进（新低/DIF 背驰/零轴回抽），或七项全过只欠结构确认',
+    axis: '判据进度',
+    name: '接近成立',
+    desc: '趋势、突破、极值、力度背驰都已确认，正在检查新低 / 黄白线 / 零轴这些收尾条件',
   },
 ]
 
-/** 佐证轴：次级别结构佐证（结构映射窗口） */
+/** 佐证轴：次级别结构佐证（结构映射窗口）
+ *
+ *  旧文案「子级已确认点 / 子级候选 / 子级分型」是开发者口径（`子级`、`候选`
+ *  都是内部术语）。改成「低一级已确认 / 低一级有苗头 / 低一级出现反转」，
+ *  并点明「低一级」指的是更低的时间周期。 */
 export const CORROBORATION_LEVELS: readonly AxisInfo[] = [
   {
     kind: 'corroboration',
-    axis: '子级佐证',
-    name: '已确认子级点',
-    desc: 'c 走势段映射的次级别区间内存在同向且已确认的一买',
+    axis: '小级别印证',
+    name: '小级别已见底',
+    desc: '更小周期上已经出现并确认了同向买点，大级别与小级别方向一致（最有力的印证）',
   },
   {
     kind: 'corroboration',
-    axis: '子级佐证',
-    name: '子级候选',
-    desc: '同区间内存在同向子级候选点，其判据链已推进到前半链',
+    axis: '小级别印证',
+    name: '小级别有苗头',
+    desc: '更小周期上出现了同向买点候选，判据链已推进过半，但还没最终确认',
   },
   {
     kind: 'corroboration',
-    axis: '子级佐证',
-    name: '子级分型',
-    desc: '同区间内次级别末端形成同向分型（最早的微观信号）',
+    axis: '小级别印证',
+    name: '小级别刚转向',
+    desc: '更小周期末端刚形成反转形态，是最早的微观信号，可靠性最低',
   },
 ]
 
@@ -96,21 +106,21 @@ export const CORROBORATION_LEVELS: readonly AxisInfo[] = [
 export const FRACTAL_LEVELS: readonly AxisInfo[] = [
   {
     kind: 'fractal',
-    axis: '分型强弱',
+    axis: '反转力度',
     name: '强',
-    desc: '第三根 K 线实体上沿收复前一合并 K 线实体上沿',
+    desc: '转折那根 K 线收复了前一根的整个实体，反转坚决',
   },
   {
     kind: 'fractal',
-    axis: '分型强弱',
+    axis: '反转力度',
     name: '中',
-    desc: '第三根 K 线实体上沿收复前一根实体一半以上（含相等边界）',
+    desc: '转折那根 K 线收复了前一根实体的一半以上，反转成立但不算强势',
   },
   {
     kind: 'fractal',
-    axis: '分型强弱',
+    axis: '反转力度',
     name: '弱',
-    desc: '未收复前一根实体一半，可能仅为下跌/上涨中继',
+    desc: '没收复前一根实体的一半，可能只是下跌（上涨）途中的停顿，反转未必真',
   },
 ]
 
@@ -118,9 +128,68 @@ export const FRACTAL_LEVELS: readonly AxisInfo[] = [
 export const CONFIRMED_INFO: LadderInfo = {
   level: 'L4',
   kind: 'confirmed',
-  axis: '确认买卖点',
-  name: '已确认',
-  desc: '依托线段已确认，信号定型，不再随重算漂移',
+  axis: '结论',
+  name: '已成立',
+  desc: '依托的线段已经走完并确认，这个买卖点定型，不会再随重算消失或变化',
+}
+
+/** 判定顺序脚注（tooltip 底部说明） */
+export const LADDER_ORDER_NOTE =
+  '各项独立评估：判据进度、小级别印证、事后确认、反转力度、回调速度；已成立 = 信号定型'
+
+/**
+ * 仓位指引 → 用「证据够不够」的措辞，不用「满仓 / 加仓」。
+ *
+ * 旧实现返回「满仓 / 加仓至 1/2 / 观察仓 1/4」，那是**仓位指令**，
+ * 用户会当成操作建议直接执行。改为描述证据强度的短语，与实际回测结论
+ * （未确认信号 T+10 胜率约 41.67%）的风险水平相符。
+ *
+ * 真正的「能不能买」结论统一由后端 `grade.advice` 给出（见 `bsp_grade.py`），
+ * 本函数只用于 tooltip 行尾的简写标注。
+ */
+export function ladderPosition(parsed: ParsedLadder | null, isBuy: boolean): string {
+  if (!parsed) return '证据不足'
+  if (parsed.confirmed) return '已成立'
+  // 进度轴在 T1 是 L1/L2、在 T2 是 P1/P2；两者都表示「判据链已过半」
+  const p = parsed.progress as string | undefined
+  if (p === 'L2' || p === 'P2') return '接近成立'
+  return '初步成形'
+}
+
+// ----------------------------------------------------------------------
+// 买卖点分级（chan-bsp-grading）—— 强度分与操作建议
+// ----------------------------------------------------------------------
+
+/** 后端 `grade` 字段结构（`WebAPI/bsp_grade.py:grade_bsp` 输出） */
+export interface BspGrade {
+  /** 0~100 强度分；已确认恒为 100 */
+  score: number
+  /** 强弱定性：很强 / 较强 / 一般 / 偏弱 / 很弱 */
+  grade: string
+  /** 操作建议（用户可读的一句话） */
+  advice: string
+  /** 是否已确认 */
+  confirmed: boolean
+  /** 卡在哪一步（未确认时才有；已确认为 null） */
+  blocked_by?: string | null
+  /** 免责声明 */
+  disclaimer?: string
+}
+
+/** 强度分 → 颜色档位（前端渲染用；与后端 `_GRADES` 的下限对齐） */
+export function gradeTone(score: number): 'strong' | 'good' | 'mid' | 'weak' | 'poor' {
+  if (score >= 80) return 'strong'
+  if (score >= 60) return 'good'
+  if (score >= 40) return 'mid'
+  if (score >= 20) return 'weak'
+  return 'poor'
+}
+
+/** 强度分 → 一句话的直观标签（分数过低与已确认时给更强的措辞） */
+export function gradeSummary(g: BspGrade | null | undefined): string {
+  if (!g) return '无评估'
+  if (g.confirmed) return '已成立'
+  return `${g.score} 分 · ${g.grade}`
 }
 
 // ----------------------------------------------------------------------
@@ -132,40 +201,43 @@ export const CONFIRMED_INFO: LadderInfo = {
 // 与 T1 三轴（L 编号）语法完全不同，解析时按段前缀识别，互不干扰。
 // ----------------------------------------------------------------------
 
-/** T2 五轴档位（P1/P2、S3/S2/S1、C3/C2/C1/C0、K3/K2/K1、T3/T2/T1） */
+/** T2 五轴档位（P1/P2、S3/S2/S1、C3/C2/C1/C0、K3/K2/K1、T3/T2/T1）
+ *
+ *  文案与 T1 同一原则：`name` 是用户能读的结论，`desc` 说清「已经确认了什么 /
+ *  还差什么」，不出现「判据链」「轴」「c 走势段」这类内部术语。 */
 export const T2_AXIS_INFOS: LadderInfo[] = [
-  { level: 'P1' as LadderLevel, kind: 'progress', axis: '判据链进度', name: '前半链', desc: '一买成立 / 回调存在 / 不破极值 三项内推进' },
-  { level: 'P2' as LadderLevel, kind: 'progress', axis: '判据链进度', name: '后半链', desc: '回撤率与中枢关联检查推进，或五项全过只欠确认' },
-  { level: 'S3' as LadderLevel, kind: 'corroboration', axis: '子级佐证', name: '已确认子级点', desc: '回调笔窗口内子级存在同向且已确认的买卖点' },
-  { level: 'S2' as LadderLevel, kind: 'corroboration', axis: '子级佐证', name: '子级候选', desc: '同窗口内存在同向子级候选点，判据链已推进到前半链' },
-  { level: 'S1' as LadderLevel, kind: 'corroboration', axis: '子级佐证', name: '子级分型', desc: '同窗口内子级末端形成同向分型（最早的微观信号）' },
-  { level: 'C3' as LadderLevel, kind: 'confirm', axis: '事后确认', name: '已确认', desc: '后续笔突破一买后反向笔端点' },
-  { level: 'C2' as LadderLevel, kind: 'confirm', axis: '事后确认', name: '收复', desc: '收复反向笔振幅一半以上' },
-  { level: 'C1' as LadderLevel, kind: 'confirm', axis: '事后确认', name: '未确认（终态）', desc: '窗口走完未收复一半，降级不撤销' },
-  { level: 'C0' as LadderLevel, kind: 'confirm', axis: '事后确认', name: '进行中', desc: '确认窗口数据不足（数据末端），非终态' },
-  { level: 'K3' as LadderLevel, kind: 'fractal', axis: '分型强弱', name: '强', desc: '回调笔末端分型第三根 K 线实体收复前一根实体上沿' },
-  { level: 'K2' as LadderLevel, kind: 'fractal', axis: '分型强弱', name: '中', desc: '收复前一根实体一半以上（含相等边界）' },
-  { level: 'K1' as LadderLevel, kind: 'fractal', axis: '分型强弱', name: '弱', desc: '未收复前一根实体一半，可能仅为中继' },
-  { level: 'T3' as LadderLevel, kind: 'time', axis: '回调速度', name: '强（急涨缓跌）', desc: '回调速度比 ≤ 强档阈值，回调衰竭' },
-  { level: 'T2' as LadderLevel, kind: 'time', axis: '回调速度', name: '中（均衡）', desc: '回调速度比处于中档区间' },
-  { level: 'T1' as LadderLevel, kind: 'time', axis: '回调速度', name: '弱（缓涨急跌）', desc: '回调速度比 > 弱档阈值，回调急促' },
+  { level: 'P1' as LadderLevel, kind: 'progress', axis: '判据进度', name: '初步成形', desc: '一买成立、回调发生、没跌破一买低点，这三项已经过；回调幅度还没比对上' },
+  { level: 'P2' as LadderLevel, kind: 'progress', axis: '判据进度', name: '接近成立', desc: '回调幅度和中枢关联也已确认，只差最后的价格确认' },
+  { level: 'S3' as LadderLevel, kind: 'corroboration', axis: '小级别印证', name: '小级别已见底', desc: '回调期间更小周期已出现并确认同向买点（最有力的印证）' },
+  { level: 'S2' as LadderLevel, kind: 'corroboration', axis: '小级别印证', name: '小级别有苗头', desc: '回调期间更小周期出现同向买点候选，判据已推进过半' },
+  { level: 'S1' as LadderLevel, kind: 'corroboration', axis: '小级别印证', name: '小级别刚转向', desc: '回调期间更小周期末端刚形成反转形态（最早的微观信号）' },
+  { level: 'C3' as LadderLevel, kind: 'confirm', axis: '事后确认', name: '已确认', desc: '回调之后价格重新突破，二买得到确认' },
+  { level: 'C2' as LadderLevel, kind: 'confirm', axis: '事后确认', name: '收复大半', desc: '已经收复回调幅度的一半以上，但还没完全突破' },
+  { level: 'C1' as LadderLevel, kind: 'confirm', axis: '事后确认', name: '确认失败', desc: '观察期走完仍未收复一半幅度，这个二买判定为失败（不会撤销，只降级标记）' },
+  { level: 'C0' as LadderLevel, kind: 'confirm', axis: '事后确认', name: '还在观察', desc: '观察期数据还没走完（行情太新），不是最终结论' },
+  { level: 'K3' as LadderLevel, kind: 'fractal', axis: '反转力度', name: '强', desc: '回调末端那根 K 线收复了前一根的整个实体，止跌坚决' },
+  { level: 'K2' as LadderLevel, kind: 'fractal', axis: '反转力度', name: '中', desc: '回调末端收复了前一根实体的一半以上' },
+  { level: 'K1' as LadderLevel, kind: 'fractal', axis: '反转力度', name: '弱', desc: '回调末端没收复前一根实体的一半，止跌不明显' },
+  { level: 'T3' as LadderLevel, kind: 'time', axis: '回调速度', name: '缓跌（好）', desc: '回调又慢又浅，说明抛压在衰竭，是健康回调' },
+  { level: 'T2' as LadderLevel, kind: 'time', axis: '回调速度', name: '均衡', desc: '回调的跌速与之前涨速大致相当' },
+  { level: 'T1' as LadderLevel, kind: 'time', axis: '回调速度', name: '急跌（差）', desc: '回调又急又猛，跌速明显快于此前涨速，抛压还很重' },
 ]
 
-/** T3 四轴档位（与 T2 同字母；Semantics 换判据对象）*/
+/** T3 四轴档位（与 T2 同字母；判据对象换成「回抽」）*/
 export const T3_AXIS_INFOS: LadderInfo[] = [
-  { level: 'S3' as LadderLevel, kind: 'corroboration', axis: '子级佐证', name: '已确认子级点', desc: '回抽笔窗口内子级存在同向且已确认的买卖点' },
-  { level: 'S2' as LadderLevel, kind: 'corroboration', axis: '子级佐证', name: '子级候选', desc: '同窗口内存在同向子级候选点' },
-  { level: 'S1' as LadderLevel, kind: 'corroboration', axis: '子级佐证', name: '子级分型', desc: '同窗口内子级末端形成同向分型' },
-  { level: 'C3' as LadderLevel, kind: 'confirm', axis: '事后确认', name: '已确认', desc: '后续笔突破回抽笔端点，趋势延续成立' },
-  { level: 'C2' as LadderLevel, kind: 'confirm', axis: '事后确认', name: '收复', desc: '收复回抽幅度一半以上' },
-  { level: 'C1' as LadderLevel, kind: 'confirm', axis: '事后确认', name: '证伪（终态）', desc: '跌回锚定中枢区间或窗口走完未收复，假三买' },
-  { level: 'C0' as LadderLevel, kind: 'confirm', axis: '事后确认', name: '进行中', desc: '确认窗口数据不足（数据末端），非终态' },
-  { level: 'K3' as LadderLevel, kind: 'fractal', axis: '分型强弱', name: '强', desc: '回抽笔末端底/顶分型实体收复程度强' },
-  { level: 'K2' as LadderLevel, kind: 'fractal', axis: '分型强弱', name: '中', desc: '收复前一根实体一半以上' },
-  { level: 'K1' as LadderLevel, kind: 'fractal', axis: '分型强弱', name: '弱', desc: '未收复前一根实体一半，回抽动能仍强' },
-  { level: 'T3' as LadderLevel, kind: 'time', axis: '回抽速度', name: '强（急涨缓跌）', desc: '回抽速度比 ≤ 强档阈值，回抽衰竭' },
-  { level: 'T2' as LadderLevel, kind: 'time', axis: '回抽速度', name: '中（均衡）', desc: '回抽速度比处于中档区间' },
-  { level: 'T1' as LadderLevel, kind: 'time', axis: '回抽速度', name: '弱（缓涨急跌）', desc: '回抽速度比 > 弱档阈值，回抽急促' },
+  { level: 'S3' as LadderLevel, kind: 'corroboration', axis: '小级别印证', name: '小级别已见底', desc: '回抽期间更小周期已出现并确认同向买卖点（最有力的印证）' },
+  { level: 'S2' as LadderLevel, kind: 'corroboration', axis: '小级别印证', name: '小级别有苗头', desc: '回抽期间更小周期出现同向买卖点候选' },
+  { level: 'S1' as LadderLevel, kind: 'corroboration', axis: '小级别印证', name: '小级别刚转向', desc: '回抽期间更小周期末端刚形成反转形态（最早的微观信号）' },
+  { level: 'C3' as LadderLevel, kind: 'confirm', axis: '事后确认', name: '已确认', desc: '回抽之后价格继续突破，三买得到确认，趋势延续成立' },
+  { level: 'C2' as LadderLevel, kind: 'confirm', axis: '事后确认', name: '收复大半', desc: '已经收复回抽幅度的一半以上，但还没完全突破' },
+  { level: 'C1' as LadderLevel, kind: 'confirm', axis: '事后确认', name: '判定失败', desc: '价格跌回中枢区间，或观察期走完仍未收复，这个三买是假的' },
+  { level: 'C0' as LadderLevel, kind: 'confirm', axis: '事后确认', name: '还在观察', desc: '观察期数据还没走完（行情太新），不是最终结论' },
+  { level: 'K3' as LadderLevel, kind: 'fractal', axis: '反转力度', name: '强', desc: '回抽末端那根 K 线收复了前一根的整个实体，反转坚决' },
+  { level: 'K2' as LadderLevel, kind: 'fractal', axis: '反转力度', name: '中', desc: '回抽末端收复了前一根实体的一半以上' },
+  { level: 'K1' as LadderLevel, kind: 'fractal', axis: '反转力度', name: '弱', desc: '回抽末端没收复前一根实体的一半，回抽动能仍强' },
+  { level: 'T3' as LadderLevel, kind: 'time', axis: '回抽速度', name: '缓跌（好）', desc: '回抽又慢又浅，说明抛压在衰竭，是健康回抽' },
+  { level: 'T2' as LadderLevel, kind: 'time', axis: '回抽速度', name: '均衡', desc: '回抽的跌速与之前涨速大致相当' },
+  { level: 'T1' as LadderLevel, kind: 'time', axis: '回抽速度', name: '急跌（差）', desc: '回抽又急又猛，跌速明显快于此前涨速，抛压还很重' },
 ]
 
 /** 全部档位索引（T1 三轴 + T2 五轴 + T3 四轴；同名字符串以后者覆盖，语义一致） */
@@ -202,10 +274,6 @@ export interface ParsedLadder {
   /** 全部轴标签（按组合串原序） */
   axes: LadderLevel[]
 }
-
-/** 判定顺序脚注（tooltip 底部说明） */
-export const LADDER_ORDER_NOTE =
-  '轴独立：判据链进度、子级佐证、事后确认、分型强弱、回抽速度；L4 = 已确认'
 
 /**
  * 解析 ladder 组合串。
@@ -263,13 +331,5 @@ export function ladderInfos(raw: string | null | undefined): LadderInfo[] {
 }
 
 /**
- * 仓位指引：仅进度轴映射仓位（递进关系），佐证/分型轴是证据说明，不映射。
- *
- * 买点 = 建仓阶梯，卖点 = 退出阶梯（镜像文案）。
+ * 强度分 → 颜色档位（前端渲染用；与后端 `_GRADES` 的下限对齐）
  */
-export function ladderPosition(parsed: ParsedLadder | null, isBuy: boolean): string {
-  if (!parsed) return '观察仓 1/4'
-  if (parsed.confirmed) return isBuy ? '满仓' : '空仓'
-  if (parsed.progress === 'L2') return isBuy ? '加仓至 1/2' : '减仓至 1/2'
-  return isBuy ? '观察仓 1/4' : '减至 3/4'
-}

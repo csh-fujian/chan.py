@@ -62,6 +62,10 @@ export interface BspIndexRow {
   is_sure: boolean
   /** 确认阶梯级别（bsp-ladder-change）：'L1'/'L2'/'L3'/'L4'，NULL 行后端按 is_sure 兜底映射 */
   ladder?: string | null
+  /** 介入点候选命中（chan-entry-point-candidate 4.3）：bsp_index 三列透传 */
+  entry_point?: boolean
+  entry_method?: string | null
+  entry_level?: number | null
 }
 
 /** 指定股票的多级别买卖点（区间套），kl_types 过滤周期集合 */

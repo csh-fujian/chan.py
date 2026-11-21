@@ -28,6 +28,27 @@ const UNSURE_LADDERS = [
 ] as const
 let unsureIdx = 0
 
+/** 尾部未确认行的介入点样本轮转（chan-entry-point-candidate 5.3）：按尾部序位取
+ *  spec——qjt 两层 / qjt 单层 / aux ×2 / 不命中 ×2。保证 mock 侧 qjt 双层数与
+ *  aux 双方法都有样本，供伪类型筛选与「·介」合成展示；null = 不命中行。 */
+const UNSURE_ENTRY_SPECS = [
+  { method: 'qjt', level: 2 },
+  { method: 'qjt', level: 1 },
+  { method: 'aux', level: null },
+  null,
+  { method: 'aux', level: null },
+  null,
+] as const
+
+// 介入点伪类型 → 家族原始类型集合（chan-entry-point-candidate 5.3：与后端
+// bsp_store.ENTRY_PSEUDO_TYPES 同口径，handler 的伪类型过滤据此展开）
+export const ENTRY_PSEUDO_FAMILIES: Record<string, string[]> = {
+  entry: [],
+  entry1: ['1', '1p'],
+  entry2: ['2', '2s'],
+  entry3: ['3a', '3b'],
+}
+
 /** 一买家族类型（1 / 1p / PZ）——只有它们携带三轴组合值 */
 function isBsp1Family(type: string): boolean {
   return type.startsWith('1') || type.startsWith('PZ')
@@ -41,6 +62,14 @@ export const bspRecords: BspRecord[] = Array.from({ length: 60 }, (_, i) => {
   const basePrice = stock.price
   // 尾部 6 条未确认（预览信号），其余已确认
   const isSure = i < 54
+  // 介入点命中（chan-entry-point-candidate 5.3）：形态对齐真实口径——介入点是
+  // 买卖点上的独立信号层且必然依托未确认候选（必要条件=本级别 c 段/回落段/
+  // 回抽段未完成），所以只落在尾部未确认行上；命中行按 UNSURE_ENTRY_SPECS
+  // 轮转，覆盖 qjt/aux 双方法与 1/2 层数，未命中行三列恒为 false/null/null。
+  const entrySpec = isSure ? null : UNSURE_ENTRY_SPECS[i - 54]
+  const entryHit = entrySpec !== null && entrySpec !== undefined
+  const entryMethod = entryHit ? entrySpec.method : null
+  const entryLevel = entryHit ? entrySpec.level : null
   // 已确认行分布在近 30 天；未确认行贴近当前（0~1 天，尾部预览形态）
   const daysAgo = isSure ? Math.floor(r * 30) : Math.floor(r * 2)
   const bspDate = Date.now() - daysAgo * 86400000
@@ -68,6 +97,10 @@ export const bspRecords: BspRecord[] = Array.from({ length: 60 }, (_, i) => {
       : isBsp1Family(bspType)
         ? UNSURE_LADDERS[unsureIdx++ % UNSURE_LADDERS.length]
         : null,
+    // 介入三列（chan-entry-point-candidate 5.3）：未命中行 method/level 为 null
+    entry_point: entryHit,
+    entry_method: entryMethod,
+    entry_level: entryLevel ?? null,
   }
 })
 
@@ -116,6 +149,13 @@ export function getBspByCode(code: string, klTypesFilter?: string[]): BspIndexRo
             : isBsp1Family(raw)
               ? UNSURE_LADDERS[i % UNSURE_LADDERS.length]
               : null,
+        // 介入三列（chan-entry-point-candidate 5.3）：与后端 get_bsp_by_code 透传对齐；
+        // 同样只落在尾部未确认行上（必要条件=依托段未完成），约半数命中
+        entry_point: j >= counts[kl] - 2 && i % 2 === 0,
+        entry_method:
+          j >= counts[kl] - 2 && i % 2 === 0 ? (i % 4 === 0 ? 'qjt' : 'aux') : null,
+        entry_level:
+          j >= counts[kl] - 2 && i % 2 === 0 && i % 4 === 0 ? 1 + (i % 3) : null,
       })
       i++
     }

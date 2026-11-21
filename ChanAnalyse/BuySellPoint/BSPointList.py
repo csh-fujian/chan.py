@@ -38,6 +38,305 @@ LINE_TYPE = TypeVar('LINE_TYPE', CBi, CSeg[CBi])
 LINE_LIST_TYPE = TypeVar('LINE_LIST_TYPE', CBiList, CSegListComm[CBi])
 
 
+# ----------------------------------------------------------------------
+# 模块级窗口/时间映射函数（chan-entry-point-candidate design D1/D6）
+#
+# 从 CBSPointList 的方法形态提取出来，供两条链路共用：
+#   1. 内核 `_annotate_entry_point`（多级别 CChan，sub_bs_point_lst 天然挂好）
+#   2. WebAPI 落库链路 `_extract_bsp_rows`（单级别 CChan + 旁路子级结果）
+# 单一实现保证双链路口径不漂移（design「共享判定核心」承诺）。
+# ----------------------------------------------------------------------
+
+def _parent_bar_span(parent_ts):
+    """父级 K 线时间轴 → 子级时间区间（`sub_time_span` 的回退口径）。
+
+    右端外扩一个父级周期的估计值（相邻父级 K 线时间差的中位数），
+    单根 K 线时退化为不外扩。与 `WebAPI.bsp_ladder._parent_bar_span` 同算法
+    ——后者是落库链路为佐证轴先加的同款回退，此处提到内核侧供介入点共用。
+    """
+    if not parent_ts:
+        return None, None
+    t_lo, t_hi = min(parent_ts), max(parent_ts)
+    if len(parent_ts) < 2:
+        return t_lo, t_hi
+    ordered = sorted(set(parent_ts))
+    deltas = [b - a for a, b in zip(ordered, ordered[1:]) if b > a]
+    if not deltas:
+        return t_lo, t_hi
+    deltas.sort()
+    period = deltas[len(deltas) // 2]
+    return t_lo, t_hi + period
+
+
+def sub_time_span(seg, bi_start_idx, bi_end_idx):
+    """把本级别线段的笔区间 [bi_start_idx, bi_end_idx] 映射为次级别时间区间。
+
+    原为 `CBSPointList._sub_time_span`（静态方法），提取为模块级函数。
+
+    **首选口径**：沿每笔的 K 线 `sub_kl_list` 收集子级 K 线时间戳。这要求
+    父级 `CChan` 是**多级别**加载的（`load_iterator` 才会挂 `sub_kl_list`）。
+
+    **回退口径**：单级别构建（WebAPI 落库链路 `_compute_full` / 序列化链路
+    `_compute_chan`）下 `sub_kl_list` 恒空，子级别由旁路独立计算。若直接返回
+    `(None, None)`，窗口不可映射 → 介入点判定在两条生产链路上恒不命中
+    （实测 sz.000027 多级别构建命中 4 个、单级别 0 个）。故无子级时间戳时
+    改用**父级 K 线自身的时间轴**近似：左端取窗口首根父级 K 线时刻（不晚于
+    其内含的任何子级 K 线），右端取末根时刻**外扩一个父级周期**。
+
+    这是**时间区间**的近似，不是窗口定义的近似——窗口边界仍是
+    `zs.end_bi.idx + 1 ~ seg.end_bi.idx` 的结构映射（唯一事实源）。外扩只会
+    放大命中集，不会收窄（与 `bsp_ladder._sub_time_span` 的回退同口径）。
+    """
+    ts_list = []
+    parent_ts = []
+    for bi in seg.bi_list:
+        if bi.idx < bi_start_idx or bi.idx > bi_end_idx:
+            continue
+        for klc in bi.klc_lst:
+            for klu in klc.lst:
+                try:
+                    parent_ts.append(klu.time.ts)
+                except Exception:
+                    pass
+                for sub_klu in getattr(klu, 'sub_kl_list', ()):
+                    try:
+                        ts_list.append(sub_klu.time.ts)
+                    except Exception:
+                        continue
+    if ts_list:
+        return min(ts_list), max(ts_list)
+    return _parent_bar_span(parent_ts)
+
+
+def c_window_of_bsp(bsp):
+    """取买卖点所在线段的 c 走势段时间窗口（映射到次级别时间轴）。
+
+    原为 `CBSPointList._c_window_of`，提取为模块级函数。
+    c 段边界与力度口径完全同源：`zs.end_bi.idx + 1 ~ seg.end_bi.idx`。
+    任一侧缺失时返回 None。
+    """
+    seg = getattr(bsp.bi, 'parent_seg', None)
+    zs_lst = getattr(seg, 'zs_lst', None) if seg is not None else None
+    if not zs_lst:
+        return None
+    zs = zs_lst[-1]
+    t_lo, t_hi = sub_time_span(seg, zs.end_bi.idx + 1, seg.end_bi.idx)
+    if t_lo is None:
+        return None
+    return t_lo, t_hi
+
+
+# ----------------------------------------------------------------------
+# 介入点候选判定核心（chan-entry-point-candidate design D1~D5）
+#
+# 模块级纯函数：内核 `_annotate_entry_point` 与 WebAPI 落库链路
+# （`incremental_engine._extract_bsp_rows`）共用同一实现，双链路口径单点。
+# 只读输入（bsp / 子级容器 / 配置），输出 (hit, method, level)。
+# **不改任何买卖点的成立性与输出数量**（路线 A：独立信号层）。
+# ----------------------------------------------------------------------
+
+# 方法2 认定的次级「辅助确认」家族：T2 / T2S / T3A / T3B
+_AUX_FAMILY = (BSP_TYPE.T2, BSP_TYPE.T2S, BSP_TYPE.T3A, BSP_TYPE.T3B)
+
+
+def _bs_is_sure_at(bsp, bs_point_lst):
+    """该点在判定时刻是否已越过水位线（`bsp_is_sure` 的内核侧同口径）。
+
+    复用 WebAPI 侧水位推导的核心：点所在笔索引 <= 容器 last_sure_pos 即确认。
+    （WebAPI `bsp_sure.bsp_is_sure` 走 bi.get_end_klu().idx，本函数在
+    无 bi_list 的调用形态下用同一水位语义。）
+    """
+    if bs_point_lst is None:
+        return False
+    try:
+        return bsp.bi.get_end_klu().idx <= bs_point_lst.last_sure_pos
+    except Exception:
+        return False
+
+
+def _fractal_formed(bi, is_buy):
+    """该笔末端分型是否已形成（第三根合并 K 线存在且 fx 类型正确）。
+
+    方法1 最低层「背驰 + 分型确认」的判据：笔末端 K 线所属合并 K 线的
+    `next` 存在且 fx 为底分型（买）/顶分型（卖）。分型第三根 K 线天然在
+    低点之后，不受窗口右边界约束（design D3「分型确认读信号点邻域」）。
+    """
+    try:
+        klc = bi.get_end_klu().klc
+        if klc is None or klc.next is None:
+            return False
+        from ChanAnalyse.Common.CEnum import FX_TYPE
+        return klc.fx == (FX_TYPE.BOTTOM if is_buy else FX_TYPE.TOP)
+    except Exception:
+        return False
+
+
+def _entry_window(bsp, aux_right_open=False):
+    """介入点判定的次级时间窗口 (t_lo, t_hi) 或 None。
+
+    窗口主体 = 各类型待确认段（design D3）：
+      - 1买/1卖家族：c 背驰段（`zs.end_bi+1 ~ seg.end_bi`，与力度口径同源）
+      - 2买/2卖：回落段——该点所在笔至线段末笔（一买后向上段的回调区间
+        以点所在笔为锚，右端到线段末笔）
+      - 3买/3卖：回抽段——同上以点所在笔为锚
+    `aux_right_open=True`（方法2）时右端外扩至数据末根子级时间戳
+    （容纳确认滞后：次级二买/三买确认点必然晚于本级别低点）。
+    """
+    bi = getattr(bsp, 'bi', None)
+    seg = getattr(bi, 'parent_seg', None)
+    if seg is None:
+        return None
+    types = [t for t in bsp.type]
+    is_bsp1_family = any(t in (BSP_TYPE.T1, BSP_TYPE.T1P) for t in types)
+    if is_bsp1_family:
+        # 1买家族：c 背驰段窗口（复用 qjt 特征同源窗口）
+        return c_window_of_bsp(bsp)
+    # 2/3 买家族：以点所在笔为锚的回落/回抽段区间
+    t_lo, t_hi = sub_time_span(seg, bi.idx, seg.end_bi.idx)
+    if t_lo is None:
+        return None
+    return t_lo, t_hi
+
+
+def _sub_latest_ts(sub_lst):
+    """次级容器内已登记买卖点的最大时间戳（方法2 右端外扩的数据源）。
+
+    方法2 窗口右端「至数据末端」：次级二买/三买确认点必然晚于本级别低点
+    （确认滞后），右边界须容纳它们。以次级已登记买卖点的最大时间戳近似
+    数据末端——这些点正是方法2 的检索对象，其最大时间戳即检索空间右端。
+    """
+    latest = None
+    for bsp_lists in (getattr(sub_lst, 'bsp_store_dict', None) or {}).values():
+        for is_buy in (True, False):
+            for sub_bsp in bsp_lists[is_buy]:
+                try:
+                    ts = sub_bsp.klu.time.ts
+                except Exception:
+                    continue
+                if latest is None or ts > latest:
+                    latest = ts
+    return latest
+
+
+def _find_entry_qjt(bsp, sub_lst, depth, is_buy):
+    """方法1：区间套递归查找，返回 (命中笔索引, 实际层数) 或 (None, 0)。
+
+    中间层（depth > 1）：同向**已确认**一买（`bsp1_sure_list`，层层验证）。
+    最低层：同向**候选**一买（`bsp1_list` 家族）且其所在笔末端分型已形成
+    （design D4：介入是时机判定，等笔确认会晚一整笔）。
+    某层容器缺失时按已走到的层数判定（不惩罚级别不够）。
+    """
+    window = _entry_window(bsp)
+    if window is None:
+        return None, 0
+    t_lo, t_hi = window
+    deeper = getattr(sub_lst, 'sub_bs_point_lst', None) if depth > 1 else None
+
+    def _in_win(pt):
+        try:
+            return bool(pt.is_buy) == is_buy and t_lo <= pt.klu.time.ts <= t_hi
+        except Exception:
+            return False
+
+    for sub_bsp in sub_lst.bsp1_sure_list:
+        if not _in_win(sub_bsp):
+            continue
+        if depth <= 1 or deeper is None:
+            return sub_bsp.bi.idx, 1
+        hit_idx, lv = _find_entry_qjt(sub_bsp, deeper, depth - 1, is_buy)
+        if hit_idx is not None:
+            return sub_bsp.bi.idx, lv + 1
+
+    # 最低层：候选 + 分型（只在链的末端放宽——sure_list 无命中时才看候选）
+    for sub_bsp in sub_lst.bsp1_list:
+        if not _in_win(sub_bsp):
+            continue
+        if _fractal_formed(sub_bsp.bi, is_buy):
+            return sub_bsp.bi.idx, 1
+    return None, 0
+
+
+def _find_entry_aux(bsp, sub_lst, is_buy):
+    """方法2：辅助确认信号——窗口内次级已成立的 T2/T2S/T3A/T3B 同向点。
+
+    「已成立」= 登记（is_target_bsp 成立）；水位确认不要求（design Open
+    Question 的既定答案：成立即可，水位口径留作阈值级收紧）。窗口右端
+    至数据末端（次级已登记买卖点的最大时间戳）。
+    """
+    window = _entry_window(bsp)
+    if window is None:
+        return None
+    t_lo, t_hi = window
+    latest = _sub_latest_ts(sub_lst)
+    if latest is not None and latest > t_hi:
+        t_hi = latest
+    for bsp_type, bsp_lists in (getattr(sub_lst, 'bsp_store_dict', None) or {}).items():
+        if bsp_type not in _AUX_FAMILY:
+            continue
+        for sub_bsp in bsp_lists[is_buy]:
+            try:
+                if t_lo <= sub_bsp.klu.time.ts <= t_hi:
+                    return sub_bsp.bi.idx
+            except Exception:
+                continue
+    return None
+
+
+def entry_point_result(bsp, sub_lst, conf, parent_lst=None):
+    """介入点判定入口：返回 (hit, method, level)。
+
+    hit=False 时 method/level 为 None/0。方法开关由 conf 决定；
+    方法1 命中优先于方法2（信息量更高，method 记 'qjt'）。
+    必要条件（design D7）：只有未确认段上的候选点参与判定——
+    已越过水位线的点直接不命中（介入时机已不存在）。
+
+    水位取**父级容器**（`parent_lst.last_sure_pos`）——它是本级别 K 线
+    索引量纲，与 `bsp.bi.get_end_klu().idx` 同量纲可比较；子级容器的
+    `last_sure_pos` 是子级 K 线索引，量纲不同，不可混用。
+    """
+    # 必要条件中的类型路由
+    types = [t for t in bsp.type]
+    if any(t in (BSP_TYPE.T1, BSP_TYPE.T1P) for t in types):
+        n = 1
+    elif any(t in (BSP_TYPE.T2, BSP_TYPE.T2S) for t in types):
+        n = 2
+    elif any(t in (BSP_TYPE.T3A, BSP_TYPE.T3B) for t in types):
+        n = 3
+    else:
+        return False, None, 0
+
+    if not getattr(conf, f"bsp{n}_entry", False):
+        return False, None, 0
+    if sub_lst is None:
+        return False, None, 0
+
+    # 必要条件（design D7）：已越过水位线的点不参与判定——
+    # 介入是时机判定，段确认后介入时机已不存在。
+    # 水位信息在**父级**容器上（last_sure_pos，本级别 K 线索引量纲）；
+    # 容器缺失时不惩罚。
+    last_sure = getattr(parent_lst, 'last_sure_pos', None) if parent_lst is not None else None
+    if last_sure is not None:
+        try:
+            if bsp.bi.get_end_klu().idx <= last_sure:
+                return False, None, 0
+        except Exception:
+            pass
+
+    is_buy = bool(bsp.is_buy)
+
+    if getattr(conf, f"bsp{n}_entry_qjt", False):
+        depth = getattr(conf, f"bsp{n}_entry_qjt_depth", 1)
+        hit_idx, lv = _find_entry_qjt(bsp, sub_lst, depth, is_buy)
+        if hit_idx is not None:
+            return True, 'qjt', lv
+
+    if getattr(conf, f"bsp{n}_entry_aux", False):
+        hit_idx = _find_entry_aux(bsp, sub_lst, is_buy)
+        if hit_idx is not None:
+            return True, 'aux', 0
+    return False, None, 0
+
+
 class CBSPointList(Generic[LINE_TYPE, LINE_LIST_TYPE]):
     """
     买卖点列表 - 管理买卖点的计算和存储
@@ -234,6 +533,95 @@ class CBSPointList(Generic[LINE_TYPE, LINE_LIST_TYPE]):
         # 区间套特征注解必须放在最后：判定链路已全部结束，
         # 物理上不可能影响 is_target_bsp（design D7-q 的结构保证，不靠纪律）
         self._annotate_qjt()
+        # 介入点候选注解：同样收尾后置（路线 A：独立信号层，不改成立性）
+        self._annotate_entry_point()
+
+    def _annotate_entry_point(self):
+        """介入点候选注解（chan-entry-point-candidate，design D1~D7）。
+
+        对三类买卖点家族的全部已登记点（`bsp_store_flat_dict` 按笔去重后的
+        存储视图 + `bsp1_list` 候选家族），逐一调用模块级判定核心
+        `entry_point_result`（水位取**本容器** `last_sure_pos`——量纲一致；
+        判定核心双链路共用）。命中写 feature：
+          - `entry_hit`: bool
+          - `entry_method`: 'qjt'（方法1 区间套）/ 'aux'（方法2 辅助确认）
+          - `entry_level`: 方法1 实际递归层数（方法2 恒 0）
+        12 键全关（默认/legacy）时整段跳过，一个 feature 都不写。
+
+        与 `_annotate_qjt` 相同的结构保证：本方法在 `cal()` 收尾、
+        `update_last_pos` 之后执行，`is_target_bsp` 早已确定，物理上不可能
+        被介入标记改写。`sub_bs_point_lst is None`（无次级数据）时直接返回。
+
+        幂等清理：未命中时删除旧 `entry_method`/`entry_level`，
+        防止「先命中、后因数据推进不再命中」的点残留半套 feature
+        （介入点是暂时性语义，design D5：随数据推进可翻转）。
+        """
+        b_conf = self.config.GetBSConfig(True)
+        s_conf = self.config.GetBSConfig(False)
+        if not any(
+            getattr(c, f"bsp{n}_entry", False)
+            for c in (b_conf, s_conf) for n in (1, 2, 3)
+        ):
+            return
+        sub_lst = getattr(self, 'sub_bs_point_lst', None)
+        if sub_lst is None:
+            return
+        # 待注解集合：按笔去重的全部已登记点 + bsp1 候选家族（含未确认 T1P 候选）
+        seen = set()
+        cand_points = []
+        for bsp_lists in self.bsp_store_dict.values():
+            for is_buy in (True, False):
+                for bsp in bsp_lists[is_buy]:
+                    _id = id(bsp)
+                    if _id not in seen:
+                        seen.add(_id)
+                        cand_points.append(bsp)
+        for bsp in self.bsp1_list:
+            _id = id(bsp)
+            if _id not in seen:
+                seen.add(_id)
+                cand_points.append(bsp)
+        for bsp in cand_points:
+            feat = {'entry_hit': False}
+            try:
+                # conf 按买/卖侧分流（与落库链路 `_extract_bsp_rows` 同口径）：
+                # 买卖侧键可不对称配置，用买侧 conf 判卖侧点会漏命中。
+                hit, method, lv = entry_point_result(
+                    bsp, sub_lst, self.config.GetBSConfig(bool(bsp.is_buy)),
+                    parent_lst=self)
+            except Exception:
+                hit, method, lv = False, None, 0
+            if hit:
+                feat['entry_hit'] = True
+                feat['entry_method'] = method
+                feat['entry_level'] = lv
+            bsp.add_feat(feat)
+            if not hit:
+                # 暂时性语义：未命中即删旧的方法/层数，不留半套 feature
+                bsp.features.del_feat('entry_method')
+                bsp.features.del_feat('entry_level')
+
+    def attach_sub_bspoint_and_annotate(self, sub_bs_point_lst):
+        """挂载次级容器并补跑介入点注解（WebAPI 序列化链路的收尾入口）。
+
+        WebAPI 两条生产链路的主级别都是**单级别** CChan（落库链路
+        `incremental_engine._compute_full`、序列化链路 `chan_service._compute_chan`），
+        子级别由旁路（`_compute_sub_for_l1` / `compute_sub_chan`）独立计算。
+        单级别构建下 `cal()` 收尾时 `sub_bs_point_lst` 尚未挂载，
+        内核 `_annotate_entry_point` 会直接返回 —— 序列化链路读 feature 的
+        通道形同死代码（实测 sz.000027 多级别构建命中 4 个、序列化 0 个）。
+
+        本方法把旁路子级容器挂回来并补跑注解，与 `CChan._refresh_qjt` 的
+        收尾（阶段 2 注入 + 重跑注解）同构。挂载的是只读临时引用，不参与
+        `__deepcopy__` / pickle；调用方保证 chan 对象在该次请求内使用完即弃。
+
+        落库链路不调用本方法——它在 `_extract_bsp_rows` 内直接调模块级
+        `entry_point_result`（逐行判定，与注解结果同源）。
+        """
+        if sub_bs_point_lst is None:
+            return
+        self.sub_bs_point_lst = sub_bs_point_lst
+        self._annotate_entry_point()
 
     def _annotate_qjt(self):
         """区间套特征注解（chan-standard-bsp1-change design D7-q / D8，§4.6）。
@@ -310,40 +698,19 @@ class CBSPointList(Generic[LINE_TYPE, LINE_LIST_TYPE]):
     def _c_window_of(self, bsp):
         """取买卖点所在线段的 c 走势段时间窗口（映射到次级别时间轴）。
 
-        c 段边界与 `_cal_force_windows` 完全同源：`zs.end_bi.idx + 1 ~ seg.end_bi.idx`
-        （spec「窗口与力度口径共用同一定义」）。任一侧缺失时返回 None。
+        委托到模块级 `c_window_of_bsp`（chan-entry-point-candidate 提取，
+        双链路共用），行为不变。
         """
-        seg = getattr(bsp.bi, 'parent_seg', None)
-        zs_lst = getattr(seg, 'zs_lst', None) if seg is not None else None
-        if not zs_lst:
-            return None
-        zs = zs_lst[-1]
-        t_lo, t_hi = self._sub_time_span(seg, zs.end_bi.idx + 1, seg.end_bi.idx)
-        if t_lo is None:
-            return None
-        return t_lo, t_hi
+        return c_window_of_bsp(bsp)
 
     @staticmethod
     def _sub_time_span(seg, c_start_idx, c_end_idx):
         """把本级别线段的 c 窗口笔区间映射为次级别的时间区间 (t_lo, t_hi)。
 
-        沿每笔的 K 线 `sub_kl_list` 收集子级 K 线时间戳。窗口内**没有任何子级**
-        K 线时返回 (None, None)（如日线无 30m 子级数据）。
+        委托到模块级 `sub_time_span`（chan-entry-point-candidate 提取，
+        双链路共用），行为不变。
         """
-        ts_list = []
-        for bi in seg.bi_list:
-            if bi.idx < c_start_idx or bi.idx > c_end_idx:
-                continue
-            for klc in bi.klc_lst:
-                for klu in klc.lst:
-                    for sub_klu in getattr(klu, 'sub_kl_list', ()):
-                        try:
-                            ts_list.append(sub_klu.time.ts)
-                        except Exception:
-                            continue
-        if not ts_list:
-            return None, None
-        return min(ts_list), max(ts_list)
+        return sub_time_span(seg, c_start_idx, c_end_idx)
 
     def update_last_pos(self, seg_list: CSegListComm):
         """更新最后一个确认位置（用于增量更新）"""
@@ -471,6 +838,10 @@ class CBSPointList(Generic[LINE_TYPE, LINE_LIST_TYPE]):
         has_struct_zs = len(seg.zs_lst) > 0 and not seg.zs_lst[-1].is_one_bi_zs()
         # 实现的过滤（非理论要求）：中枢须延伸到线段末笔且跨度 > 2。
         # 实测该条会把大量合格候选挤进 T1P，故改为可关闭，默认关闭。
+        # **已从产品配置下线**（chan-config-retire-zs-extend）：它是 T1/T1P 的路由
+        # 开关而非判据 —— 开启后 T1 候选绕开四项标准判据走更松的 T1P 通道
+        # （49 只日线实测：23 个成立一买 0 个被否定、反增 8 个），且买卖点类型会随
+        # 之后线段延伸而翻转。字段保留仅供 `legacy` 档复现改造前输出。
         zs_extend_ok = has_struct_zs and (
             (seg.zs_lst[-1].bi_out and seg.zs_lst[-1].bi_out.idx >= seg.end_bi.idx)
             or seg.zs_lst[-1].bi_lst[-1].idx >= seg.end_bi.idx

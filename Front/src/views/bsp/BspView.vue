@@ -102,6 +102,8 @@
           <el-select v-model="query.bsp_type" placeholder="买卖点类型" style="width: 130px" @change="onQueryChange">
             <el-option label="全部类型" value="" />
             <el-option v-for="t in ALL_BSP_LABELS" :key="t" :label="t" :value="t" />
+            <!-- 介入点伪类型（chan-entry-point-candidate 5.3）：值直传后端伪类型参数 -->
+            <el-option v-for="o in ENTRY_PSEUDO_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
           </el-select>
           <!-- 级别条件（bsp-page-level-filter-and-batch-monitor D2/D3）：确认阶梯级别单选，
                选项按判定顺序 L4 > L3 > L1 > L2；无「未定级」——存量行按 is_sure 兜底后必为 L4 或 L2 -->
@@ -181,7 +183,7 @@
                     <template #default="{ row }">
                       <div class="bsp-type-cell">
                         <span class="badge" :class="row.direction === 'buy' ? 'badge--rise' : 'badge--fall'">
-                          {{ bspLabel(row.bsp_type, row.direction === 'buy') }}
+                          {{ bspLabel(row.bsp_type, row.direction === 'buy') }}{{ row.entry_point ? '·介' : '' }}
                         </span>
                         <!-- 未确认标注（bsp-sure-annotation D4）：灰色弱化，确认行无标签，避免与方向色冲突 -->
                         <el-tag v-if="row.is_sure === false" type="info" size="small" class="sure-tag">未确认</el-tag>
@@ -190,12 +192,11 @@
                   </el-table-column>
                   <el-table-column label="级别" width="100">
                     <template #default="{ row }">
-                      <!-- 确认阶梯级别（bsp-ladder-change 4.2）：徽章 + hover 说明（级别名 + 仓位指引）；
-                           L4 实色 badge--rise、L3 warning、L1 info、L2 弱化 default，缺失兜底「未定级」。
-                           与「未确认」灰 tag 协调：L4 = 已确认无灰 tag，L1-L3 行保留类型列灰 tag 不动 -->
                       <!-- 级别列（chan-bsp-ladder-change）：L4 单徽章；
                            三轴组合值按轴并列徽章（进度/佐证/分型各至多一个）；
-                           NULL 显示「未定级」。各徽章 hover 展示轴名与说明。 -->
+                           NULL 显示「未定级」。各徽章 hover 展示轴名与说明。
+                           轴名与档名已改为白话（chan-bsp-grading），不再是
+                           「判据链进度 · 后半链」这类内部术语。 -->
                       <template v-if="ladderInfosOf(row).length">
                         <el-tooltip
                           v-for="info in ladderInfosOf(row)"
@@ -210,6 +211,24 @@
                         </el-tooltip>
                       </template>
                       <span v-else class="badge badge--default">未定级</span>
+                    </template>
+                  </el-table-column>
+                  <!-- 证据强度（chan-bsp-grading）：内部编号看不懂，这一列给
+                       用户可直接比较的分数与操作建议。已确认的固定 100 分。 -->
+                  <el-table-column label="证据强度" width="112">
+                    <template #default="{ row }">
+                      <el-tooltip
+                        v-if="row.grade"
+                        placement="top"
+                        :show-after="200"
+                        :content="gradeTooltip(row)"
+                      >
+                        <span class="grade-cell" :class="`is-${gradeTone(row.grade.score)}`">
+                          <span class="grade-cell__num mono">{{ row.grade.score }}</span>
+                          <span class="grade-cell__qual">{{ row.grade.grade }}</span>
+                        </span>
+                      </el-tooltip>
+                      <span v-else class="grade-cell is-none">未评估</span>
                     </template>
                   </el-table-column>
                   <el-table-column label="买卖点价格" width="120" align="right">
@@ -493,8 +512,8 @@
  */
 defineOptions({ name: 'BspView' })
 
-import { ref, reactive, onMounted, onActivated, onBeforeUnmount } from 'vue'
-import type { AutocompleteInstance } from 'element-plus'
+import { ref, reactive, computed, onMounted, onActivated, onBeforeUnmount } from 'vue'
+import type { AutocompleteInstance, TableInstance } from 'element-plus'
 import { ElMessage } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { TrendCharts, Top, Bottom, Calendar, Search, Plus } from '@element-plus/icons-vue'
@@ -506,8 +525,8 @@ import { getBspList, getBspAggregate, getPriceAt, type BspQuery } from '@/api/mo
 import { getFolders, addStock, type WatchFolder } from '@/api/modules/watchlist'
 import { createMonitor, getMonitorGroups, createMonitorGroup, type MonitorGroup } from '@/api/modules/monitor'
 import { searchStocks } from '@/api/modules/stock'
-import { ALL_BSP_LABELS, bspLabel } from '@/utils/bsp'
-import { ladderInfos, ladderPosition, parseLadder, type LadderInfo } from '@/utils/bspLadder'
+import { ALL_BSP_LABELS, bspLabel, ENTRY_PSEUDO_OPTIONS } from '@/utils/bsp'
+import { ladderInfos, ladderPosition, gradeTone, parseLadder, type LadderInfo } from '@/utils/bspLadder'
 import type { BspRecord, BspAggregate } from '@/api/types'
 
 // 周期词表（design D1）：30分 → 60分 → 日线 → 周线 → 月线，无 1/5/15 分钟
@@ -557,6 +576,22 @@ function ladderTooltip(row: BspRecord): string {
   if (!infos.length) return ''
   const pos = ladderPosition(parseLadder(row.ladder), row.direction === 'buy')
   return `${infos.map((i) => `${i.axis}:${i.name}`).join(' · ')} · ${pos}`
+}
+
+/**
+ * 证据强度列的 hover 说明（chan-bsp-grading）。
+ *
+ * 表格里只有「85 较强」这种缩写，用户需要知道**为什么**是这个分、
+ * 以及未成立时**卡在哪一步**。这些文案全部来自后端 `grade`，前端不重复推导。
+ */
+function gradeTooltip(row: BspRecord): string {
+  const g = row.grade
+  if (!g) return '未评估'
+  const lines = [`${g.score} 分 · ${g.grade}`, g.advice]
+  // 「卡在」只配被判据拦下的点；判据全过只欠确认的点，那句话本身就是进度说明
+  if (g.blocked_by) lines.push(g.score >= 60 ? g.blocked_by : `卡在：${g.blocked_by}`)
+  if (g.disclaimer) lines.push(g.disclaimer)
+  return lines.join('\n')
 }
 
 // ---- 查询 ----
@@ -1143,6 +1178,41 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: var(--sp-lg);
   flex: 1;
+}
+
+/* ---- 证据强度列（chan-bsp-grading）------------------------------------
+   表格里给「85 较强」这种两段式缩写：数字供横向比较，定性供快速分档。
+   颜色按分数分五档（与 gradeTone() 对应），与级别列的徽章色系区分开、
+   不抢注意力 —— 它是**评估**，级别才是**结构事实**。 */
+.grade-cell {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: 3px;
+  border-left: 2px solid var(--border-strong);
+  background: var(--bg-surface-hover);
+  cursor: help;
+}
+.grade-cell__num {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.grade-cell__qual {
+  font-size: 10.5px;
+  color: var(--text-secondary);
+}
+.grade-cell.is-strong { border-left-color: var(--rise); }
+.grade-cell.is-good   { border-left-color: color-mix(in srgb, var(--rise) 62%, var(--warning)); }
+.grade-cell.is-mid    { border-left-color: var(--warning); }
+.grade-cell.is-weak   { border-left-color: color-mix(in srgb, var(--warning) 55%, var(--fall)); }
+.grade-cell.is-poor   { border-left-color: var(--fall); }
+.grade-cell.is-none {
+  border-left-color: var(--border-base);
+  color: var(--text-disabled);
+  font-size: 11px;
+  cursor: default;
 }
 .cell-stock {
   display: flex;

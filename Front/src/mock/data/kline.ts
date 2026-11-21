@@ -85,6 +85,12 @@ function genBi(klines: KLine[]): Bi[] {
     bi[bi.length - 1].is_sure = false
     bi[bi.length - 2].is_sure = false
   }
+  // 末尾笔背驰样例（chan-recent-divergence-mark）：最后一条 true（虚笔 + 背驰
+  // 红阴影并存）、倒数第二条演示 null 形态（数据契约的三态之一）
+  if (bi.length >= 2) {
+    bi[bi.length - 1].is_divergence = true
+    bi[bi.length - 2].is_divergence = null
+  }
   return bi
 }
 
@@ -108,6 +114,10 @@ function genSeg(bi: Bi[]): Seg[] {
   // 尾部未确认样例：最后 1 条改 is_sure=false（虚段）
   if (seg.length >= 1) {
     seg[seg.length - 1].is_sure = false
+  }
+  // 末尾段背驰样例（chan-recent-divergence-mark）：虚段 + 背驰红阴影并存
+  if (seg.length >= 1) {
+    seg[seg.length - 1].is_divergence = true
   }
   return seg
 }

@@ -107,6 +107,33 @@ try:
 finally:
     cc.CChanConfig.set_bsp_config = orig_set
 
+print("\n[3.5] PUT 响应体可 JSON 序列化（inf 必须编码为 \"inf\"）")
+# 回归：前端在 divergence_rate 勾「不限」时提交字符串 "inf"，validate_config
+# 解码成 float("inf") 后返回；PUT 若裸返回会触发 starlette 的
+# `json.dumps(..., allow_nan=False)` 抛 ValueError → 500（库里其实已写入，
+# 前端却以为失败）。修法是响应体走 store.encode_config()。
+import json as _json
+res_inf = R.put_config(
+    R.ConfigSaveRequest(overrides={"divergence_rate": "inf"}, preset="standard"),
+    user=ADMIN)
+try:
+    # 与 starlette.responses.JSONResponse.render 完全相同的序列化参数
+    _body = _json.dumps(res_inf, ensure_ascii=False, allow_nan=False,
+                        indent=None, separators=(",", ":"))
+    chk("PUT 返回体可被 starlette 序列化", True)
+except ValueError as e:
+    chk("PUT 返回体可被 starlette 序列化", False, str(e))
+    _body = "{}"
+chk("  响应里 divergence_rate 已编码为 \"inf\"",
+    '"inf"' in _body, _body)
+_meta_inf = store.load_with_meta()
+chk("  落库后 overrides 仍为内核可消费的 inf",
+    _meta_inf["overrides"].get("divergence_rate") == float("inf"),
+    repr(_meta_inf["overrides"].get("divergence_rate")))
+chk("  再经 GET 读回仍是 \"inf\"（不 500）",
+    R.get_config(user=ADMIN)["overrides"].get("divergence_rate") == "inf",
+    str(R.get_config(user=ADMIN)["overrides"].get("divergence_rate")))
+
 print("\n[4.3 / 4.5] 单只重算与同步状态")
 import asyncio
 class _BG:

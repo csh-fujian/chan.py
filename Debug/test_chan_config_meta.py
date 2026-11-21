@@ -58,15 +58,36 @@ try:
     # 56 常驻（含 chan-bsp1-strict-extreme 引入的 bs1_peak_strict）；
     # chan-bsp1-loose-extreme 删除 bs1_peak_strict 一项（-1）；
     # chan-config-bsp3-follow1-conditional 把 bsp3_follow_1_mode 改为条件项（-1 常驻 +1 条件）。
-    # 故 55 常驻 + 3 条件（cal_rsi / rsi_cycle / bsp3_follow_1_mode）= 58 → 实际 57。
-    check("总项数 = 57（54 常驻 + 3 条件）", schema["counts"]["total"] == 57,
+    # chan-config-bsp1-mode-conditional 把 bsp1_trend_mode / bsp1_new_extreme_mode
+    # 改为条件项（-2 常驻 +2 条件）。
+    # chan-config-retire-zs-extend 下线 bsp1_zs_extend_to_seg_end（-1 常驻）。
+    # 故 51 常驻 + 5 条件（cal_rsi / rsi_cycle / bsp3_follow_1_mode /
+    # bsp1_trend_mode / bsp1_new_extreme_mode）= 56。
+    # chan-entry-point-candidate 新增 12 项（3 常驻总开关 + 9 条件项）：
+    # 故 54 常驻 + 14 条件 = 68。
+    check("总项数 = 68（54 常驻 + 14 条件）", schema["counts"]["total"] == 68,
           str(schema["counts"]))
     check("常驻项 = 54", schema["counts"]["unconditional"] == 54, str(schema["counts"]))
-    check("条件项 = 3", schema["counts"]["conditional"] == 3, str(schema["counts"]))
+    check("条件项 = 14", schema["counts"]["conditional"] == 14, str(schema["counts"]))
+    # 历史参数（legacy）：内核仍在算但无消费方，默认隐藏，不计入可见口径。
+    # chan-config-legacy-qjt-hide 把 bsp1_qjt / bsp1_qjt_depth 标为 legacy。
+    check("历史参数 = 2", schema["counts"]["legacy"] == 2, str(schema["counts"]))
+    check("默认可见常驻项 = 52", schema["counts"]["unconditional_visible"] == 52,
+          str(schema["counts"]))
+    check("历史参数标记正确",
+          sorted(p["key"] for p in schema["params"] if p["legacy"])
+          == ["bsp1_qjt", "bsp1_qjt_depth"],
+          str([p["key"] for p in schema["params"] if p["legacy"]]))
     check("PARAMS 无重复 key", len({p["key"] for p in PARAMS}) == len(PARAMS))
+    check("已下线的 bsp1_zs_extend_to_seg_end 不在面板",
+          "bsp1_zs_extend_to_seg_end" not in by_key)
 
     group_counts = {g["id"]: g["count"] for g in schema["groups"]}
-    check("买卖点判据组 31 项", group_counts.get(GROUP_BSP) == 31, str(group_counts))
+    # 买卖点判据组少 2 项（两个一买口径项转为条件项）、再少 1 项（下线 zs_extend）
+    # chan-entry-point-candidate 在判据组新增 3 项常驻（三类总开关）
+    # chan-config-legacy-qjt-hide 在判据组隐藏 2 项历史参数（31 → 29）
+    check("买卖点判据组 29 项常驻（默认可见）", group_counts.get(GROUP_BSP) == 29,
+          str(group_counts))
     check("证据阶梯组 8 项", group_counts.get(GROUP_LADDER) == 8, str(group_counts))
     check("结构算法组 15 项", group_counts.get(GROUP_STRUCTURE) == 15, str(group_counts))
     check("结构组默认折叠",
@@ -78,7 +99,7 @@ except Exception as e:
 
 # ---------------------------------------------------------------------------
 print("\n[2] 白话解释质量")
-JARGON = ("特征序列", "线段破坏", "走势类型", "次级别", "盘整背驰的走势段窗口")
+JARGON = ("特征序列", "线段破坏", "走势类型", "盘整背驰的走势段窗口")
 try:
     empty = [p["key"] for p in schema["params"]
              if not (p["plain"] or "").strip() or not (p["effect"] or "").strip()
@@ -156,12 +177,17 @@ try:
     not_rejected = [k for k, v in bogus.items() if probe_choice(k, v)]
     check("非法枚举被内核拒绝", not not_rejected, str(not_rejected))
 
-    # 探测收敛：bsp1_new_extreme_mode 的 choices 必须等于内核实际接受的子集
+    # 探测收敛：bsp1_new_extreme_mode 的 choices 必须等于内核实际接受的子集，
+    # 且顺序保持 schema 声明的「宽松 → 严格」（prev_zs_in 最宽松在最前）。
     m = by_key["bsp1_new_extreme_mode"]
-    all_candidates = ["trend_start", "prev_zs_in", "all", "level"]
+    all_candidates = ["prev_zs_in", "trend_start", "all", "level"]
     expected = [c for c in all_candidates if probe_choice("bsp1_new_extreme_mode", c)]
     check("bsp1_new_extreme_mode 选项经探测收敛", m["choices"] == expected,
           f"{m['choices']} vs {expected}")
+    check("bsp1_new_extreme_mode 首项是最宽松的 prev_zs_in",
+          m["choices"][0] == "prev_zs_in", str(m["choices"]))
+    check("bsp1_new_extreme_mode 末项是最严格的 level",
+          m["choices"][-1] == "level", str(m["choices"]))
     check("level 口径已可展示（并行变更已落地）", "level" in m["choices"], str(m["choices"]))
 except Exception as e:
     check("枚举一致性", False, repr(e))
@@ -245,6 +271,24 @@ try:
     check("bsp3_follow_1_mode 是条件项", mode["conditional"] is True)
     check("bsp3_follow_1_mode 仅在 bsp3_follow_1 开启时可见",
           mode["visible_when"] == {"bsp3_follow_1": True}, str(mode["visible_when"]))
+    # 一买两项跟随开关联动：开关关掉时，这两个口径项不参与任何判断
+    tm = by_key["bsp1_trend_mode"]
+    check("bsp1_trend_mode 是条件项", tm["conditional"] is True)
+    check("bsp1_trend_mode 仅在 bsp1_trend 开启时可见",
+          tm["visible_when"] == {"bsp1_trend": True}, str(tm["visible_when"]))
+    nm = by_key["bsp1_new_extreme_mode"]
+    check("bsp1_new_extreme_mode 是条件项", nm["conditional"] is True)
+    check("bsp1_new_extreme_mode 仅在 bsp1_new_extreme 开启时可见",
+          nm["visible_when"] == {"bsp1_new_extreme": True}, str(nm["visible_when"]))
+    # 选项规则说明：每个可展示取值都要有说明，不能有选项却无规则
+    for key in ("bsp1_new_extreme_mode", "bsp1_trend_mode"):
+        p = by_key[key]
+        cav = p.get("choice_caveats") or {}
+        missing = [c for c in p["choices"] if not cav.get(str(c))]
+        check(f"{key} 每个选项都有规则说明", not missing, f"缺: {missing}")
+        check(f"{key} 说明表与 choices 完全对齐",
+              set(cav) == {str(c) for c in p["choices"]},
+              f"{sorted(cav)} vs {p['choices']}")
     check("预设清单含 standard/legacy",
           set(schema["presets"]) == {"standard", "legacy"}, str(schema["presets"]))
 except Exception as e:
@@ -265,7 +309,7 @@ try:
     ov_by_key = {p["key"]: p for p in overridden["params"]}
     kd = overridden["kernel_defaults"]
 
-    check("kernel_defaults 覆盖全部 57 项", len(kd) == 57, str(len(kd)))
+    check("kernel_defaults 覆盖全部 68 项", len(kd) == 68, str(len(kd)))
     check("覆盖项被反射进 params[].default（当前口径）",
           ov_by_key["bsp1_zero_axis"]["default"] is False
           and ov_by_key["bi_fx_check"]["default"] == "loss",
@@ -295,8 +339,8 @@ print("\n[10] preset_baselines：档位展开后的基线")
 try:
     pb = schema["preset_baselines"]
     check("覆盖全部档位", set(pb) == {"standard", "legacy"}, str(set(pb)))
-    check("每档覆盖全部 57 项",
-          all(len(v) == 57 for v in pb.values()), str({k: len(v) for k, v in pb.items()}))
+    check("每档覆盖全部 68 项",
+          all(len(v) == 68 for v in pb.values()), str({k: len(v) for k, v in pb.items()}))
     check("standard 基线 = kernel_defaults", pb["standard"] == schema["kernel_defaults"])
 
     # legacy 档的预设展开必须体现在基线上 —— 这正是不能用 kernel_defaults

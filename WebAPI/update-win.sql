@@ -196,3 +196,40 @@ UPDATE chan_config SET overrides = overrides - 'bs1_peak_strict'
  WHERE overrides ? 'bs1_peak_strict';
 UPDATE chan_config SET config = config - 'bs1_peak_strict'
  WHERE config ? 'bs1_peak_strict';
+
+-- 2026-11-08 chan-config-retire-zs-extend：下线 `bsp1_zs_extend_to_seg_end`
+--       （「中枢必须延伸到线段末尾」，Windows 机器上执行）
+-- 背景：它是 T1/T1P 的路由开关而非判据。开启后中枢未贴到线段末尾的 T1 候选会
+--       绕开趋势/新低/DIF/零轴四项标准判据，改走更松的盘整背驰（T1P）通道；
+--       实测 49 只日线 23 个成立一买 0 个被否定、反增 8 个，且同一个历史点的
+--       类型会随之后线段延伸从 T1 翻转为 T1P。故从配置面板删除、也从
+--       config_fingerprint.FINGERPRINT_KEYS 移除（归入 legacy 档由 bsp_preset 区分）。
+-- 代码侧兜底：chan_config_store._RETIRED_KEYS / _drop_retired() 在读取、
+--       校验、保存三个出口一律清除，因此本 SQL 只是把存量行也擦干净。
+-- 幂等：两处 jsonb 各减一个键，键不存在时语句为空操作。
+UPDATE chan_config SET overrides = overrides - 'bsp1_zs_extend_to_seg_end'
+ WHERE overrides ? 'bsp1_zs_extend_to_seg_end';
+UPDATE chan_config SET config = config - 'bsp1_zs_extend_to_seg_end'
+ WHERE config ? 'bsp1_zs_extend_to_seg_end';
+
+-- 2026-11-09 chan-entry-point-candidate：bsp_index 加介入点三列（Windows 机器上执行）
+-- 背景：介入点候选是买卖点上的独立信号层（不改成立性/数量）。
+--       entry_point 标记介入成立（暂时性语义，随数据推进可翻转，随重算刷新）；
+--       entry_method（'qjt' 区间套递归 / 'aux' 辅助确认）与 entry_level
+--       （方法1 实际递归层数）为诊断信息。不产生额外行（按笔去重 D22 不变）。
+-- 幂等：ADD COLUMN IF NOT EXISTS，重复执行不报错；老库旧行默认 FALSE/NULL。
+ALTER TABLE bsp_index ADD COLUMN IF NOT EXISTS entry_point BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE bsp_index ADD COLUMN IF NOT EXISTS entry_method VARCHAR(8);
+ALTER TABLE bsp_index ADD COLUMN IF NOT EXISTS entry_level INTEGER;
+
+-- 2026-11-20 chan-bsp-grading：bsp_index 加分级两列（Windows 机器上执行）
+-- 背景：内部阶梯编号（L2 / P2 …）对普通用户不可读，新增 0~100 强度分让
+--       不同买卖点的证据充分度可横向比较。
+--       只落**稳定**的分数与定性档位：advice / blocked_by 是随版本调整的
+--       句子，落库会让存量行与新文案并存，故由读取侧按当前口径现算
+--       （routers/bsp.py:_grade_of 与 serializer 的 grade_from_feature）。
+--       两列都为 NULL = 本变更前的存量行，前端按「未评估」处理，不猜分数。
+-- 幂等：ADD COLUMN IF NOT EXISTS；老库旧行默认 NULL（不设 NOT NULL 默认值，
+--       正是为了区分「未评估」与「0 分」）。
+ALTER TABLE bsp_index ADD COLUMN IF NOT EXISTS grade_score SMALLINT;
+ALTER TABLE bsp_index ADD COLUMN IF NOT EXISTS grade_qual VARCHAR(8);

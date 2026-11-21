@@ -33,6 +33,7 @@ from .chan_service import (
     resolve_sub_level,
 )
 from .serializer import serialize_chan
+from .config_fingerprint import config_fingerprint
 from .stock_store import StockNameSourceUnavailable, get_stock_name, is_st_name
 
 log = logging.getLogger("main")

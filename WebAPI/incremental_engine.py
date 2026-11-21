@@ -43,6 +43,7 @@ from ChanAnalyse.DataAPI.KLineStore import KLineStore, ctime_to_str
 from ChanAnalyse.DataAPI.RecomputeCursor import RecomputeCursor
 
 from .bsp_store import get_snapshot, get_snapshot_fingerprint, persist_full_set
+from .bsp_grade import grade_from_feature
 from .bsp_ladder import cal_ladder
 from .bsp_sure import bsp_is_sure
 from .chan_service import period_of_db_name, resolve_period, resolve_sub_level
@@ -182,7 +183,7 @@ def _compute_incremental(
 # ----------------------------------------------------------------------
 
 def _extract_bsp_rows(chan: CChan, kl_type, sub_result=None) -> list[tuple]:
-    """bs_point_lst 当前全集 → bsp_index 行 (bsp_date, bsp_type, is_buy, price, time_key, is_sure, ladder)。
+    """bs_point_lst 当前全集 → bsp_index 行 (bsp_date, bsp_type, is_buy, price, time_key, is_sure, ladder, entry_point, entry_method, entry_level)。
 
     **按笔去重**（chan-standard-bsp D22）：一个位置可以同时属于多个类型
     （如二买与三买B 落在同一笔），历史实现按类型展开成多行，导致绩效统计的
@@ -197,7 +198,14 @@ def _extract_bsp_rows(chan: CChan, kl_type, sub_result=None) -> list[tuple]:
     ladder：三轴阶梯（chan-bsp-ladder-change D1/D3）——sub_result 为
     (sub_bsps, sub_bs_point_lst, sub_kl) 时计算佐证轴；None = 子级别不可用
     （无子级周期 / 数据缺失 / 计算失败 / BSP_L1_PERSIST=0），佐证轴缺席。
+    entry_*：介入点候选三列（chan-entry-point-candidate D6）——**WebAPI 侧调用
+    共享核心**（`ChanAnalyse.BuySellPoint.BSPointList.entry_point_result`，任务 2.1
+    提取的模块级函数，与内核 `_annotate_entry_point` 双链路同源），输入
+    `sub_result` 的 `sub_bs_point_lst`。子级不可用时 (False, None, None)
+    ——介入判定的必要条件本来就只在未确认段候选上成立，无子级即无候选。
     """
+    from ChanAnalyse.BuySellPoint.BSPointList import entry_point_result
+
     kl = chan[kl_type]
     bi_list = kl.bi_list
     sub_bsps, sub_bs_point_lst, sub_kl = sub_result if sub_result else (None, None, None)
@@ -220,8 +228,34 @@ def _extract_bsp_rows(chan: CChan, kl_type, sub_result=None) -> list[tuple]:
             bi_list_ref=bi_list,
             cfg=kl.bs_point_lst.config.GetBSConfig(bool(bsp.is_buy)),
         )
+        # 介入点候选（D6 双链路共用核心）：conf 取买/卖侧（与判据同侧规则
+        # 一致），水位用本容器（量纲一致）。开全部 12 键开关时才可能命中；
+        # 关闭时共享核心直接返回 (False, None, 0)，零额外成本。
+        try:
+            entry_hit, entry_method, entry_level = entry_point_result(
+                bsp, sub_bs_point_lst,
+                kl.bs_point_lst.config.GetBSConfig(bool(bsp.is_buy)),
+                parent_lst=kl.bs_point_lst,
+            )
+        except Exception:
+            log.exception("介入点判定失败（行落 NULL）: %s %s",
+                          getattr(chan, "code", "?"), time_key)
+            entry_hit, entry_method, entry_level = False, None, None
+        # 用户可读分级（chan-bsp-grading）：只落稳定的分数与定性档位。
+        # `advice` / `blocked_by` 是会随文案调整的句子，落库会让存量行与新
+        # 文案并存，故由读取侧按当前口径现算（`bsp_grade.grade_from_feature`）。
+        try:
+            g = grade_from_feature(
+                dict(bsp.features.items()), ladder, bool(bsp.is_buy), is_sure)
+            grade_score, grade_qual = g["score"], g["grade"]
+        except Exception:
+            log.exception("分级推导失败（行落 NULL）: %s %s",
+                          getattr(chan, "code", "?"), time_key)
+            grade_score, grade_qual = None, None
         rows.append((bsp_date, bsp.primary_type.value, bool(bsp.is_buy),
-                     price, time_key, is_sure, ladder))
+                     price, time_key, is_sure, ladder,
+                     bool(entry_hit), entry_method, entry_level,
+                     grade_score, grade_qual))
     return rows
 
 

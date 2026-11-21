@@ -43,6 +43,13 @@ export interface ChanPalette {
   zsSegFill: string
   /** 线段中枢描边 */
   zsSegBorder: string
+
+  // ---- 背驰标注（chan-recent-divergence-mark，随主题微调透明度）----
+  /** 背驰阴影基色（RGB 三元组，绘制端按两层不同 alpha 合成外发光，
+   *  故只存基色不存完整 rgba）。色相刻意偏离涨红 `--rise` #F6465D：
+   *  暗色偏亮粉红（发光感）、明亮偏深玫红（白底够深），
+   *  与蜡烛涨红重叠时不会被误读成一根蜡烛。 */
+  divRgb: string
 }
 
 /** 语义色常量（主题无关） */
@@ -64,6 +71,9 @@ const DARK: ChanPalette = {
   zsBiBorder: 'rgba(155, 161, 168, 0.55)',
   zsSegFill: 'rgba(59, 130, 246, 0.09)',
   zsSegBorder: 'rgba(59, 130, 246, 0.65)',
+
+  // 背驰阴影：暗底（#0A0D12）上偏亮的粉红才形成「发光」而非「暗带」
+  divRgb: '255, 82, 108',
 }
 
 const LIGHT: ChanPalette = {
@@ -85,6 +95,9 @@ const LIGHT: ChanPalette = {
   zsBiBorder: 'rgba(107, 114, 128, 0.50)',
   zsSegFill: 'rgba(37, 99, 235, 0.08)',
   zsSegBorder: 'rgba(37, 99, 235, 0.55)',
+
+  // 背驰阴影：白底（#FFFFFF）上必须压深，否则 0.3 的亮红几乎不可见
+  divRgb: '206, 38, 62',
 }
 
 /**
@@ -102,4 +115,18 @@ export function currentTheme(): ChanTheme {
  */
 export function getChanPalette(theme: ChanTheme = currentTheme()): ChanPalette {
   return theme === 'light' ? LIGHT : DARK
+}
+
+/** 背驰阴影两层 alpha：外层宽而淡（晕开）、内层窄而浓（贴线）。 */
+export const DIVERGENCE_ALPHA = { outer: 0.14, inner: 0.34 } as const
+
+/**
+ * 合成背驰阴影色。两层不同 alpha 叠出外发光过渡，避免单层半透明
+ * 红形成一条「平铺色带」——后者在暗底上与蜡烛涨红难区分。
+ */
+export function divergenceColor(
+  layer: keyof typeof DIVERGENCE_ALPHA,
+  theme: ChanTheme = currentTheme(),
+): string {
+  return `rgba(${getChanPalette(theme).divRgb}, ${DIVERGENCE_ALPHA[layer]})`
 }

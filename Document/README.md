@@ -618,8 +618,11 @@ else:  # 绘制动画
           `new_extreme_mode_effective` 标明实际口径，不静默降级）
         - `bsp1_dif_div`：离开段的 DIF（黄白线）极值相对进入段不创新低/新高
         - `bsp1_zero_axis`：进入最后中枢的段与离开段之间，DIF 须回抽过零轴
-        - `bsp1_zs_extend_to_seg_end`（默认 False）：是否仍要求中枢延伸到线段末笔。
-          这是历史实现的自定义过滤（非理论要求），开启后会把大量合格候选挤进 T1P
+        - 「中枢必须延伸到线段末笔」这条历史实现的自定义过滤**已从产品配置下线**
+          （原 `bsp1_zs_extend_to_seg_end`，内核保留字段仅供 `legacy` 档复现旧输出）。
+          它是 T1/T1P 的路由开关而非判据：开启后中枢未贴到线段末尾的 T1 候选会绕开
+          趋势/新低/DIF/零轴四项标准判据，改走更松的盘整背驰（T1P）通道，
+          且同一历史点的类型会随之后线段延伸而翻转。`standard` 档恒为关闭。
     - **一买降级路由与力度口径**：
         - `bsp1_downgrade_to_pz`（默认 True）：趋势前提不达标但**背驰链路本身成立**时，
           把该点以 **T1P** 类型登记，而不是静默丢弃。
@@ -721,7 +724,7 @@ else:  # 绘制动画
 #### 精确设置配置
 `divergence_rate`,`min_zs_cnt`,`bsp1_only_multibi_zs`,`max_bs2_rate`,`macd_algo`,`bs1_peak`,`strategy_para`，`bs_type`，`bsp2_follow_1`，`bsp3_follow_1`，`bsp2s_follow_2`，`strict_bsp3`，`score_thred`，`bsp3_peak`，以及改造新增的
 `bsp1_trend`、`bsp1_new_extreme`、`bsp1_dif_div`、`bsp1_zero_axis`、
-`bsp1_zs_extend_to_seg_end`、`bsp2_retrace_zs`、`bsp2s_require_zs`、
+`bsp2_retrace_zs`、`bsp2s_require_zs`、
 `bsp3_peak_on_breakout`、`bsp1_downgrade_to_pz`、`bsp1_force_scope`、
 `bsp1_qjt`、`bsp1_qjt_depth` 这几个指标可以分别对买卖点/线段买卖点各自设置：
 

@@ -51,7 +51,9 @@ FINGERPRINT_KEYS: Iterable[str] = (
     "bsp1_zero_axis",
     "bsp1_trend_mode",
     "bsp1_new_extreme_mode",
-    "bsp1_zs_extend_to_seg_end",
+    # `bsp1_zs_extend_to_seg_end` 已从产品配置下线（chan-config-retire-zs-extend）：
+    # 用户侧再无法改动它，standard 档恒为 False；只有 legacy 档把它展开为 True，
+    # 而 legacy 与 standard 的指纹已由 `bsp_preset` 本身区分，无需重复收录。
     "bsp2_retrace_zs",
     "bsp2s_require_zs",
     "bsp2s_rate_mode",
@@ -62,6 +64,21 @@ FINGERPRINT_KEYS: Iterable[str] = (
     "bsp1_force_scope",
     "bsp1_qjt",
     "bsp1_qjt_depth",
+    # 介入点候选（chan-entry-point-candidate）：12 键全部进指纹——
+    # 介入列（entry_point/entry_method/entry_level）同样只重算未确认尾部，
+    # 开关或层数改动后若不强制重算，已确认前缀的介入标记会残留旧口径值。
+    "bsp1_entry",
+    "bsp1_entry_qjt",
+    "bsp1_entry_qjt_depth",
+    "bsp1_entry_aux",
+    "bsp2_entry",
+    "bsp2_entry_qjt",
+    "bsp2_entry_qjt_depth",
+    "bsp2_entry_aux",
+    "bsp3_entry",
+    "bsp3_entry_qjt",
+    "bsp3_entry_qjt_depth",
+    "bsp3_entry_aux",
     "bsp3_confirm_window",
     "bsp3_confirm_level",
     "bsp3_time_axis_strong",

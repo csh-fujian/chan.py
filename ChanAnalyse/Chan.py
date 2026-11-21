@@ -328,23 +328,37 @@ class CChan:
             self._refresh_qjt()
 
     def _refresh_qjt(self):
-        """注入次级容器引用并重跑区间套注解（`bsp1_qjt` 关闭时无操作）。
+        """注入次级容器引用并重跑后置注解（qjt 与介入点全关时无操作）。
 
         与 `_finalize_all_levels` 的阶段 2 同源：`sub_bs_point_lst` 是**只读
         临时引用**，不参与 `__deepcopy__` / pickle 的指针重建。
         最低级别没有次级容器，其 `sub_bs_point_lst` 保持不存在。
 
-        **必须从最低级别向上注解**：`bsp1_qjt_depth > 1` 时父级的递归下钻要
-        读「次级自己的 `sub_bs_point_lst`」，只有先给次级接上它的次级，父级的
-        第二层才存在。自顶向下会让深度 > 1 恒退化为深度 1（静默失效）。
+        **必须从最低级别向上注解**：`bsp1_qjt_depth > 1` / 介入点方法1
+        `entry_qjt_depth > 1` 时父级的递归下钻要读「次级自己的
+        `sub_bs_point_lst`」，只有先给次级接上它的次级，父级的第二层才存在。
+        自顶向下会让深度 > 1 恒退化为深度 1（静默失效）。
+
+        同时重跑区间套特征注解（`_annotate_qjt`）与介入点候选注解
+        （`_annotate_entry_point`，chan-entry-point-candidate）：两者都在
+        `cal()` 内首跑时拿不到次级容器（阶段 1 注入尚未发生），必须在此
+        收尾阶段补跑才能看到次级结果。
         """
-        if not self.conf.bs_point_conf.b_conf.bsp1_qjt:
+        b_conf = self.conf.bs_point_conf.b_conf
+        s_conf = self.conf.bs_point_conf.s_conf
+        need_qjt = any(c.bsp1_qjt for c in (b_conf, s_conf))
+        need_entry = any(
+            c.bsp1_entry or c.bsp2_entry or c.bsp3_entry for c in (b_conf, s_conf))
+        if not (need_qjt or need_entry):
             return
         for lv_idx in range(len(self.lv_list) - 2, -1, -1):
             lst = self.kl_datas[self.lv_list[lv_idx]].bs_point_lst
             sub_lst = self.kl_datas[self.lv_list[lv_idx + 1]].bs_point_lst
             lst.sub_bs_point_lst = sub_lst
-            lst._annotate_qjt()
+            if need_qjt:
+                lst._annotate_qjt()
+            if need_entry:
+                lst._annotate_entry_point()
 
     def _finalize_all_levels(self):
         """非步进模式的收尾：逐级别算段/中枢/买卖点，再注入次级容器并补区间套注解。

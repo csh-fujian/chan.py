@@ -48,6 +48,8 @@ _BSP_PRESETS = {
         "bsp1_new_extreme": False,
         "bsp1_dif_div": False,
         "bsp1_zero_axis": False,
+        # 已从产品配置下线（chan-config-retire-zs-extend），面板不可改。
+        # legacy 档必须保留 True 才能逐笔复现改造前输出（等价性基线依赖它）。
         "bsp1_zs_extend_to_seg_end": True,
         "bsp2_retrace_zs": False,
         "bsp2s_require_zs": False,
@@ -70,6 +72,17 @@ _BSP_PRESETS = {
         # 区间套特征：默认已 False，显式写入防止将来单独调 legacy 判据开关时
         # 被特征字段污染等价性基线
         "bsp1_qjt": False,
+        # 介入点候选（chan-entry-point-candidate）：legacy 显式全关——
+        # 防御性写入，防止将来单独放开 legacy 判据开关时介入标记污染等价性基线
+        "bsp1_entry": False,
+        "bsp1_entry_qjt": False,
+        "bsp1_entry_aux": False,
+        "bsp2_entry": False,
+        "bsp2_entry_qjt": False,
+        "bsp2_entry_aux": False,
+        "bsp3_entry": False,
+        "bsp3_entry_qjt": False,
+        "bsp3_entry_aux": False,
     },
 }
 
@@ -260,6 +273,8 @@ class CChanConfig:
             "bsp1_zero_axis": True,
             "bsp1_trend_mode": "strict",
             "bsp1_new_extreme_mode": "trend_start",
+            # 已从产品配置下线（chan-config-retire-zs-extend），此处为出厂默认，
+            # 用户侧不可改；legacy 档展开为 True
             "bsp1_zs_extend_to_seg_end": False,
             # 第二类 / 类二标准判据
             "bsp2_retrace_zs": False,
@@ -276,6 +291,20 @@ class CChanConfig:
             # 区间套特征（§4.6）：默认关闭，只写特征不改成立性
             "bsp1_qjt": False,
             "bsp1_qjt_depth": 1,
+            # 介入点候选（chan-entry-point-candidate）：独立信号层，
+            # 默认全关，开启后只写 feature 不改成立性
+            "bsp1_entry": False,
+            "bsp1_entry_qjt": False,
+            "bsp1_entry_qjt_depth": 1,
+            "bsp1_entry_aux": False,
+            "bsp2_entry": False,
+            "bsp2_entry_qjt": False,
+            "bsp2_entry_qjt_depth": 1,
+            "bsp2_entry_aux": False,
+            "bsp3_entry": False,
+            "bsp3_entry_qjt": False,
+            "bsp3_entry_qjt_depth": 1,
+            "bsp3_entry_aux": False,
             # T2 阶梯五轴（chan-standard-bsp2-change）：确认窗口取 2 笔
             # 为实证定标（《文档/二买确认轴实证报告.md》0.1：窗口 2 把末端
             # 候选标 ongoing 而非误判 strong，比窗口 1 更保守且不误报）

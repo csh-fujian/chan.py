@@ -111,7 +111,11 @@ class CPointConfig:
     - bsp1_trend_mode: 趋势判定口径（strict/overlap）
     - bsp1_new_extreme_mode: 新低比较起点口径（trend_start/prev_zs_in/all/level）。
       `level` = 该要素之前的全量同向要素（跨线段，不受线段边界限制）
-    - bsp1_zs_extend_to_seg_end: 是否仍要求中枢延伸到线段末笔（历史 4.8 条件）
+    - bsp1_zs_extend_to_seg_end: 是否仍要求中枢延伸到线段末笔（历史 4.8 条件）。
+      **已从产品配置下线**（chan-config-retire-zs-extend）：它是 T1/T1P 的路由开关
+      而非判据，开启后会把「中枢未贴到线段末尾」的 T1 候选赶进更松的 T1P 通道。
+      `standard` 恒 False，仅 `legacy` 档展开为 True 以复现改造前输出；
+      WebAPI 读写出口经 `_RETIRED_KEYS` 清除存量行
     - bsp2_retrace_zs: 二买回调是否要求与中枢区间关联
     - bsp2s_require_zs: 类二是否要求末端价格落在中枢区间内
     - bsp2s_rate_mode: 类二回撤率量纲（amp/disp）
@@ -132,6 +136,16 @@ class CPointConfig:
       买卖点的成立性与数量
     - bsp1_qjt_depth: 区间套递归深度（默认 1 层）。多层会成倍放大「子级确认滞后」
       导致的步进/批量口径分叉，默认收敛一层
+    - bsp{1,2,3}_entry: 介入点候选计算总开关（chan-entry-point-candidate，默认
+      False）。开启后为该类买卖点计算介入点候选标记——必要条件（各自待确认段
+      上的候选点）+ 双方法（区间套递归 / 辅助确认信号）任一命中即成立，
+      写 feature `entry_hit`/`entry_method`/`entry_level`。
+      **介入点是独立信号层，不改任何买卖点的成立性与输出数量**
+    - bsp{1,2,3}_entry_qjt: 方法1（区间套递归）开关。总开关关闭时无效果
+    - bsp{1,2,3}_entry_qjt_depth: 方法1 递归层数（默认 1）。链式确认 k 层：
+      中间层要求次级同向已确认一买，最低层放宽为同向候选一买 + 末端分型形成
+    - bsp{1,2,3}_entry_aux: 方法2（辅助确认信号）开关——次级别（窗口范围内）
+      出现已成立的二买/三买（卖侧二卖/三卖）。总开关关闭时无效果
     - bsp2_confirm_window: T2 确认轴的考察窗口笔数（1/2，默认 2——实证定标，
       《文档/二买确认轴实证报告.md》0.1）。窗口只决定考察范围，不影响终态语义
     - bsp2_time_axis_strong: T2 时间轴速度比的强档阈值（默认 0.5，v<=该值为强档
@@ -182,6 +196,18 @@ class CPointConfig:
                  bsp1_force_scope="swing",
                  bsp1_qjt=False,
                  bsp1_qjt_depth=1,
+                 bsp1_entry=False,
+                 bsp1_entry_qjt=False,
+                 bsp1_entry_qjt_depth=1,
+                 bsp1_entry_aux=False,
+                 bsp2_entry=False,
+                 bsp2_entry_qjt=False,
+                 bsp2_entry_qjt_depth=1,
+                 bsp2_entry_aux=False,
+                 bsp3_entry=False,
+                 bsp3_entry_qjt=False,
+                 bsp3_entry_qjt_depth=1,
+                 bsp3_entry_aux=False,
                  bs1_peak_strict=False,
                  bsp2_confirm_window=2,
                  bsp2_time_axis_strong=0.5,
@@ -255,6 +281,34 @@ class CPointConfig:
                 f"bsp1_qjt_depth={bsp1_qjt_depth!r} 非法，必须是 >= 1 的整数",
                 ErrCode.PARA_ERROR)
         self.bsp1_qjt_depth = bsp1_qjt_depth
+
+        # ---- 介入点候选（chan-entry-point-candidate）：独立信号层，默认关闭 ----
+        # 三类买卖点各自的 4 键：总开关 / 方法1 区间套 / 递归层数 / 方法2 辅助确认。
+        # 只写 feature（entry_hit / entry_method / entry_level），不改成立性。
+        # 层数校验样式仿 bsp1_qjt_depth（int 且非 bool 且 >= 1）。
+        self._entry_conf = {}
+        for _n in (1, 2, 3):
+            _entry = locals()[f"bsp{_n}_entry"]
+            _qjt = locals()[f"bsp{_n}_entry_qjt"]
+            _depth = locals()[f"bsp{_n}_entry_qjt_depth"]
+            _aux = locals()[f"bsp{_n}_entry_aux"]
+            for flag_name, flag_val in (
+                (f"bsp{_n}_entry", _entry),
+                (f"bsp{_n}_entry_qjt", _qjt),
+                (f"bsp{_n}_entry_aux", _aux),
+            ):
+                if not isinstance(flag_val, bool):
+                    raise CChanException(
+                        f"{flag_name}={flag_val!r} 非法，必须是布尔值",
+                        ErrCode.PARA_ERROR)
+            if not isinstance(_depth, int) or isinstance(_depth, bool) or _depth < 1:
+                raise CChanException(
+                    f"bsp{_n}_entry_qjt_depth={_depth!r} 非法，必须是 >= 1 的整数",
+                    ErrCode.PARA_ERROR)
+            setattr(self, f"bsp{_n}_entry", _entry)
+            setattr(self, f"bsp{_n}_entry_qjt", _qjt)
+            setattr(self, f"bsp{_n}_entry_qjt_depth", _depth)
+            setattr(self, f"bsp{_n}_entry_aux", _aux)
 
         # ---- T2 阶梯五轴（chan-standard-bsp2-change）----
         # 确认窗口：1 或 2 笔。实证（报告 0.1）定默认 2。

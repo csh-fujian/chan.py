@@ -289,6 +289,10 @@ def check_t7(codes, period) -> bool:
     code = codes[0]
 
     def direct(where_sql, params, limit=None, offset=0):
+        # 读侧 query_bsp 恒定拼进 ST_EXCLUDE_SQL（exclude-st-stocks D6 读侧补齐），
+        # 直查必须同口径，否则对比出的差异全是 190 行 ST 存量数据。
+        from WebAPI.stock_store import ST_EXCLUDE_SQL
+        where_sql = f"{where_sql} AND {ST_EXCLUDE_SQL}" if where_sql.strip() else f"WHERE {ST_EXCLUDE_SQL}"
         conn = _conn()
         try:
             with conn.cursor() as cur:
@@ -344,13 +348,17 @@ def check_t7(codes, period) -> bool:
     # router 契约：PageRes<BspRecord>（asyncio 直接调用路由函数）
     from WebAPI.routers.bsp import bsp_list
 
-    res = asyncio.run(bsp_list(page=1, page_size=5, keyword=code[3:6], bsp_type="", direction="", kl_type=period, date_from="", date_to=""))
+    res = asyncio.run(bsp_list(page=1, page_size=5, keyword=code[3:6], bsp_type="", direction="", kl_type=period, date_from="", date_to="", sure="", ladder=""))
     shape_ok = set(res.keys()) == {"list", "total", "page", "page_size"}
     # bsp-ladder-change：BspRecord 增 ladder 字段（L1/L2/L3/L4）
-    fields = {"id", "code", "name", "industries", "bsp_type", "direction", "bsp_price", "current_price", "bsp_date", "kl_type", "change_pct", "is_sure", "ladder"}
+    # chan-entry-point-candidate：增介入点三列（entry_point / entry_method / entry_level）
+    # chan-bsp-grading：增证据分级 grade（强度分 + 强弱 + 建议 + 卡点）
+    fields = {"id", "code", "name", "industries", "bsp_type", "direction", "bsp_price", "current_price", "bsp_date", "kl_type", "change_pct", "is_sure", "ladder", "entry_point", "entry_method", "entry_level", "grade"}
     rec_ok = all(set(rec.keys()) == fields for rec in res["list"])
     type_ok = all(
-        isinstance(rec["id"], int)
+        # id 是稳定复合键字符串（bsp-page-level-filter-and-batch-monitor D4：
+        # 行号占位会让 row-key 在切换筛选后落到另一批记录），不再是 int。
+        isinstance(rec["id"], str)
         and isinstance(rec["industries"], list)
         and all(isinstance(x, str) for x in rec["industries"])
         and rec["direction"] in ("buy", "sell")
@@ -358,6 +366,17 @@ def check_t7(codes, period) -> bool:
         and isinstance(rec["current_price"], (int, float))
         and isinstance(rec["bsp_date"], int)
         and isinstance(rec["change_pct"], (int, float))
+        # grade 要么是 None（存量未评估），要么是完整结构（chan-bsp-grading）
+        and (
+            rec["grade"] is None
+            or (
+                isinstance(rec["grade"]["score"], int)
+                and 0 <= rec["grade"]["score"] <= 100
+                and isinstance(rec["grade"]["grade"], str)
+                and isinstance(rec["grade"]["advice"], str)
+                and isinstance(rec["grade"]["confirmed"], bool)
+            )
+        )
         for rec in res["list"]
     )
     match = shape_ok and rec_ok and type_ok and res["total"] > 0
@@ -376,7 +395,7 @@ def check_t7(codes, period) -> bool:
 
     _KLS.KLineStore.execute = boom
     try:
-        res = asyncio.run(bsp_list(page=1, page_size=3, keyword=code[3:6], bsp_type="", direction="", kl_type=period, date_from="", date_to=""))
+        res = asyncio.run(bsp_list(page=1, page_size=3, keyword=code[3:6], bsp_type="", direction="", kl_type=period, date_from="", date_to="", sure="", ladder=""))
         degrade_ok = len(res["list"]) > 0 and all(
             rec["current_price"] == 0.0 and rec["change_pct"] == 0.0 for rec in res["list"]
         )

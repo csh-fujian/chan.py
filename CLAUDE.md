@@ -166,12 +166,12 @@ CChan (ChanAnalyse/Chan.py)  ← 门面，接收 stock code + CChanConfig
 
 ## 缠论参数配置（`chan-config-panel`）
 
-缠论参数已全部开放为业务配置，由 K 线页顶栏「缠论参数」按钮打开的抽屉维护（57 项：54 常驻 + 3 条件项；分组 判据 31 / 标注 8 / 结构 15）。
+缠论参数已全部开放为业务配置，由 K 线页顶栏「缠论参数」按钮打开的抽屉维护（68 项：54 常驻 + 14 条件项；分组 判据 43 / 标注 8 / 结构 17，其中常驻部分为 判据 31 / 标注 8 / 结构 15）。
 
 | 模块 | 职责 |
 |------|------|
 | `WebAPI/chan_config_store.py` | `chan_config` + `chan_config_sync_job` 惰性 DDL、读写（`load()` 带版本缓存）、派生键（`apply_derived()`）、档位回填（`load_preset()`/`_preset_injected()`）、构造期校验（`validate_config()`/`validate_preset()`）、点号键桥接（`to_kernel()`/`to_flat()`） |
-| `WebAPI/chan_config_schema.py` | 57 项参数元数据（分组 / 控件 / 白话解释 / 默认值反射） |
+| `WebAPI/chan_config_schema.py` | 68 项参数元数据（分组 / 控件 / 白话解释 / 默认值反射） |
 | `WebAPI/routers/chan_config.py` | `GET/PUT /api/chan-config`、`GET /schema`、`POST /recompute`、`POST /sync`、`GET /sync/status` |
 | `Front/src/components/kline/ChanConfigDrawer.vue` | 抽屉主体（草稿态 + 保存并重算 + 批量同步轮询） |
 | `Front/src/stores/chanConfig.ts` | `saved`/`schema`/`draft` 三态 + `dirtyCount` |
@@ -187,6 +187,28 @@ CChan (ChanAnalyse/Chan.py)  ← 门面，接收 stock code + CChanConfig
 - **`inf` 只能以字符串跨 JSON**：标准 JSON 不接受非有限浮点。前端勾「不限」发 `"inf"`，`validate_config()` 用 `_decode_value()` 还原成 `float("inf")` 再校验并返回，`save()` 落库时再 `_encode_value()` 转回 `"inf"`。`GET /schema` 整份响应也走 `encode_config()`——legacy 档的 `divergence_rate=inf` 会让裸 `json.dumps` 直接 500。**`None` 一律拒绝**（内核默认可空的 `max_bsp2s_lv` 除外，由 `_nullable_keys()` 反射判定）：`divergence_rate=None` 能通过构造，却在计算期 `None <= 100` 抛 `TypeError`。
 - **`ConfigWithCheck.get()` 会 del 传进去的 dict** —— `validate_config()` 必须传副本，否则报错时字典已空、定不出哪个参数非法。
 - **指纹已结构化**（`config_fingerprint.collect_config()` 分 `bsp`/`seg_bsp`/`bi`/`seg`/`zs`/`macd`/`indicator` 七段），结构参数改动也会强制全量重算。这是 BREAKING 变更，存量快照首次重算一律走全量。
+
+## 买卖点证据分级（`chan-bsp-grading`）
+
+内部阶梯编号（`L2` / `P2|S3|C2|K3|T1` …）是开发者坐标系，普通用户读不出强弱。`WebAPI/bsp_grade.py` 把它翻译成**三层用户可读信息**：强度分 0~100 / 强弱定性 / 操作建议 + 卡在哪一步。
+
+| 模块 | 职责 |
+|------|------|
+| `WebAPI/bsp_grade.py` | `grade_bsp()` 打分与定档、`grade_for_score()` 按分数反查档位、`reason_text()` 短路原因白话化、`grade_from_feature()` 补 `blocked_by` |
+| `WebAPI/serializer.py` | `/api/klines` 的 `bsp[]` 每项带 `grade`（与 `ladder` 同源推导） |
+| `WebAPI/incremental_engine.py` | `_extract_bsp_rows()` 落库前算 `grade_score` / `grade_qual` |
+| `WebAPI/routers/bsp.py` | `_grade_of()` 从库里的分数反推完整 `grade`（文案现算） |
+| `Front/src/utils/bspLadder.ts` | `gradeTone()` 五档色 / `gradeSummary()` / 全部轴文案白话化 |
+| `Front/src/components/charts/KLineChart.vue` | K 线 hover 卡的主结论区块（分数 + 建议 + ⚠ 卡点 + 免责） |
+| `Front/src/views/bsp/BspView.vue` | 买卖点列表「证据强度」列 |
+
+- **只落库稳定的分数与定性，不落文案**：`advice` / `blocked_by` 是随版本调整的句子，落库会让存量行与新文案并存。`bsp_index` 只存 `grade_score`/`grade_qual`，读取侧按当前口径现算。两列 NULL = 本变更前的存量行 → 前端「未评估」，**不猜分数**。
+- **三道分数边界，改任何一道都要检查关联**：`_CAP_BLOCKED=59`（被判据卡住）必须低于 `_FLOOR_JUDGED_PASSED=60`（判据全过时的分数地板），再低于 `_CAP_PENDING_CONFIRM=79`（判据全过只欠确认）。地板分是必需的：佐证轴（30 分）+ 分型轴（20 分）在「无子级数据」「末端未成分型」时各计 0，判据全过的点只有 50 分，落到「一般 · 证据不足先观察」，与它自己的 `blocked_by`（「全部判据通过，只差最后的结构确认」）自相矛盾。
+- **分数与措辞必须同源推导**：`_grade_of()` 用库里分数覆盖 `score` 后，必须调 `grade_for_score()` 重算 `grade`/`advice`，否则会出现「20 分显示成一般」。已确认行例外（`grade_bsp` 早返回的「已确认成立」比通用档位措辞更准）。
+- **`blocked_by` 键恒存在**：`grade_bsp` 三个分支（已确认 / 无轴向 / 正常）都显式给出该键，值为 None 或说明句。缺键会让调用方 KeyError。
+- **无短路原因键 ≠ 判据全过**：`bsp2_reason` / `bsp1_standard_reason` 只在一买/二买判据链里透出。三买/二卖候选没有这些键，不能说「全部判据通过」——`grade_from_feature` 按家族区分，返回「该类型买卖点不适用逐步判据，按各轴评估结果综合判断」。
+- **不写「推荐买入」「满仓」**：`bsp_grade.py` 的措辞一律是「证据够不够」。回测（`Debug/vp_entry/reports/final_conclusion.md`）显示未确认信号 T+10 胜率约 41.67%、均值 -0.82%，低于随机；写成胜率承诺会误导。每条建议都附 `DISCLAIMER = "证据充分度，不构成投资建议"`。
+- **DDL**：`bsp_index` 加 `grade_score SMALLINT` / `grade_qual VARCHAR(8)`，惰性 DDL 在 `bsp_store._ensure_tables()`，`update-win.sql` / `update-mac.sql` 只是变更记录。
 
 ## 前端（`Front/`）
 

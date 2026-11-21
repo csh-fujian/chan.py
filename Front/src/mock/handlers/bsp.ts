@@ -1,5 +1,6 @@
 import { http, HttpResponse, delay } from 'msw'
-import { bspRecords, getBspAggregate, getBspByCode as mockByCode } from '../data/bsp'
+import { bspRecords, getBspAggregate, getBspByCode as mockByCode, ENTRY_PSEUDO_FAMILIES } from '../data/bsp'
+import { rawTypeOf } from '@/utils/bsp'
 
 /** 本地时区 YYYY-MM-DD（与查询表单 date_from/date_to 参数对齐） */
 function localDateStr(ts: number): string {
@@ -29,7 +30,20 @@ export const bspHandlers = [
 
     let list = bspRecords
     if (keyword) list = list.filter((r) => r.code.includes(keyword) || r.name.includes(keyword))
-    if (bspType) list = list.filter((r) => r.bsp_type === bspType)
+    if (bspType) {
+      // 介入点伪类型（chan-entry-point-candidate 5.3）：对齐后端 resolve_bsp_type +
+      // entry_only 口径——'entry' 只按 entry_point 过滤（不限类型/方向），entry1/2/3
+      // 额外要求原始类型在家族集合内。BspRecord.bsp_type 是标签形态（'1B'/'PZ-S'），
+      // 家族集合是原始值形态（'1'/'1p'），用 rawTypeOf 翻译后比对。
+      const family = ENTRY_PSEUDO_FAMILIES[bspType]
+      if (family) {
+        list = family.length > 0
+          ? list.filter((r) => r.entry_point === true && family.includes(rawTypeOf(r.bsp_type)))
+          : list.filter((r) => r.entry_point === true)
+      } else {
+        list = list.filter((r) => r.bsp_type === bspType)
+      }
+    }
     if (direction) list = list.filter((r) => r.direction === direction)
     if (klType) list = list.filter((r) => r.kl_type === klType)
     if (ladder) list = list.filter((r) => r.ladder === ladder)

@@ -9,7 +9,7 @@
     :before-close="handleBeforeClose"
     append-to-body
   >
-    <!-- 自定义头部：标题 + 档位总开关（档位是「整套规则」的开关，不该埋在 57 项里） -->
+    <!-- 自定义头部：标题 + 档位总开关（档位是「整套规则」的开关，不该埋在 56 项里） -->
     <template #header>
       <div class="cfg-head">
         <div class="cfg-head__main">
@@ -81,6 +81,22 @@
         >
           仅看自定义
           <span class="mono">{{ store.overriddenKeys.size }}</span>
+        </button>
+
+        <!-- 历史参数：内核仍在算，但没有任何消费方（写出的特征不进接口/界面）。
+             默认隐藏，避免用户在一个勾了看不出任何差别的开关上白花计算时间。 -->
+        <button
+          v-if="legacyCount"
+          type="button"
+          class="cfg-nav__chip"
+          :class="{ 'is-on': showLegacy }"
+          :title="showLegacy
+            ? '隐藏历史参数（这些项算出的特征当前没有任何界面或接口展示）'
+            : '显示历史参数（仅供排查，勾选后页面上看不出差别）'"
+          @click="showLegacy = !showLegacy"
+        >
+          显示历史参数
+          <span class="mono">{{ legacyCount }}</span>
         </button>
 
         <nav class="cfg-nav__list">
@@ -281,7 +297,7 @@
  *   第二段 `/api/chan-config/recompute` 后台刷新 PG 索引（7~26 秒）
  *
  * 版面（2026-11 重设计）：
- *   57 项参数平铺在单列折叠面板里是不可读的 —— 用户找不到「二买回调上限」在哪，
+ *   56 项参数平铺在单列折叠面板里是不可读的 —— 用户找不到「二买回调上限」在哪，
  *   也不知道自己改过的项埋在哪。现改为**两栏**：
  *     · 左栏常驻分类导航（01/02/03 + 组内子分类锚点 + 搜索 + 只看已修改）
  *     · 右栏分区网格（组标题层级化、子分类二级标题、参数卡片两列）
@@ -355,6 +371,8 @@ interface GroupView {
 
 const keyword = ref('')
 const onlyModified = ref(false)
+/** 显示历史参数（`legacy`）：内核仍在算但没有任何消费方，默认隐藏 */
+const showLegacy = ref(false)
 /** 当前滚动到的分组（导航高亮） */
 const activeGroup = ref('')
 const scrollEl = ref<HTMLElement | null>(null)
@@ -363,6 +381,11 @@ const scrollEl = ref<HTMLElement | null>(null)
 const loading = ref(false)
 
 const structureAcknowledged = ref(false)
+
+/** 历史参数个数（抽屉里「显示历史参数」开关的角标） */
+const legacyCount = computed(
+  () => store.schema?.params.filter((p) => p.legacy).length ?? 0,
+)
 
 const recomputing = ref(false)
 const syncRunning = ref(false)
@@ -411,6 +434,9 @@ const filteredGroups = computed<GroupView[]>(() => {
       // 档位已提到头部，不再作为普通参数行出现
       if (p.control === 'preset') continue
       if (!isVisible(p)) continue
+      // 历史参数（无消费方）默认不显示；搜索时仍可被找到，避免用户
+      // 记得名字却搜不到（`showLegacy` 或有关键词时放行）
+      if (p.legacy && !showLegacy.value && !keyword.value.trim()) continue
       if (onlyModified.value && !mods.has(p.key)) continue
       if (kw) {
         const hay = `${p.label} ${p.key} ${p.subtype} ${p.plain}`.toLowerCase()

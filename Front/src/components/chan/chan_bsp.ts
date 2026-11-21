@@ -16,7 +16,7 @@
 // extendData 携带，经 createPointFigures 参数的 yAxis.convertToPixel（value→y）
 // 得到影线端点像素，间隙与虚线均以该端点为基准。
 import { registerOverlay, utils, type OverlayFigure } from 'klinecharts'
-import { bspLabels } from '@/utils/bsp'
+import { bspLabels, entrySuffixLabel } from '@/utils/bsp'
 import { getChanPalette } from './palette'
 
 /** 买卖点 overlay 元数据（存于 extendData） */
@@ -35,6 +35,14 @@ export interface ChanBspMeta {
   xOffset: number
   /** 确认阶梯级别（bsp-ladder-change D5）：'L1'/'L2'/'L3'/'L4'；缺省 = 未定级（tooltip 兜底） */
   ladder?: string
+  /** 用户可读分级（chan-bsp-grading）：强度分 / 强弱 / 操作建议 / 卡在哪一步 */
+  grade?: import('@/utils/bspLadder').BspGrade
+  /** 介入点候选（chan-entry-point-candidate 5.2）：true = 命中介入（标签追加·介） */
+  entry?: boolean
+  /** 介入认定方法（tooltip）：'qjt' 区间套递归 / 'aux' 辅助确认 */
+  entryMethod?: string | null
+  /** 方法1 实际递归层数（tooltip 诊断） */
+  entryLevel?: number | null
 }
 
 /** 买点颜色 — design.css --rise；卖点 — --fall；框底半透明 — 均取 palette（任务 6.3，语义色主题不变） */
@@ -51,10 +59,12 @@ const PAD_Y = 3
 /** 框高 = 字号 + 上下 padding，与文本量宽无关 */
 const BOX_HEIGHT = FONT_SIZE + PAD_Y * 2
 
-/** 标签文案（多类型合并为一个标签，绘制端与布局端共用，保证框宽一致） */
-export function chanBspLabel(types: string[], isBuy: boolean): string {
+/** 标签文案（多类型合并为一个标签，绘制端与布局端共用，保证框宽一致）。
+ *  介入点命中时追加「·介」后缀（chan-entry-point-candidate 5.2）。 */
+export function chanBspLabel(types: string[], isBuy: boolean, entry?: boolean): string {
   const labels = bspLabels(types, isBuy)
-  return labels.length > 0 ? labels.join('/') : isBuy ? 'B' : 'S'
+  const base = labels.length > 0 ? labels.join('/') : isBuy ? 'B' : 'S'
+  return entrySuffixLabel(base, !!entry)
 }
 
 /** 测量标签矩形框尺寸（构建期算共存 xOffset、绘制期画框共用） */
@@ -130,7 +140,7 @@ export function registerChanBsp(): void {
 
         const color = m.isBuy ? pal.buy : pal.sell
         const fill = m.isBuy ? pal.buyFill : pal.sellFill
-        const label = chanBspLabel(m.types, m.isBuy)
+        const label = chanBspLabel(m.types, m.isBuy, m.entry)
         const { width, height } = bspBoxSize(label)
 
         // 值→y：所在 K 线 high/low 的像素端点（y 轴向下增长，high 的 y 更小）

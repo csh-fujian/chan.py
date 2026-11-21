@@ -7,7 +7,7 @@
 // kline-unsure-dashed：未确认段（虚段，is_sure=false）以同色虚线（dashedValue [6, 4]）
 // + 减细线宽（2.2→1.4）绘制，确认段保持实线——段视觉权重高于笔，虚线+减细双信号弱化临时性。
 import { registerOverlay, type OverlayFigure } from 'klinecharts'
-import { getChanPalette } from './palette'
+import { getChanPalette, divergenceColor } from './palette'
 
 /** 线段 overlay 元数据（存于 extendData，与 points 顺序对齐，每条段占 2 个 point） */
 export interface ChanSegMeta {
@@ -15,6 +15,9 @@ export interface ChanSegMeta {
   startIndex: number
   /** 是否已确认；false = 虚段（未确认），绘制为同色虚线 + 减细线宽 */
   isSure: boolean
+  /** 末尾段背驰判定（chan-recent-divergence-mark）；true 时原线下垫红色阴影线。
+   *  仅最后一个元素携带；undefined/null = 不标注 */
+  isDivergence?: boolean | null
 }
 
 let registered = false
@@ -46,7 +49,27 @@ export function registerChanSeg(): void {
         const a = coordinates[i]
         const b = coordinates[i + 1]
         if (a == null || b == null) continue
-        const isSure = metaAt(i / 2)?.isSure ?? true
+        const meta = metaAt(i / 2)
+        const isSure = meta?.isSure ?? true
+        // 背驰标注（chan-recent-divergence-mark design D5）：同 chan_bi 的两层
+        // 外发光，尺寸按段级放大（外层 6.5px / 内层 4.5px），与段本身 2.2px
+        // 实线的层级差一致。虚段时阴影层用实线（虚线 + 减细已表达未确认）。
+        if (meta?.isDivergence === true) {
+          const coords = [{ x: a.x, y: a.y }, { x: b.x, y: b.y }]
+          for (const [size, layer] of [[6.5, 'outer'], [4.5, 'inner']] as const) {
+            figures.push({
+              type: 'line',
+              attrs: { coordinates: coords },
+              styles: {
+                color: divergenceColor(layer),
+                size,
+                style: 'solid',
+                smooth: false,
+                dashedValue: [2, 2],
+              },
+            })
+          }
+        }
         figures.push({
           type: 'line',
           attrs: { coordinates: [{ x: a.x, y: a.y }, { x: b.x, y: b.y }] },

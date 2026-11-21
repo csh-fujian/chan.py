@@ -29,6 +29,7 @@ from ..bsp_store import (
     query_bsp,
     query_bsp_aggregate,
     resolve_bsp_type,
+    ENTRY_PSEUDO_TYPES,
 )
 from ..chan_service import resolve_period
 from ..incremental_engine import catch_up
@@ -63,6 +64,48 @@ def _to_ms(bsp_date_iso: str, time_key: str) -> int:
             return int(dt.timestamp() * 1000)
         except Exception:
             return 0
+
+
+def _grade_of(it: dict):
+    """列表行的用户可读分级（chan-bsp-grading）。
+
+    落库只存稳定的 `grade_score` / `grade_qual`（文案会随版本调整，落库会让
+    存量行与新文案并存），这里按**当前** `bsp_grade` 口径重新拼出完整结构：
+    分数与定性直接用库里存的值（那是对该时点判据的忠实记录），
+    `advice` / `blocked_by` 用当前措辞现算。
+
+    `grade_score` 为 NULL = 本变更前的存量行，前端按「未评估」处理（回 None），
+    而不是拿 ladder 猜一个分数 —— 存量行的 feature 已缺失，猜出来的分数是假的。
+    """
+    score = it.get("grade_score")
+    if score is None:
+        return None
+    from ..bsp_grade import BLOCKED_UNKNOWN, grade_bsp, grade_for_score
+
+    is_buy = bool(it.get("is_buy"))
+    is_sure = bool(it.get("is_sure"))
+    ladder = it.get("ladder")
+    # 存量行的 `bsp1_standard_reason` 不在 bsp_index 里，无法还原「卡在哪」。
+    # 已知的只有库里存的分数本身：据此反推它当初是「判据被卡住」还是
+    # 「判据全过只欠确认」—— 分数 >= 60 说明当初走完了整条判据链，
+    # 只是缺最后的结构确认。
+    score = int(score)
+    blocked_reason = None if (is_sure or score >= 60) else BLOCKED_UNKNOWN
+    g = grade_bsp(ladder, is_buy=is_buy, is_sure=is_sure,
+                  blocked_reason=blocked_reason)
+    # 用库里存的分数覆盖现算值：判据是当时算的，分数应忠实于当时的结果。
+    # 定性/建议必须跟着分数一起重算，否则 20 分会显示成「一般」。
+    # 已确认行例外：`grade_bsp` 早返回的「已确认成立」比通用档位措辞更准。
+    g["score"] = score
+    if it.get("grade_qual"):
+        g["grade"] = it["grade_qual"]
+        if not g["confirmed"]:
+            g["advice"] = grade_for_score(score, is_buy)[1]
+    if not is_sure and blocked_reason == BLOCKED_UNKNOWN:
+        # bsp_index 只存 ladder/分数，不存短路原因，说不出具体是哪一项没过。
+        # 与其笼统地讲「无法判断」，不如告诉用户去哪儿看得到明细。
+        g["blocked_by"] = "判据明细不在列表数据里，展开 K 线页可看具体卡在哪一步"
+    return g
 
 
 def _record_id(it: dict) -> str:
@@ -136,10 +179,13 @@ async def bsp_list(
 
     # 过滤下推（2.3/2.6）：keyword/kl_type/bsp_type/direction/date_from~date_to
     # 同一 WHERE，COUNT 与分页共用，total = 过滤后总数；无命中 list=[] 且 total=0
-    # bsp_type 支持方向化标签（2B/3S/PZ-B...，design D11）与原始枚举直传
+    # bsp_type 支持方向化标签（2B/3S/PZ-B...，design D11）与原始枚举直传，
+    # 以及介入点伪类型（entry/entry1/entry2/entry3，chan-entry-point-candidate
+    # 4.3：翻译为 entry_point=TRUE + 家族类型约束，方向由行自身 is_buy 承载）
     bsp_types, label_is_buy = resolve_bsp_type(bsp_type) if bsp_type else ([], None)
     if label_is_buy is not None:
         is_buy = label_is_buy  # 标签自带方向语义，覆盖 direction 参数
+    entry_only = bool(bsp_type) and bsp_type in ENTRY_PSEUDO_TYPES
 
     result = query_bsp(
         kl_type=kl_type if kl_type else "",
@@ -152,6 +198,7 @@ async def bsp_list(
         page_size=page_size,
         is_sure=is_sure,
         ladder=ladder if ladder else "",
+        entry_only=entry_only,
     )
 
     items = result["items"]
@@ -179,6 +226,13 @@ async def bsp_list(
             "change_pct": change_pct,
             "is_sure": it["is_sure"],
             "ladder": it.get("ladder"),
+            # 用户可读分级（chan-bsp-grading）：落库只有稳定的 score/qual，
+            # 文案在这里按当前口径现算，保证存量行也能拿到最新措辞。
+            "grade": _grade_of(it),
+            # 介入点候选（chan-entry-point-candidate 4.3）：类型化合成的数据源
+            "entry_point": it.get("entry_point", False),
+            "entry_method": it.get("entry_method"),
+            "entry_level": it.get("entry_level"),
         })
 
     return {

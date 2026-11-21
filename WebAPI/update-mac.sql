@@ -41,3 +41,18 @@ ALTER TABLE chan_snapshot
     ADD COLUMN IF NOT EXISTS config_fingerprint VARCHAR;
 ALTER TABLE chan_stable_prefix
     ADD COLUMN IF NOT EXISTS config_fingerprint VARCHAR;
+
+-- 2026-11-08 chan-config-retire-zs-extend：下线 `bsp1_zs_extend_to_seg_end`
+--       （「中枢必须延伸到线段末尾」，macOS 机器上执行）
+-- 背景：它是 T1/T1P 的路由开关而非判据。开启后中枢未贴到线段末尾的 T1 候选会
+--       绕开趋势/新低/DIF/零轴四项标准判据，改走更松的盘整背驰（T1P）通道；
+--       实测 49 只日线 23 个成立一买 0 个被否定、反增 8 个，且同一个历史点的
+--       类型会随之后线段延伸从 T1 翻转为 T1P。故从配置面板删除、也从
+--       config_fingerprint.FINGERPRINT_KEYS 移除（归入 legacy 档由 bsp_preset 区分）。
+-- 代码侧兜底：chan_config_store._RETIRED_KEYS / _drop_retired() 在读取、
+--       校验、保存三个出口一律清除，因此本 SQL 只是把存量行也擦干净。
+-- 幂等：两处 jsonb 各减一个键，键不存在时语句为空操作。
+UPDATE chan_config SET overrides = overrides - 'bsp1_zs_extend_to_seg_end'
+ WHERE overrides ? 'bsp1_zs_extend_to_seg_end';
+UPDATE chan_config SET config = config - 'bsp1_zs_extend_to_seg_end'
+ WHERE config ? 'bsp1_zs_extend_to_seg_end';

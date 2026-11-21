@@ -1121,6 +1121,152 @@ def check_progress_feature(codes, full=True):
     return ok
 
 
+def check_entry_point(codes, full=True):
+    """第 11 节：介入点开关等价性（chan-entry-point-candidate task 6.1）。
+
+    三件事：
+      1. **开关全关 == 不传**：12 个 entry 键显式全关（False/层 1）与完全不传
+         这两个口径下，六类买卖点数量逐类一致——介入是独立信号层，默认关闭时
+         必须零影响。等价性只看**数量**是不够的，还要逐点比对成立集合
+         （code + bi.idx + type 集合）才算「不改成立性」。
+      2. **全开也不改成立性**：12 键全开（含方法1/方法2/层数 2）下六类成立
+         集合与全关完全一致。介入判定只写 feature，不得影响任何判据分支。
+      3. **feature 隔离**：全关时任何点的 features 不得含 entry_hit /
+         entry_method / entry_level 键；全开时命中点三键齐备（method ∈
+         {qjt, aux}，qjt 命中 level >= 1），未命中点无 entry_hit=True。
+         「未命中点不得携带旧命中残留」对应幂等清理（del_feat）语义——但单次
+         全量构建下不构成对清理路径的检验，仅作存在性口径的完整性验证。
+
+    注意：单级别构建（日线）下没有 sub_bs_point_lst，_annotate_entry_point
+    按设计直接返回（不注入任何键）——第 3 条的「全开命中点」只在多级别构建
+    里有意义，本节用 `_build_multi` 的多级别标的做命中口径检查（与第 8 节
+    复用同一份标的清单）。
+    """
+    section("11. 介入点开关等价性（chan-entry-point-candidate task 6.1）")
+
+    ENTRY_ON = {
+        "bsp1_entry": True, "bsp1_entry_qjt": True, "bsp1_entry_qjt_depth": 2,
+        "bsp1_entry_aux": True,
+        "bsp2_entry": True, "bsp2_entry_qjt": True, "bsp2_entry_qjt_depth": 2,
+        "bsp2_entry_aux": True,
+        "bsp3_entry": True, "bsp3_entry_qjt": True, "bsp3_entry_qjt_depth": 2,
+        "bsp3_entry_aux": True,
+    }
+    ENTRY_OFF = {k: (False if not k.endswith("_qjt_depth") else 1) for k in ENTRY_ON}
+
+    def point_set(**extra):
+        """{(code, bi.idx, frozenset(types))} —— 全级别成立集合（笔+线段）。"""
+        out = set()
+        for code in codes:
+            try:
+                kl = build(code, **extra)
+            except Exception as exc:
+                print(f"  [warn] {code}: {type(exc).__name__}: {exc}")
+                continue
+            for lst in (kl.bs_point_lst, kl.seg_bs_point_lst):
+                for point in lst.bsp_iter():
+                    out.add((code, point.bi.idx,
+                             frozenset(t.value for t in point.type)))
+        return out
+
+    ok = True
+
+    # ---- 1/2. 成立集合逐点比对：不传 vs 全关 vs 全开 ----
+    s_default = point_set(bsp_preset="standard")
+    s_off = point_set(bsp_preset="standard", **ENTRY_OFF)
+    s_on = point_set(bsp_preset="standard", **ENTRY_ON)
+    print(f"  点集规模：默认 {len(s_default)}  全关 {len(s_off)}  全开 {len(s_on)}")
+
+    if s_default != s_off:
+        print(f"  ✗ 全关 != 不传（差异 {len(s_default ^ s_off)} 点）——默认关闭路径有泄漏")
+        ok = False
+    else:
+        print("  ✓ 全关 == 不传（12 键显式全关与默认口径逐点一致）")
+    if s_off != s_on:
+        only_on = s_on - s_off
+        only_off = s_off - s_on
+        print(f"  ✗ 全开改变了成立集合（新增 {len(only_on)} / 消失 {len(only_off)}）——介入判定影响了成立性")
+        for item in sorted(only_on | only_off, key=str)[:5]:
+            print(f"      {item}")
+        ok = False
+    else:
+        print("  ✓ 全开 == 全关（介入判定不改成立性，逐点一致）")
+
+    # 计数口径（与其它节同格式打印，便于人工对读）
+    from collections import Counter
+    for label, s in (("默认", s_default), ("全关", s_off), ("全开", s_on)):
+        cnt = Counter()
+        for _, _, types in s:
+            for t in types:
+                if t in TYPE_SHORT.values():
+                    cnt[t] += 1
+        print(f"  {label} 计数: {fmt(cnt)}")
+
+    # ---- 3. feature 隔离：全关无键 / 多级别全开命中口径 ----
+    # 单级别（日线）：全关与全开都不得注入 entry 键（sub_bs_point_lst is None）
+    bad_off = bad_on_single = 0
+    for code in codes:
+        try:
+            kl_off = build(code, bsp_preset="standard", **ENTRY_OFF)
+            kl_on = build(code, bsp_preset="standard", **ENTRY_ON)
+        except Exception:
+            continue
+        for lst in (kl_off.bs_point_lst, kl_off.seg_bs_point_lst):
+            for point in lst.bsp_iter():
+                fd = dict(point.features.items())
+                if any(k in fd for k in ('entry_hit', 'entry_method', 'entry_level')):
+                    bad_off += 1
+        for lst in (kl_on.bs_point_lst, kl_on.seg_bs_point_lst):
+            for point in lst.bsp_iter():
+                fd = dict(point.features.items())
+                # 单级别构建下 sub 容器不存在，一律不应有键（含开关全开）
+                if any(k in fd for k in ('entry_hit', 'entry_method', 'entry_level')):
+                    bad_on_single += 1
+    if bad_off or bad_on_single:
+        print(f"  ✗ 单级别构建下 entry 键泄漏（全关 {bad_off} / 全开 {bad_on_single} 个点携带键）")
+        ok = False
+    else:
+        print("  ✓ 单级别构建零注入（无次级容器时按设计返回）")
+
+    multi = _qjt_multi_level_codes()
+    if multi:
+        tot_hit = 0
+        malformed = []
+        for code in multi:
+            try:
+                chan = _build_multi(code, **ENTRY_ON)
+            except Exception as exc:
+                print(f"  [warn] {code}: {type(exc).__name__}: {exc}")
+                continue
+            kl = chan[KL_TYPE.K_DAY]
+            for lst in (kl.bs_point_lst, kl.seg_bs_point_lst):
+                for point in lst.bsp_iter():
+                    fd = dict(point.features.items())
+                    if not fd.get('entry_hit'):
+                        continue
+                    tot_hit += 1
+                    m = fd.get('entry_method')
+                    lv = fd.get('entry_level')
+                    if m not in ('qjt', 'aux'):
+                        malformed.append((code, point.bi.idx, 'method', m))
+                    elif m == 'qjt' and (not isinstance(lv, int) or lv < 1):
+                        malformed.append((code, point.bi.idx, 'level', lv))
+                    elif m == 'aux' and lv is not None:
+                        malformed.append((code, point.bi.idx, 'aux_level', lv))
+        if malformed:
+            print(f"  ✗ 多级别构建下命中点 method/level 口径异常（{len(malformed)} 例，前 5 个）：")
+            for item in malformed[:5]:
+                print(f"      {item}")
+            ok = False
+        else:
+            suffix = f"（命中 {tot_hit} 个，method/level 口径全部合法）" if tot_hit \
+                else "（命中 0 个：本池多级别样本少，判定正确性由 Debug/entry_point_synth.py 逐条断言）"
+            print(f"  ✓ 多级别全开命中口径合法{suffix}")
+    else:
+        print("  （库内无多级别标的——命中口径由 Debug/entry_point_synth.py 覆盖）")
+    return ok
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--quick', action='store_true', help='只跑前 12 只股票')
@@ -1157,6 +1303,7 @@ def main():
     ok &= check_qjt_contrast(codes, full=full)
     ok &= check_progress_feature(codes, full=full)
     ok &= check_pz_force_scope(codes, full=full)
+    ok &= check_entry_point(codes, full=full)
 
     section("结论")
     print("✓ 全部检查通过" if ok else "✗ 存在不一致，见上文")

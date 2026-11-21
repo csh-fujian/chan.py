@@ -35,25 +35,68 @@
         </span>
         <span class="bsp-ladder-tip__types mono">{{ bspLadderTip.typesLabel }}</span>
       </div>
+
+      <!-- 主结论（chan-bsp-grading）：用户扫一眼就要能判断「能不能买」。
+           内部编号（L2 / P2 …）留在上一行作辅助，这里给强度分 + 白话结论。
+           未确认的点必须显式说明「还不能动手」并给出卡在哪一步，
+           否则用户看到买点标记就以为可以进场。 -->
+      <div
+        v-if="bspLadderTip.grade"
+        class="bsp-tip-grade"
+        :class="`is-${gradeTone(bspLadderTip.grade.score)}`"
+      >
+        <div class="bsp-tip-grade__score">
+          <span class="bsp-tip-grade__num mono">{{ bspLadderTip.grade.score }}</span>
+          <span class="bsp-tip-grade__unit">/100</span>
+          <span class="bsp-tip-grade__qual">{{ bspLadderTip.grade.grade }}</span>
+        </div>
+        <div class="bsp-tip-grade__advice">{{ bspLadderTip.grade.advice }}</div>
+        <div v-if="!bspLadderTip.grade.confirmed && bspLadderTip.grade.blocked_by" class="bsp-tip-grade__blocked">
+          <span class="bsp-tip-grade__warn">⚠ {{ bspLadderTip.grade.score >= 60 ? '待确认' : '未成立' }}</span>
+          <span>{{ bspLadderTip.grade.blocked_by }}</span>
+        </div>
+        <div v-if="bspLadderTip.grade.disclaimer" class="bsp-tip-grade__disc">
+          {{ bspLadderTip.grade.disclaimer }}
+        </div>
+      </div>
+
+      <!-- 介入点候选（chan-entry-point-candidate 5.4）：暂时性语义——
+           随数据推进会翻转，最终可能不再命中 -->
+      <div v-if="bspLadderTip.entry" class="bsp-ladder-tip__row is-entry">
+        <span class="bsp-ladder-tip__lv mono">介</span>
+        <span class="bsp-ladder-tip__name">
+          介入点候选 · {{ bspLadderTip.entryMethod === 'qjt' ? '区间套递归' : '辅助确认'
+          }}{{ bspLadderTip.entryMethod === 'qjt' && bspLadderTip.entryLevel
+            ? `（${bspLadderTip.entryLevel} 层）` : '' }}
+        </span>
+        <span class="bsp-ladder-tip__pos">候选</span>
+      </div>
       <!-- 三轴区块（chan-bsp-ladder-change）：每个已达成的轴一行，
-           未达成的轴不展示（证据缺席比「明确没有」更准确）。 -->
+           未达成的轴不展示（证据缺席比「明确没有」更准确）。
+           轴名与档名已改为白话（小级别印证 / 反转力度 / 初步成形…），
+           编号留在左侧徽章里作辅助标识。 -->
       <div class="bsp-ladder-tip__rows">
         <div
           v-for="info in ladderInfosOf(bspLadderTip.ladder)"
           :key="info.level"
           class="bsp-ladder-tip__row is-current"
+          :title="info.desc"
         >
           <span class="bsp-ladder-tip__lv mono">{{ info.level }}</span>
           <span class="bsp-ladder-tip__name">{{ info.axis }} · {{ info.name }}</span>
-          <span class="bsp-ladder-tip__pos">{{ info.kind === 'confirmed' ? ladderPosition(parseLadder(bspLadderTip.ladder), bspLadderTip.isBuy) : '' }}</span>
+          <span class="bsp-ladder-tip__pos">{{ info.kind === 'confirmed' ? '已成立' : '' }}</span>
         </div>
         <div v-if="!bspLadderTip.ladder" class="bsp-ladder-tip__row is-current">
           <span class="bsp-ladder-tip__lv mono">--</span>
-          <span class="bsp-ladder-tip__name">未定级（非一买类型本次未接入新阶梯，或不可评估）</span>
+          <span class="bsp-ladder-tip__name">无评估数据（该类买卖点暂不做证据分级，或数据不足）</span>
           <span class="bsp-ladder-tip__pos">--</span>
         </div>
       </div>
-      <div class="bsp-ladder-tip__note">{{ LADDER_ORDER_NOTE }}</div>
+      <div class="bsp-ladder-tip__note">
+        {{ bspLadderTip.entry
+          ? '介入点为暂时性标记：随行情推进可能翻转（最终不再命中），历史已确认段不标注。'
+          : LADDER_ORDER_NOTE }}
+      </div>
     </div>
   </div>
 </template>
@@ -91,10 +134,13 @@ import {
   type ChanSegMeta,
 } from '@/components/chan'
 import {
+  gradeSummary,
+  gradeTone,
   ladderInfos,
   ladderPosition,
   parseLadder,
   LADDER_ORDER_NOTE,
+  type BspGrade,
   type LadderInfo,
 } from '@/utils/bspLadder'
 import {
@@ -183,11 +229,18 @@ interface BspLadderTip {
   left: number
   /** 三轴组合串（`L2|L2-3|L3-2`）或 `L4` 或 null（未定级） */
   ladder: string | null
+  /** 用户可读分级（chan-bsp-grading）：tooltip 顶部的主结论 */
+  grade?: BspGrade | null
   isBuy: boolean
   typesLabel: string
+  /** 介入点候选（chan-entry-point-candidate 5.4）：true 时展示暂时性语义说明行 */
+  entry?: boolean
+  /** 'qjt' 区间套递归 / 'aux' 辅助确认 */
+  entryMethod?: string | null
+  entryLevel?: number | null
 }
 const bspLadderTip = ref<BspLadderTip>({
-  show: false, top: 0, left: 0, ladder: null, isBuy: true, typesLabel: '',
+  show: false, top: 0, left: 0, ladder: null, grade: null, isBuy: true, typesLabel: '',
 })
 
 /** 级别 → 徽章色（chan-bsp-ladder-change：按轴分色，与买卖点页级别列一致） */
@@ -209,28 +262,40 @@ function ladderInfosOf(ladder: string | null): LadderInfo[] {
 /** 估算浮层尺寸（定宽 + 估算高：头部 + 4 行 + 脚注），用于越界翻转 */
 const TIP_WIDTH = 300
 const TIP_HEIGHT = 210
+/**
+ * 主结论区块（chan-bsp-grading）的额外高度：分数行 + 建议 + 卡点 + 免责 ≈ 96px。
+ * 不加这一档，带 grade 的浮层在原估算高度外还有内容，越界翻转算不准，
+ * 靠近图底部的买卖点会被浮层挡到屏幕外。
+ */
+const TIP_GRADE_EXTRA = 96
 /** 浮层与鼠标的间隙 */
 const TIP_GAP = 14
 
 /** figure 命中 → 展示浮层（位置贴鼠标右上；右缘/下缘越界翻转） */
 function showBspLadderTip(meta: ChanBspMeta, x: number, y: number): void {
-  const label = chanBspLabel(meta.types, meta.isBuy)
+  const label = chanBspLabel(meta.types, meta.isBuy, meta.entry)
+  const tipH = TIP_HEIGHT + (meta.grade ? TIP_GRADE_EXTRA : 0)
   let left = x + TIP_GAP
-  let top = y - TIP_HEIGHT / 2
+  let top = y - tipH / 2
   // 容器宽高未知时用 chart DOM 兜底；右缘越界翻到鼠标左侧
   const wrapW = chartRef.value?.clientWidth ?? 0
   const wrapH = chartRef.value?.clientHeight ?? 0
   if (wrapW > 0 && left + TIP_WIDTH > wrapW) left = x - TIP_WIDTH - TIP_GAP
   if (top < 4) top = 4
-  if (wrapH > 0 && top + TIP_HEIGHT > wrapH - 4) top = Math.max(4, wrapH - TIP_HEIGHT - 4)
+  if (wrapH > 0 && top + tipH > wrapH - 4) top = Math.max(4, wrapH - tipH - 4)
   bspLadderTip.value = {
     show: true,
     top,
     left,
     // 原样传组合串：模板用 ladderInfosOf 逐轴展开（chan-bsp-ladder-change）
     ladder: meta.ladder ?? null,
+    grade: meta.grade ?? null,
     isBuy: meta.isBuy,
     typesLabel: label,
+    // 介入点候选（chan-entry-point-candidate 5.4）：暂时性语义说明行
+    entry: meta.entry,
+    entryMethod: meta.entryMethod,
+    entryLevel: meta.entryLevel,
   }
 }
 
@@ -376,6 +441,12 @@ function rebuildBspOverlays(): void {
     low: number
     /** 确认阶梯级别（bsp-ladder-change 3.1）：保留不再丢弃；缺失 = 未定级 */
     ladder?: string
+    /** 用户可读分级（chan-bsp-grading）：强度分 / 强弱 / 操作建议 / 卡在哪 */
+    grade?: BspGrade
+    /** 介入点候选（chan-entry-point-candidate 5.2）：三字段透传（tooltip 用） */
+    entry?: boolean
+    entryMethod?: string | null
+    entryLevel?: number | null
   }
   const chanMarks: BspMark[] = []
   let chanDropped = 0
@@ -395,6 +466,10 @@ function rebuildBspOverlays(): void {
       low: bar.low,
       // 组合串原样透传（chan-bsp-ladder-change）；非法值置 undefined → 未定级兜底
       ladder: b.ladder && ladderInfos(b.ladder).length ? b.ladder : undefined,
+      grade: b.grade ?? undefined,
+      entry: b.entry ?? false,
+      entryMethod: b.entry_method,
+      entryLevel: b.entry_level,
     })
   }
 
@@ -446,7 +521,7 @@ function rebuildBspOverlays(): void {
       const stackIndex = stackCnt.get(key) ?? 0
       stackCnt.set(key, stackIndex + 1)
       // 共存时右移半个框宽 + 2px，与虚拟标记并排（任务 4.3）
-      const { width } = bspBoxSize(chanBspLabel(m.types, m.isBuy))
+      const { width } = bspBoxSize(chanBspLabel(m.types, m.isBuy, m.entry))
       const xOffset = coexistBars.has(m.barTs) ? width / 2 + 2 : 0
       bspPoints.push({ timestamp: m.barTs, value: m.v })
       bspMeta.push({
@@ -458,6 +533,10 @@ function rebuildBspOverlays(): void {
         stackIndex,
         xOffset,
         ladder: m.ladder,
+        grade: m.grade,
+        entry: m.entry,
+        entryMethod: m.entryMethod,
+        entryLevel: m.entryLevel,
       })
     }
     chart.createOverlay({
@@ -539,7 +618,7 @@ function rebuildAllOverlays(): void {
       const biPoints: Array<{ timestamp: number; value: number }> = []
       const biMeta: ChanBiMeta[] = []
       for (const b of result.bi) {
-        biMeta.push({ startIndex: biPoints.length, isSure: b.is_sure })
+        biMeta.push({ startIndex: biPoints.length, isSure: b.is_sure, isDivergence: b.is_divergence })
         biPoints.push({ timestamp: b.begin.t, value: b.begin.v })
         biPoints.push({ timestamp: b.end.t, value: b.end.v })
       }
@@ -558,7 +637,7 @@ function rebuildAllOverlays(): void {
       const segPoints: Array<{ timestamp: number; value: number }> = []
       const segMeta: ChanSegMeta[] = []
       for (const s of result.seg) {
-        segMeta.push({ startIndex: segPoints.length, isSure: s.is_sure })
+        segMeta.push({ startIndex: segPoints.length, isSure: s.is_sure, isDivergence: s.is_divergence })
         segPoints.push({ timestamp: s.begin.t, value: s.begin.v })
         segPoints.push({ timestamp: s.end.t, value: s.end.v })
       }
@@ -1098,6 +1177,18 @@ defineExpose({
 .bsp-ladder-tip__row.is-current .bsp-ladder-tip__pos {
   color: var(--text-primary);
 }
+/* 介入点候选行（chan-entry-point-candidate 5.4）：警示色区分暂时性标记 */
+.bsp-ladder-tip__row.is-entry {
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.bsp-ladder-tip__row.is-entry .bsp-ladder-tip__lv {
+  color: var(--warning);
+}
+.bsp-ladder-tip__row.is-entry .bsp-ladder-tip__pos {
+  color: var(--warning);
+}
 .bsp-ladder-tip__sub {
   padding: 4px 6px;
   color: var(--warning);
@@ -1108,5 +1199,77 @@ defineExpose({
   border-top: 1px solid var(--border-base);
   color: var(--text-disabled);
   font-size: 11px;
+}
+
+/* ---- 主结论区块（chan-bsp-grading）--------------------------------------
+   放在编号行与轴明细之间：用户先读「几分 / 能不能买 / 卡在哪」，再往下看
+   具体哪些证据成立。左侧色条按强度分档，扫一眼就能分流。 */
+.bsp-tip-grade {
+  margin: 8px 0 2px;
+  padding: 7px 9px 8px;
+  border-radius: 6px;
+  border-left: 3px solid var(--border-strong);
+  background: var(--bg-surface-hover);
+}
+/* 分档色条：与 gradeTone() 的五档一一对应 */
+.bsp-tip-grade.is-strong { border-left-color: var(--rise); }
+.bsp-tip-grade.is-good   { border-left-color: color-mix(in srgb, var(--rise) 62%, var(--warning)); }
+.bsp-tip-grade.is-mid    { border-left-color: var(--warning); }
+.bsp-tip-grade.is-weak   { border-left-color: color-mix(in srgb, var(--warning) 55%, var(--fall)); }
+.bsp-tip-grade.is-poor   { border-left-color: var(--fall); }
+
+.bsp-tip-grade__score {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  margin-bottom: 3px;
+}
+.bsp-tip-grade__num {
+  font-size: 19px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text-primary);
+}
+.bsp-tip-grade__unit {
+  font-size: 10.5px;
+  color: var(--text-secondary);
+}
+.bsp-tip-grade__qual {
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+  background: var(--bg-base);
+}
+
+.bsp-tip-grade__advice {
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* 未成立时显式警告：用户看到买点标记最容易误以为可以进场 */
+.bsp-tip-grade__blocked {
+  display: flex;
+  gap: 5px;
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px dashed var(--border-base);
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.bsp-tip-grade__warn {
+  flex: 0 0 auto;
+  color: var(--warning);
+  font-weight: 600;
+}
+
+.bsp-tip-grade__disc {
+  margin-top: 4px;
+  color: var(--text-disabled);
+  font-size: 10px;
 }
 </style>
