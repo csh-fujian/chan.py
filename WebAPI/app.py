@@ -18,6 +18,7 @@ from .routers import (
     bsp,
     chan_config,
     monitor,
+    pattern,
     performance,
     qa,
     screener,
@@ -249,3 +250,4 @@ app.include_router(alerts.router)
 app.include_router(system.router)
 app.include_router(qa.router)
 app.include_router(chan_config.router)
+app.include_router(pattern.router)

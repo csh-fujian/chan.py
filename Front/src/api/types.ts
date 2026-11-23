@@ -168,6 +168,8 @@ export interface ChanResult {
   zs: ZS[]
   seg_zs: ZS[]
   bsp: BspPoint[]
+  /** 形态信号（chan-pattern-buy-signal 任务 4.2）：后端现算，可能缺失（旧后端兼容） */
+  pattern?: import('./modules/pattern').KlinePatternItem[]
 }
 
 // ---------------------------------------------------------------------------

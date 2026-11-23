@@ -233,3 +233,48 @@ ALTER TABLE bsp_index ADD COLUMN IF NOT EXISTS entry_level INTEGER;
 --       正是为了区分「未评估」与「0 分」）。
 ALTER TABLE bsp_index ADD COLUMN IF NOT EXISTS grade_score SMALLINT;
 ALTER TABLE bsp_index ADD COLUMN IF NOT EXISTS grade_qual VARCHAR(8);
+
+-- 2026-11-22 chan-pattern-buy-signal：新建形态信号表 pattern_signal（Windows 机器上执行）
+-- 背景：8 个底部起涨形态（W底/头肩底/箱体/三角/旗形/V型/圆弧底/杯柄）的
+--       检测结果落 PG，供查询接口与前端展示。
+--       只落**稳定**字段：分数/档位/参考线/失效标记/detail JSONB（关键点与
+--       量比数据）；注意事项/建议/评分明细等文案由读取侧按当前口径现算
+--       （pattern_meta.PATTERN_META），不落库。
+--       score/qual 为 NULL = 未评估的存量行，前端按「未评估」处理，不猜分数。
+-- 幂等：CREATE TABLE IF NOT EXISTS + CREATE INDEX IF NOT EXISTS，重复执行不报错。
+CREATE TABLE IF NOT EXISTS pattern_signal (
+    code VARCHAR(32) NOT NULL,
+    kl_type VARCHAR(16) NOT NULL,
+    autype VARCHAR(16) NOT NULL DEFAULT 'QFQ',
+    pattern_type VARCHAR(32) NOT NULL,
+    pattern_date VARCHAR(10) NOT NULL,
+    confirm_time_key VARCHAR(32) NOT NULL,
+    price DOUBLE PRECISION,
+    ref_line_high DOUBLE PRECISION,
+    ref_line_low DOUBLE PRECISION,
+    score SMALLINT,
+    qual VARCHAR(8),
+    invalid BOOLEAN NOT NULL DEFAULT FALSE,
+    veto VARCHAR(32),
+    detail JSONB,
+    updated_at TIMESTAMP DEFAULT NOW(),
+    CONSTRAINT pk_pattern_signal UNIQUE
+        (code, kl_type, autype, pattern_type, confirm_time_key)
+);
+CREATE INDEX IF NOT EXISTS idx_pattern_signal_query
+    ON pattern_signal (pattern_type, kl_type, pattern_date);
+CREATE INDEX IF NOT EXISTS idx_pattern_signal_code
+    ON pattern_signal (code, kl_type);
+
+-- 2026-11-22 chan-pattern-sell-signal: pattern_signal 加 direction 列（买/卖方向维度，存量行回填 'buy'）
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'pattern_signal' AND column_name = 'direction'
+    ) THEN
+        ALTER TABLE pattern_signal
+            ADD COLUMN direction VARCHAR(4) NOT NULL DEFAULT 'buy';
+    END IF;
+END
+$$;

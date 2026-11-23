@@ -128,11 +128,16 @@ import {
   bspBoxSize,
   vBspRadius,
   setChanBspHoverHooks,
+  setChanPatternClickHooks,
+  setChanSellPatternClickHooks,
   type ChanBspMeta,
   type ChanVBspMeta,
   type ChanBiMeta,
   type ChanSegMeta,
+  type ChanPatternMeta,
+  type ChanSellPatternMeta,
 } from '@/components/chan'
+import type { KlinePatternItem } from '@/api/modules/pattern'
 import {
   gradeSummary,
   gradeTone,
@@ -388,7 +393,8 @@ function updateVolConfigBtn(): void {
 /** 移除全部缠论覆盖层（按 name 匹配；切周期/股票、加载失败、主题切换时调用） */
 function clearChanOverlays(): void {
   if (!chart) return
-  const names = ['chan_bi', 'chan_seg', 'chan_zs', 'chan_bsp', 'chan_vbsp'] as const
+  // chan_sell_pattern：顶部形态信号（chan-pattern-sell-signal 任务 3.2）
+  const names = ['chan_bi', 'chan_seg', 'chan_zs', 'chan_bsp', 'chan_vbsp', 'chan_pattern', 'chan_sell_pattern'] as const
   for (const name of names) {
     chart.removeOverlay({ name })
   }
@@ -577,6 +583,121 @@ function rebuildBspOverlays(): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 形态信号覆盖层（chan-pattern-buy-signal 任务 5.2/5.3）
+// ---------------------------------------------------------------------------
+
+/** 最近一次 rebuild 的形态弹窗上下文（点击标签 → 弹注意事项） */
+export interface PatternTipItem {
+  name: string
+  type: string
+  score: number
+  qual: string
+  invalid: boolean
+  cautions: string[]
+  confirmTime: string
+  volumeRatio: number
+}
+
+/** 模式匹配完的形态标记（吸附到 bar 时间戳） */
+interface PatternMark {
+  item: KlinePatternItem
+  beginTs: number
+  confirmTs: number
+  keyPts: { timestamp: number; value: number }[]
+}
+
+/** 形态点击回调 → 父组件弹注意事项弹窗（任务 5.3） */
+const emitPatternClick = defineEmits<{ patternClick: [tip: PatternTipItem] }>()
+
+function rebuildPatternOverlay(): void {
+  if (!chart) return
+  chart.removeOverlay({ name: 'chan_pattern' })
+  chart.removeOverlay({ name: 'chan_sell_pattern' })
+  const result = lastResult
+  const patterns = result?.pattern
+  if (!result || !patterns || patterns.length === 0) return
+
+  const idxByTs = new Map<number, number>()
+  result.klines.forEach((k, i) => idxByTs.set(k.timestamp, i))
+  const tsByIdx = result.klines.map((k) => k.timestamp)
+
+  // 按 direction 分流（chan-pattern-sell-signal 任务 3.3）：
+  // buy → chan_pattern（买点形态 overlay），sell → chan_sell_pattern（独立卖点 overlay）
+  const buyMarks: PatternMark[] = []
+  const sellMarks: PatternMark[] = []
+  for (const p of patterns) {
+    // key_points/struct 端点用原始 K 线下标 → 时间戳（越界丢弃该点）
+    const beginTs = tsByIdx[p.struct_begin_idx]
+    const confirmTs = tsByIdx[p.confirm_idx]
+    if (beginTs === undefined || confirmTs === undefined) continue
+    const keyPts: { timestamp: number; value: number }[] = []
+    for (const kp of p.key_points ?? []) {
+      const ts = tsByIdx[kp.idx]
+      if (ts !== undefined) keyPts.push({ timestamp: ts, value: kp.price })
+    }
+    const mark: PatternMark = { item: p, beginTs, confirmTs, keyPts }
+    if (p.direction === 'sell') sellMarks.push(mark)
+    else buyMarks.push(mark)
+  }
+
+  // 每个形态信号独立创建一个 overlay 实例：chan_pattern/chan_sell_pattern 的
+  // createPointFigures/onClick 都是单 meta 语义（extendData=单个 meta，只画
+  // coordinates[0..1+keyCount)）。此前把全部信号合并进一个实例（points 数组 +
+  // extendData 数组），createPointFigures 只消费 coordinates[0..1]——整份信号
+  // 只画出了第一个（1990 年的画面外），图上完全看不到任何形态标识。
+  // klinecharts 的 overlay points 是「该实例自己的点列」，不存在跨实例共享偏移。
+  const build = (marks: PatternMark[], overlayName: string) => {
+    for (const m of marks) {
+      const pts: Array<{ timestamp: number; value: number }> = [
+        { timestamp: m.beginTs, value: m.item.ref_line_low },
+        { timestamp: m.confirmTs, value: m.item.ref_line_high },
+        ...m.keyPts,
+      ]
+      const meta: ChanPatternMeta & ChanSellPatternMeta = {
+        name: m.item.name,
+        type: m.item.type,
+        startIndex: 0,
+        keyCount: m.keyPts.length,
+        score: m.item.score,
+        qual: m.item.qual,
+        invalid: m.item.invalid,
+        isNew: m.item.is_new,
+        label: `${m.item.name} ${m.item.score}`,
+      }
+      chart!.createOverlay({
+        name: overlayName,
+        lock: true,
+        points: pts,
+        extendData: meta,
+      })
+    }
+  }
+  build(buyMarks, 'chan_pattern')
+  build(sellMarks, 'chan_sell_pattern')
+}
+
+/** 形态标签点击（chan_pattern onClick 钩子）→ emit 给父组件弹注意事项弹窗 */
+function onPatternFigureClick(meta: ChanPatternMeta, _x: number, _y: number): void {
+  const result = lastResult
+  const p = result?.pattern?.find((x) => x.type === meta.type && x.score === meta.score)
+  emitPatternClick('patternClick', {
+    name: meta.name,
+    type: meta.type,
+    score: meta.score,
+    qual: meta.qual,
+    invalid: meta.invalid,
+    cautions: p?.cautions ?? [],
+    confirmTime: p?.confirm_time ?? '',
+    volumeRatio: p?.volume_ratio ?? 0,
+  })
+}
+
+/** 卖点形态标签点击（chan_sell_pattern onClick 钩子）→ 复用同一弹窗（字段一致） */
+function onSellPatternFigureClick(meta: ChanSellPatternMeta, _x: number, _y: number): void {
+  onPatternFigureClick(meta as ChanPatternMeta, _x, _y)
+}
+
 /**
  * 同步 BOLL 副图的 sub_candle 蜡烛覆盖层（kline-chart-change D4 / 任务 2.3）。
  * BOLL 副图存在时按当前图表数据重建蜡烛柱，否则移除 —— 与 BOLL pane 生命周期
@@ -676,9 +797,11 @@ function rebuildAllOverlays(): void {
   }
 
   // 买卖点 + 虚拟买卖点覆盖层（kline-chart-change D5/D6）：同批重建
-  //（共存左右排布需要同时拿到双方标记），meta 携带所在 K 线 high/low、
-  // 同 bar 同向堆叠序号与共存 x 偏移
+  //（共存左右排布需要同时拿到双方标记），meta 携带所在 K 线 key_points/确认时间戳
   rebuildBspOverlays()
+
+  // 形态信号覆盖层（chan-pattern-buy-signal 任务 5.2）：参考线/关键点/标签/新信号徽标
+  rebuildPatternOverlay()
 
   // BOLL 副图蜡烛柱（sub_candle）同步重建（syncSubCandle 内部先清后建）
   syncSubCandle()
@@ -766,7 +889,7 @@ function initChart(): void {
     if (!initialLoadDone) return
     // 只有向前/向后滚动才触发增量加载，初始化时不触发
     if (type === LoadDataType.Init) return
-    if (!props.code || !props.period) return
+    if (!props.code || !props.period || !chart) return
     try {
       // 使用当前数据中最早的 timestamp 作为分页游标
       const earliest = data?.timestamp ?? 0
@@ -775,17 +898,26 @@ function initChart(): void {
         callback([])
         return
       }
-      const extra: KLineData[] = result.klines.map((k) => ({
-        timestamp: k.timestamp,
-        open: k.open,
-        high: k.high,
-        low: k.low,
-        close: k.close,
-        volume: k.volume,
-      }))
+      // 去除图中已有时间戳（防重复灌入导致 overlay 划线与蜡烛错位）：
+      // klinecharts addData 的 Forward/Backward 分支是 concat 不去重，后端
+      // end 游标返回「<= end」的区间与图中已有数据重叠；重复时间戳会破坏
+      // overlay 端点 binarySearchNearest(timestamp) 定位与蜡烛下标的一致性，
+      // 造成缠论划线整体偏移（每触发一次加载偏移累积一次）。Backward 时
+      // 后端可能连最新一根都一并返回，同样必须过滤。
+      const existing = new Set(chart.getDataList().map((k) => k.timestamp))
+      const extra: KLineData[] = result.klines
+        .filter((k) => !existing.has(k.timestamp))
+        .map((k) => ({
+          timestamp: k.timestamp,
+          open: k.open,
+          high: k.high,
+          low: k.low,
+          close: k.close,
+          volume: k.volume,
+        }))
       callback(extra)
       // 增量加载的更早 K 线并入图例序列（悬停读数/前收覆盖扩展后的数据，kline-chart-change 5.1）
-      mergeLegendSeries(result.klines)
+      mergeLegendSeries(result.klines.filter((k) => !existing.has(k.timestamp)))
       // 增量加载后重建 BOLL 副图蜡烛柱（BOLL 指标会随数据自动重算，蜡烛需同步）
       syncSubCandle()
     } catch {
@@ -801,6 +933,11 @@ function initChart(): void {
     onEnter: (meta, pos) => showBspLadderTip(meta, pos.x, pos.y),
     onLeave: () => hideBspLadderTip(),
   })
+
+  // 形态标签点击钩子注入（chan-pattern-buy-signal 任务 5.3）：chan_pattern onClick → emit
+  setChanPatternClickHooks({ onPatternClick: onPatternFigureClick })
+  // 卖点形态点击钩子注入（chan-pattern-sell-signal 任务 3.2）：独立 hooks，独立弹窗路径
+  setChanSellPatternClickHooks({ onSellPatternClick: onSellPatternFigureClick })
 
   // 图例订阅：onCrosshairChange + 容器 mouseleave（悬停/回退最新，kline-chart-change 5.1）
   if (chartRef.value) {
@@ -901,10 +1038,60 @@ onMounted(() => {
       if (!rect || rect.width === 0 || rect.height === 0) return
       chart?.resize()
       scheduleVolBtnUpdate()
+      // canvas 物理尺寸守护（见 fixCanvasBackingStore）：RO 回调时序竞争下
+      // overlay canvas 的 backing store 可能停在旧尺寸，需延迟到 RO 交付后再校验
+      scheduleCanvasGuard()
     })
     resizeObserver.observe(chartRef.value)
   }
 })
+
+/**
+ * klinecharts 9.8.12 canvas backing store 竞争兜底（dpr≠1 环境必现）。
+ *
+ * klinecharts 的 Canvas 类在支持 device-pixel-content-box 的浏览器上把物理
+ * 尺寸交给内部 ResizeObserver 维护：RO 回调把新尺寸写入 _nextPixelWidth/Height
+ * 后经 _executeListener 的 requestAnimationFrame 去重执行 _resetPixelRatio。
+ * 容器缩放时两次 RO 回调相邻到达，第二次的修正会被 pending 的 RAF 吞掉，且
+ * 事后不再有 resize 事件补救 → overlay canvas 的 element.height 锁死在旧值，
+ * 内容被垂直压扁/拉伸 → 缠论划线与 K 线柱错位、悬浮命中区失效。
+ * （实测仅 overlay 高频重建的 candle pane 中招，vol/macd pane 正常。）
+ *
+ * 这里在容器 resize / 页面复活后延迟校验每个 pane canvas 的物理尺寸与
+ * CSS×dpr 是否一致，不一致强制写入正确尺寸并触发重绘。
+ */
+function scheduleCanvasGuard(): void {
+  // 双 rAF 覆盖 RO 交付时机 + 60ms 兜底（部分浏览器 RO 交付晚于两帧）
+  requestAnimationFrame(() => requestAnimationFrame(fixCanvasBackingStore))
+  window.setTimeout(fixCanvasBackingStore, 60)
+}
+
+function fixCanvasBackingStore(): void {
+  const c = chart as unknown as {
+    _drawPanes?: unknown[]
+    _candlePane?: unknown
+    _xAxisPane?: unknown
+  } | null
+  if (!c) return
+  const dpr = window.devicePixelRatio || 1
+  const panes = [...(c._drawPanes ?? []), c._candlePane, c._xAxisPane]
+  for (const pane of panes) {
+    const mw = (pane as { _mainWidget?: { _mainCanvas?: any; _overlayCanvas?: any } | null })?._mainWidget
+    for (const canvas of [mw?._mainCanvas, mw?._overlayCanvas]) {
+      const el = canvas?._element as HTMLCanvasElement | undefined
+      if (!el) continue
+      const rect = el.getBoundingClientRect()
+      if (rect.width === 0 || rect.height === 0) continue // display:none（KeepAlive 隐藏）跳过
+      const expW = Math.round(rect.width * dpr)
+      const expH = Math.round(rect.height * dpr)
+      if (el.width !== expW || el.height !== expH) {
+        canvas._nextPixelWidth = expW
+        canvas._nextPixelHeight = expH
+        canvas._resetPixelRatio()
+      }
+    }
+  }
+}
 
 // 页面缓存复活（design.md D10）：按创建时的固定高度逐个断言副图 pane
 // （任何隐藏期测量路径把高度压扁后，这里都可恢复），再按当前可见尺寸整体重排
@@ -915,6 +1102,7 @@ onActivated(() => {
   }
   chart.resize()
   scheduleVolBtnUpdate()
+  scheduleCanvasGuard()
 })
 
 watch(
@@ -974,6 +1162,9 @@ watch(virtualBsp, () => {
 onBeforeUnmount(() => {
   // 阶梯 hover 钩子移除（bsp-ladder-change D5）
   setChanBspHoverHooks(null)
+  // 形态点击钩子移除（chan-pattern-buy-signal 任务 5.3）
+  setChanPatternClickHooks(null)
+  setChanSellPatternClickHooks(null)
   hideBspLadderTip()
   // 图例订阅清理（subscribeAction / mouseleave；kline-chart-change 5.1）
   detachLegend()

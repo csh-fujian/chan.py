@@ -333,4 +333,60 @@ def serialize_chan(chan: CChan, kl_type: KL_TYPE, sub_chan: CChan = None, sub_kl
             kl_type=kl_type, sub_kl_type=sub_kl_type,
             sub_bs_point_lst=sub_bs_point_lst, sub_kl=sub_kl,
         ),
+        "pattern": _serialize_pattern(kl_list),
     }
+
+# ---------------------------------------------------------------------------
+# 形态信号序列化（chan-pattern-buy-signal 任务 4.2）
+# ---------------------------------------------------------------------------
+
+# 「新信号」时效：确认时间在最近 M 根 K 线内的信号显示醒目提示（design D5）。
+# 检测窗口不受此限制——M 只控制提示时效。
+PATTERN_NEW_BARS = 5
+
+
+def _serialize_pattern(kl_list) -> list:
+    """对当前 chan 的 (bi_list, K线) 现算形态检测 → pattern[]（降级路径：
+    无 PG/无落库也能展示）。失败返回空数组，不阻断 klines 响应。"""
+    try:
+        from .pattern_detector import run_detection, _klus
+        from .pattern_meta import PATTERN_META
+
+        candles = _klus(kl_list)
+        n = len(candles)
+        if n == 0:
+            return []
+        hits = run_detection(kl_list.bi_list, kl_list)
+        new_boundary = n - PATTERN_NEW_BARS  # confirm_idx >= 此值 → is_new
+        out = []
+        for h in hits:
+            if not h.breakout.confirmed or h.breakout.confirm_idx is None:
+                continue  # 未确认的候选不上图（spec：确认信号才提示）
+            meta = PATTERN_META.get(h.pattern_type, {})
+            ci = h.breakout.confirm_idx
+            out.append({
+                "type": h.pattern_type,
+                "direction": h.direction,
+                "name": meta.get("name", h.pattern_type),
+                "confirm_idx": ci,
+                "confirm_time": candles[ci].time.toDateStr("-") if ci < n else "",
+                "price": float(candles[ci].close) if ci < n else 0.0,
+                "ref_line_high": float(max(h.ref_line)),
+                "ref_line_low": float(min(h.ref_line)),
+                "key_points": h.key_points,
+                "struct_begin_idx": h.struct_begin_idx,
+                "struct_end_idx": h.struct_end_idx,
+                "score": h.score,
+                "qual": h.qual,
+                "invalid": bool(h.breakout.invalidated),
+                "veto": h.veto,
+                "volume_ratio": h.breakout.volume_ratio,
+                "is_new": ci >= new_boundary and not h.breakout.invalidated,
+                "cautions": meta.get("cautions", []),
+            })
+        return out
+    except Exception:
+        import logging
+
+        logging.getLogger("serializer").exception("形态序列化失败（返回空）")
+        return []

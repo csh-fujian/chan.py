@@ -56,3 +56,42 @@ UPDATE chan_config SET overrides = overrides - 'bsp1_zs_extend_to_seg_end'
  WHERE overrides ? 'bsp1_zs_extend_to_seg_end';
 UPDATE chan_config SET config = config - 'bsp1_zs_extend_to_seg_end'
  WHERE config ? 'bsp1_zs_extend_to_seg_end';
+
+-- 2026-11-22 chan-pattern-buy-signal：新建形态信号表 pattern_signal（Windows 机器上产生的变更，mac 侧同步执行）
+-- 说明同 update-win.sql 同日条目：惰性 DDL 的变更记录，幂等可重复执行。
+CREATE TABLE IF NOT EXISTS pattern_signal (
+    code VARCHAR(32) NOT NULL,
+    kl_type VARCHAR(16) NOT NULL,
+    autype VARCHAR(16) NOT NULL DEFAULT 'QFQ',
+    pattern_type VARCHAR(32) NOT NULL,
+    pattern_date VARCHAR(10) NOT NULL,
+    confirm_time_key VARCHAR(32) NOT NULL,
+    price DOUBLE PRECISION,
+    ref_line_high DOUBLE PRECISION,
+    ref_line_low DOUBLE PRECISION,
+    score SMALLINT,
+    qual VARCHAR(8),
+    invalid BOOLEAN NOT NULL DEFAULT FALSE,
+    veto VARCHAR(32),
+    detail JSONB,
+    updated_at TIMESTAMP DEFAULT NOW(),
+    CONSTRAINT pk_pattern_signal UNIQUE
+        (code, kl_type, autype, pattern_type, confirm_time_key)
+);
+CREATE INDEX IF NOT EXISTS idx_pattern_signal_query
+    ON pattern_signal (pattern_type, kl_type, pattern_date);
+CREATE INDEX IF NOT EXISTS idx_pattern_signal_code
+    ON pattern_signal (code, kl_type);
+
+-- 2026-11-22 chan-pattern-sell-signal: pattern_signal 加 direction 列（买/卖方向维度，存量行回填 'buy'）
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'pattern_signal' AND column_name = 'direction'
+    ) THEN
+        ALTER TABLE pattern_signal
+            ADD COLUMN direction VARCHAR(4) NOT NULL DEFAULT 'buy';
+    END IF;
+END
+$$;

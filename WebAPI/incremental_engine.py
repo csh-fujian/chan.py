@@ -423,6 +423,18 @@ def recompute_stock(
     finally:
         conn.close()
 
+    # 形态信号检测（chan-pattern-buy-signal D8）：批量最终化后对全量 bi_list
+    # 跑 8 形态检测并落库。失败只记日志不中断主链路（形态是附加信号层）。
+    # 步进模式（trigger_step）不在此列——recompute_stock 只服务批量最终化。
+    try:
+        from .pattern_detector import run_pattern_detection
+        from .pattern_store import upsert_pattern_rows
+
+        pattern_rows = run_pattern_detection(chan, kl_type)
+        upsert_pattern_rows(code, canonical, autype, pattern_rows)
+    except Exception:
+        log.exception("形态检测落库失败（不影响主链路）: %s %s", code, canonical)
+
     log.info(
         "recompute %s %s mode=%s bsp_rows=%d cursor->%s",
         code, canonical, mode, inserted, src,

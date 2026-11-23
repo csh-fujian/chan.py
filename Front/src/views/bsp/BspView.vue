@@ -154,6 +154,13 @@
                   row-key="id"
                 >
                   <el-table-column type="selection" width="44" reserve-selection />
+                  <el-table-column label="方向" width="70">
+                    <template #default="{ row }">
+                      <el-tag :type="row.direction === 'sell' ? 'danger' : 'success'" size="small">
+                        {{ row.direction === 'sell' ? '卖' : '买' }}
+                      </el-tag>
+                    </template>
+                  </el-table-column>
                   <el-table-column label="编码" width="110">
                     <template #default="{ row }">
                       <span class="mono">{{ row.code }}</span>
@@ -304,6 +311,160 @@
                 </el-table>
               </div>
             </el-tab-pane>
+
+            <!-- 形态信号独立 Tab（chan-pattern-buy-signal 任务 5.4，方案 B）：
+                 独立数据源与独立查询条件，不与缠论买卖点列表共用行与去重口径 -->
+            <el-tab-pane label="形态信号" name="pattern">
+              <div class="pattern-toolbar">
+                <el-select
+                  v-model="patternDirection"
+                  style="width: 100px"
+                  @change="onPatternQueryChange"
+                >
+                  <el-option label="买+卖" value="" />
+                  <el-option label="买点形态" value="buy" />
+                  <el-option label="卖点形态" value="sell" />
+                </el-select>
+                <el-select
+                  v-model="patternQuery.pattern_type"
+                  placeholder="全部形态"
+                  clearable
+                  style="width: 160px"
+                  @change="onPatternQueryChange"
+                >
+                  <el-option
+                    v-for="t in filteredPatternTypes"
+                    :key="t.value"
+                    :label="t.label"
+                    :value="t.value"
+                  />
+                </el-select>
+                <el-select
+                  v-model="patternQuery.kl_type"
+                  placeholder="全部周期"
+                  clearable
+                  style="width: 110px"
+                  @change="onPatternQueryChange"
+                >
+                  <el-option label="日线" value="D" />
+                  <el-option label="周线" value="W" />
+                  <el-option label="月线" value="M" />
+                  <el-option label="30分钟" value="30m" />
+                  <el-option label="60分钟" value="60m" />
+                </el-select>
+                <el-date-picker
+                  v-model="patternDateRange"
+                  type="daterange"
+                  range-separator="至"
+                  start-placeholder="确认日期起"
+                  end-placeholder="确认日期止"
+                  value-format="YYYY-MM-DD"
+                  style="width: 240px"
+                  @change="onPatternQueryChange"
+                />
+                <el-select
+                  v-model="patternInvalid"
+                  style="width: 110px"
+                  @change="onPatternQueryChange"
+                >
+                  <el-option label="全部状态" value="" />
+                  <el-option label="仅有效" value="false" />
+                  <el-option label="仅失效" value="true" />
+                </el-select>
+                <el-input-number
+                  v-model="patternScoreMin"
+                  :min="0"
+                  :max="100"
+                  placeholder="最低分"
+                  controls-position="right"
+                  style="width: 110px"
+                  @change="onPatternQueryChange"
+                />
+                <button class="btn btn--ghost" @click="onPatternReset">重置</button>
+                <span class="pattern-total">共 {{ patternTotal }} 条</span>
+              </div>
+              <div class="tbl-wrap" v-loading="patternLoading">
+                <el-table
+                  :data="patternRecords"
+                  empty-text="暂无形态信号（需先在 K 线页或补算任务生成）"
+                  @row-dblclick="onPatternRowDblClick"
+                  row-key="rowKey"
+                >
+                  <el-table-column label="方向" width="70">
+                    <template #default="{ row }">
+                      <el-tag :type="row.direction === 'sell' ? 'danger' : 'success'" size="small">
+                        {{ row.direction === 'sell' ? '卖' : '买' }}
+                      </el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="编码" width="110">
+                    <template #default="{ row }">
+                      <span class="mono">{{ row.code }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="名称" width="100">
+                    <template #default="{ row }">
+                      <span>{{ row.name }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="形态" width="150">
+                    <template #default="{ row }">
+                      <span class="badge badge--rise">{{ row.pattern_name }}</span>
+                      <el-tag
+                        v-if="row.is_new_signal"
+                        :type="row.direction === 'sell' ? 'danger' : 'warning'"
+                        size="small"
+                        class="pattern-new-badge"
+                      >
+                        {{ row.direction === 'sell' ? '新卖点' : '新形态' }}
+                      </el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="周期" width="70">
+                    <template #default="{ row }">{{ row.kl_type }}</template>
+                  </el-table-column>
+                  <el-table-column label="确认时间" width="160">
+                    <template #default="{ row }">
+                      <span class="mono">{{ row.confirm_time_key }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="确认价" width="100" align="right">
+                    <template #default="{ row }">
+                      <span class="num">{{ formatPrice(row.price ?? 0) }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="置信分" width="120">
+                    <template #default="{ row }">
+                      <template v-if="row.score !== null">
+                        <span class="num" :class="row.score >= 80 ? 'text-rise' : ''">{{ row.score }}</span>
+                        <span class="pattern-qual">{{ row.qual }}</span>
+                      </template>
+                      <span v-else class="pattern-qual">未评估</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="状态" width="90">
+                    <template #default="{ row }">
+                      <el-tag v-if="row.invalid" type="info" size="small">已失效</el-tag>
+                      <el-tag v-else-if="row.veto_text" type="warning" size="small">否决</el-tag>
+                      <el-tag v-else type="success" size="small">有效</el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="操作" width="90" fixed="right">
+                    <template #default="{ row }">
+                      <el-button link type="primary" size="small" @click.stop="openPatternDetail(row)">详情</el-button>
+                    </template>
+                  </el-table-column>
+                </el-table>
+                <el-pagination
+                  layout="prev, pager, next, total"
+                  :total="patternTotal"
+                  :page-size="patternQuery.page_size"
+                  :current-page="patternQuery.page"
+                  @current-change="onPatternPageChange"
+                  class="pattern-pagination"
+                />
+              </div>
+            </el-tab-pane>
           </el-tabs>
         </div>
       </div>
@@ -314,6 +475,57 @@
       v-model:visible="nestingVisible"
       :record="nestingRecord"
     />
+
+    <!-- 形态信号详情弹窗（chan-pattern-buy-signal 任务 5.4）：
+         注意事项 + 置信分明细 + 确认数据（spec「弹窗展示注意事项」） -->
+    <el-dialog
+      v-model="patternDetailVisible"
+      :title="patternDetailTitle"
+      width="560px"
+      append-to-body
+    >
+      <template v-if="patternDetailRow">
+        <div class="pattern-detail">
+          <div class="pattern-detail__head">
+            <el-tag :type="patternDetailRow.invalid ? 'info' : 'success'" size="small">
+              {{ patternDetailRow.invalid ? '已失效' : patternDetailRow.veto_text ? '否决' : '有效' }}
+            </el-tag>
+            <span class="mono">{{ patternDetailRow.confirm_time_key }}</span>
+            <span class="num">{{ formatPrice(patternDetailRow.price ?? 0) }}</span>
+            <span class="pattern-detail__score">
+              置信分
+              <b :class="patternDetailRow.score !== null && patternDetailRow.score >= 80 ? 'text-rise' : ''">
+                {{ patternDetailRow.score !== null ? patternDetailRow.score : '未评估' }}
+              </b>
+              <span v-if="patternDetailRow.qual" class="pattern-qual">· {{ patternDetailRow.qual }}</span>
+            </span>
+          </div>
+
+          <div v-if="patternDetailRow.veto_text" class="pattern-detail__veto">
+            ⚠ {{ patternDetailRow.veto_text }}
+          </div>
+
+          <div class="pattern-detail__section">
+            <h4>注意事项</h4>
+            <ul>
+              <li v-for="(c, i) in patternDetailRow.cautions" :key="i">{{ c }}</li>
+            </ul>
+          </div>
+
+          <div class="pattern-detail__section">
+            <h4>置信分构成（市场逻辑 → 评分项）</h4>
+            <template v-for="(axis, key) in patternDetailRow.scoring" :key="key">
+              <div class="pattern-detail__axis">
+                <span class="pattern-detail__axis-name">{{ patternAxisName(String(key)) }}</span>
+              </div>
+              <ul>
+                <li v-for="(s, i) in axis" :key="i">{{ s.item }}（权重 {{ s.weight }}）</li>
+              </ul>
+            </template>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
 
     <!-- 批量加入自选弹窗 -->
     <el-dialog v-model="watchlistDialogVisible" title="批量加入自选" width="420px" append-to-body>
@@ -512,7 +724,7 @@
  */
 defineOptions({ name: 'BspView' })
 
-import { ref, reactive, computed, onMounted, onActivated, onBeforeUnmount } from 'vue'
+import { ref, reactive, computed, onMounted, onActivated, onBeforeUnmount, watch } from 'vue'
 import type { AutocompleteInstance, TableInstance } from 'element-plus'
 import { ElMessage } from 'element-plus'
 import { useRouter } from 'vue-router'
@@ -522,6 +734,7 @@ import ChangeBadge from '@/components/ui/ChangeBadge.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import NestingDrawer from './NestingDrawer.vue'
 import { getBspList, getBspAggregate, getPriceAt, type BspQuery } from '@/api/modules/bsp'
+import { getPatternList, getPatternTypes, type PatternRecord, type PatternTypeItem } from '@/api/modules/pattern'
 import { getFolders, addStock, type WatchFolder } from '@/api/modules/watchlist'
 import { createMonitor, getMonitorGroups, createMonitorGroup, type MonitorGroup } from '@/api/modules/monitor'
 import { searchStocks } from '@/api/modules/stock'
@@ -635,7 +848,142 @@ function syncDateRangeToQuery() {
 }
 syncDateRangeToQuery()
 
-const activeTab = ref<'list' | 'sector'>('list')
+const activeTab = ref<'list' | 'sector' | 'pattern'>('list')
+
+// 形态 Tab 懒加载：首次切入时拉数据（onMounted 已预拉，这里兜底）
+watch(activeTab, (t) => {
+  if (t === 'pattern' && patternRecords.value.length === 0 && !patternLoading.value) {
+    loadPatternList()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// 形态信号 Tab（chan-pattern-buy-signal 任务 5.4）：独立数据源与独立查询条件
+// ---------------------------------------------------------------------------
+
+const patternTypes = ref<PatternTypeItem[]>([])
+const patternRecords = ref<(PatternRecord & { rowKey: string; pattern_name: string })[]>([])
+const patternTotal = ref(0)
+const patternLoading = ref(false)
+const patternDateRange = ref<[string, string] | null>(null)
+const patternInvalid = ref('')
+const patternScoreMin = ref<number | undefined>(undefined)
+const patternQuery = reactive({
+  page: 1,
+  page_size: 50,
+  pattern_type: '',
+  kl_type: '',
+})
+/** 方向筛选（sell-signal 任务 3.4）：'' 买+卖 / 'buy' / 'sell'；
+ *  卖向由后端默认收敛到关注范围（自选 ∪ 监控），前端无需再过滤 */
+const patternDirection = ref('')
+/** 「新信号」时效窗口（与后端 PATTERN_NEW_BARS 同步的展示判定）：
+ *  确认时间在最近 M 个自然日内（日线近似）即视为新信号 */
+const PATTERN_NEW_DAYS = 7
+
+/** 形态详情弹窗状态 */
+const patternDetailVisible = ref(false)
+const patternDetailRow = ref<(PatternRecord & { pattern_name: string }) | null>(null)
+const patternDetailTitle = computed(() =>
+  patternDetailRow.value
+    ? `${patternDetailRow.value.pattern_name} — ${patternDetailRow.value.name}（${patternDetailRow.value.code}）`
+    : '形态信号详情',
+)
+
+/** 三轴名白话（评分项分组标题） */
+function patternAxisName(key: string): string {
+  return key === 'struct' ? '结构轴' : key === 'vol' ? '量能轴' : key === 'position' ? '位置轴' : '确认轴'
+}
+
+/** 形态下拉按当前方向过滤（'' 时全量） */
+const filteredPatternTypes = computed(() =>
+  patternDirection.value
+    ? patternTypes.value.filter((t) => (t.direction ?? 'buy') === patternDirection.value)
+    : patternTypes.value,
+)
+
+async function loadPatternTypes() {
+  try {
+    patternTypes.value = await getPatternTypes()
+  } catch {
+    // 失败已由拦截器提示；下拉已选类型不在当前方向时一并清空
+    if (
+      patternQuery.pattern_type &&
+      !filteredPatternTypes.value.some((t) => t.value === patternQuery.pattern_type)
+    ) {
+      patternQuery.pattern_type = ''
+    }
+  }
+}
+
+async function loadPatternList() {
+  patternLoading.value = true
+  try {
+    const res = await getPatternList({
+      page: patternQuery.page,
+      page_size: patternQuery.page_size,
+      pattern_type: patternQuery.pattern_type,
+      kl_type: patternQuery.kl_type,
+      date_from: patternDateRange.value?.[0] ?? null,
+      date_to: patternDateRange.value?.[1] ?? null,
+      invalid: patternInvalid.value,
+      score_min: patternScoreMin.value ?? null,
+      direction: patternDirection.value,
+    })
+    patternRecords.value = res.list.map((it) => ({
+      ...it,
+      rowKey: `${it.code}|${it.kl_type}|${it.autype}|${it.pattern_type}|${it.confirm_time_key}`,
+      pattern_name: it.name || it.pattern_type,
+      // 新信号徽标：确认时间在最近 M 日内且未失效（展示判定，后端 is_new 仅 K 线页用）
+      is_new_signal:
+        !it.invalid &&
+        !!it.confirm_time_key &&
+        (Date.now() - new Date(it.confirm_time_key.replace(' ', 'T')).getTime()) /
+          86400000 <=
+          PATTERN_NEW_DAYS,
+    }))
+    patternTotal.value = res.total
+  } catch {
+    // 失败已由拦截器提示
+  } finally {
+    patternLoading.value = false
+  }
+}
+
+function onPatternQueryChange() {
+  patternQuery.page = 1
+  loadPatternList()
+}
+
+function onPatternPageChange(page: number) {
+  patternQuery.page = page
+  loadPatternList()
+}
+
+function onPatternReset() {
+  patternQuery.pattern_type = ''
+  patternQuery.kl_type = ''
+  patternDirection.value = ''
+  patternDateRange.value = null
+  patternInvalid.value = ''
+  patternScoreMin.value = undefined
+  onPatternQueryChange()
+}
+
+/** 行点击 → 详情弹窗（注意事项 + 置信分明细） */
+function openPatternDetail(row: PatternRecord & { pattern_name: string }) {
+  patternDetailRow.value = row
+  patternDetailVisible.value = true
+}
+
+/** 双击行 → 跳 K 线页（与买卖点列表同模式，KL_TO_KLINE_PERIOD 映射周期） */
+function onPatternRowDblClick(row: PatternRecord & { pattern_name: string }) {
+  const q: { code: string; period?: string } = { code: row.code }
+  const m: Record<string, string> = { D: '1d', W: '1w', M: '1M', '30m': '30m', '60m': '60m' }
+  const period = row.kl_type ? m[row.kl_type] : undefined
+  if (period) q.period = period
+  router.push({ name: 'kline', query: q })
+}
 const loading = ref(false)
 const records = ref<BspRecord[]>([])
 const total = ref(0)
@@ -1148,6 +1496,8 @@ let activatedOnce = false
 onMounted(() => {
   loadList()
   loadAggregate()
+  loadPatternTypes()
+  loadPatternList()
 })
 
 // 页面缓存（design.md D10，2026-10-20 修订）：首次挂载走 onMounted；切走后再切回只触发
@@ -1173,6 +1523,68 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+/* 形态信号 Tab（chan-pattern-buy-signal 任务 5.4） */
+.pattern-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 0 10px;
+  flex-wrap: wrap;
+}
+.pattern-total {
+  color: var(--text-secondary, #9ca3af);
+  font-size: 12px;
+  margin-left: auto;
+}
+.pattern-qual {
+  color: var(--text-secondary, #9ca3af);
+  font-size: 12px;
+  margin-left: 6px;
+}
+.pattern-new-badge {
+  margin-left: 6px;
+}
+.pattern-pagination {
+  margin-top: 10px;
+  justify-content: flex-end;
+}
+.pattern-detail__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.pattern-detail__score b {
+  font-size: 16px;
+}
+.pattern-detail__veto {
+  background: rgba(246, 70, 93, 0.08);
+  border: 1px solid rgba(246, 70, 93, 0.3);
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--rise, #F6465D);
+  margin-bottom: 10px;
+}
+.pattern-detail__section {
+  margin-top: 12px;
+}
+.pattern-detail__section h4 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: var(--text-secondary, #9ca3af);
+}
+.pattern-detail__section ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.pattern-detail__axis-name {
+  font-size: 12px;
+  color: var(--accent, #60A5FA);
+  font-weight: 600;
+}
 .bsp-page {
   display: flex;
   flex-direction: column;
